@@ -1,6 +1,8 @@
 type PopupStatus = {
   connected: boolean;
   bridgeUrl: string;
+  lastError?: string;
+  readyState?: string;
   security?: {
     allowlist: string[];
     denylist: string[];
@@ -18,7 +20,16 @@ type PopupStatus = {
   };
 };
 
-void chrome.runtime.sendMessage({ type: "popup_status" }, (status: PopupStatus) => {
+void refreshStatus();
+window.setInterval(refreshStatus, 1000);
+
+function refreshStatus(): void {
+  chrome.runtime.sendMessage({ type: "popup_status" }, (status: PopupStatus) => {
+    renderStatus(status);
+  });
+}
+
+function renderStatus(status: PopupStatus): void {
   const statusText = document.querySelector("#status");
   const bridgeUrl = document.querySelector<HTMLInputElement>("#bridge-url");
   const allowlist = document.querySelector<HTMLTextAreaElement>("#allowlist");
@@ -27,20 +38,22 @@ void chrome.runtime.sendMessage({ type: "popup_status" }, (status: PopupStatus) 
   const screenshotEnabled = document.querySelector<HTMLInputElement>("#screenshot-enabled");
   const auditLog = document.querySelector("#audit-log");
   const dot = document.querySelector("#status-dot");
+  const diagnostics = document.querySelector("#diagnostics");
 
-  if (!statusText || !bridgeUrl || !allowlist || !denylist || !blockRisk || !screenshotEnabled || !auditLog || !dot) {
+  if (!statusText || !bridgeUrl || !allowlist || !denylist || !blockRisk || !screenshotEnabled || !auditLog || !dot || !diagnostics) {
     return;
   }
 
   statusText.textContent = status?.connected ? "已连接" : "未连接";
-  bridgeUrl.value = status?.bridgeUrl ?? "ws://127.0.0.1:17321";
-  allowlist.value = status?.security?.allowlist.join("\n") ?? "http://*\nhttps://*";
-  denylist.value = status?.security?.denylist.join("\n") ?? "";
+  diagnostics.textContent = renderDiagnostics(status);
+  setValueIfIdle(bridgeUrl, status?.bridgeUrl ?? "ws://127.0.0.1:17321");
+  setValueIfIdle(allowlist, status?.security?.allowlist.join("\n") ?? "http://*\nhttps://*");
+  setValueIfIdle(denylist, status?.security?.denylist.join("\n") ?? "");
   blockRisk.checked = status?.security?.blockHighRiskActions ?? true;
   screenshotEnabled.checked = status?.security?.screenshotEnabled ?? true;
   dot.classList.toggle("connected", Boolean(status?.connected));
   auditLog.replaceChildren(...(status?.audit?.entries ?? []).map(renderAuditItem));
-});
+}
 
 document.querySelector("#bridge-form")?.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -101,10 +114,27 @@ function parseLines(value: string): string[] {
     .filter(Boolean);
 }
 
+function setValueIfIdle(element: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+  if (document.activeElement !== element) {
+    element.value = value;
+  }
+}
+
 function renderAuditItem(entry: NonNullable<PopupStatus["audit"]>["entries"][number]): HTMLLIElement {
   const item = document.createElement("li");
   const time = new Date(entry.at).toLocaleTimeString();
   item.textContent = `${time} ${entry.ok ? "成功" : "失败"} ${entry.tool}${entry.errorCode ? ` (${entry.errorCode})` : ""}`;
   item.title = entry.url ?? "";
   return item;
+}
+
+function renderDiagnostics(status?: PopupStatus): string {
+  if (!status) {
+    return "无法读取插件状态，请打开 chrome://extensions 查看错误。";
+  }
+  if (status.connected) {
+    return `连接状态：${status.readyState ?? "OPEN"}`;
+  }
+  const state = status.readyState ? `连接状态：${status.readyState}` : "连接状态：未知";
+  return status.lastError ? `${state}；${status.lastError}` : state;
 }

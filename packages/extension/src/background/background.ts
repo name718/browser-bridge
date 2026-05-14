@@ -15,8 +15,19 @@ import { appendAuditLog, getAuditLog } from "./audit.js";
 
 let connected = false;
 let currentBridgeUrl = DEFAULT_BRIDGE_URL;
+let lastBridgeError = "";
+let offscreenCreation: Promise<void> | undefined;
 
 void ensureOffscreenDocument();
+setupKeepalive();
+
+chrome.runtime.onStartup.addListener(() => {
+  void ensureOffscreenDocument();
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  void ensureOffscreenDocument();
+});
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "popup_status") {
@@ -32,6 +43,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "offscreen_status") {
     connected = Boolean(message.connected);
     currentBridgeUrl = typeof message.bridgeUrl === "string" ? message.bridgeUrl : currentBridgeUrl;
+    lastBridgeError = typeof message.lastError === "string" ? message.lastError : "";
     sendResponse({ ok: true });
     return true;
   }
@@ -276,7 +288,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 async function getPopupStatus(): Promise<Record<string, unknown>> {
+  currentBridgeUrl = await getBridgeUrl();
   await ensureOffscreenDocument();
+  await syncBridgeUrlToOffscreen();
   const [security, audit, offscreenStatus] = await Promise.all([
     getSecurityConfig(),
     getAuditLog(8),
@@ -285,37 +299,75 @@ async function getPopupStatus(): Promise<Record<string, unknown>> {
 
   connected = Boolean(offscreenStatus.connected);
   currentBridgeUrl = offscreenStatus.bridgeUrl ?? currentBridgeUrl;
-  return { connected, bridgeUrl: currentBridgeUrl, security, audit };
+  lastBridgeError = offscreenStatus.lastError ?? lastBridgeError;
+  return {
+    connected,
+    bridgeUrl: currentBridgeUrl,
+    lastError: lastBridgeError,
+    readyState: offscreenStatus.readyState,
+    security,
+    audit
+  };
 }
 
-async function getOffscreenStatus(): Promise<{ connected: boolean; bridgeUrl?: string }> {
+async function getOffscreenStatus(): Promise<{
+  connected: boolean;
+  bridgeUrl?: string;
+  lastError?: string;
+  readyState?: string;
+}> {
   try {
     const status = await chrome.runtime.sendMessage({ type: "offscreen_get_status" });
     return {
       connected: Boolean(status?.connected),
-      bridgeUrl: typeof status?.bridgeUrl === "string" ? status.bridgeUrl : undefined
+      bridgeUrl: typeof status?.bridgeUrl === "string" ? status.bridgeUrl : undefined,
+      lastError: typeof status?.lastError === "string" ? status.lastError : undefined,
+      readyState: typeof status?.readyState === "string" ? status.readyState : undefined
     };
-  } catch {
-    return { connected, bridgeUrl: currentBridgeUrl };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    recordBridgeError(`读取 offscreen 状态失败：${message}`);
+    return { connected, bridgeUrl: currentBridgeUrl, lastError: lastBridgeError };
   }
 }
 
 async function ensureOffscreenDocument(): Promise<void> {
+  if (offscreenCreation) {
+    return offscreenCreation;
+  }
+
+  offscreenCreation = createOffscreenDocument();
+  try {
+    await offscreenCreation;
+  } finally {
+    offscreenCreation = undefined;
+  }
+}
+
+async function createOffscreenDocument(): Promise<void> {
   const offscreen = chrome.offscreen;
   if (!offscreen) {
+    recordBridgeError("当前 Chrome 不支持 offscreen API，请升级 Chrome 后重试");
     return;
   }
 
-  const hasDocument = await offscreen.hasDocument();
-  if (hasDocument) {
-    return;
-  }
+  try {
+    const hasDocument = await offscreen.hasDocument();
+    if (hasDocument) {
+      return;
+    }
 
-  await offscreen.createDocument({
-    url: "offscreen.html",
-    reasons: [chrome.offscreen.Reason.WORKERS],
-    justification: "保持浏览器桥接 WebSocket 连接"
-  });
+    await offscreen.createDocument({
+      url: "offscreen.html",
+      reasons: [chrome.offscreen.Reason.DOM_SCRAPING],
+      justification: "保持浏览器桥接 WebSocket 连接"
+    });
+    recordBridgeError("");
+    await syncBridgeUrlToOffscreen();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    recordBridgeError(`创建 offscreen 连接页失败：${message}`);
+  }
 }
 
 async function getBridgeUrl(): Promise<string> {
@@ -330,10 +382,19 @@ async function setBridgeUrl(value: string): Promise<void> {
   await chrome.storage.local.set({ bridgeUrl: normalized });
   currentBridgeUrl = normalized;
   await ensureOffscreenDocument();
-  await chrome.runtime.sendMessage({
-    type: "offscreen_set_bridge_url",
-    bridgeUrl: normalized
-  });
+  await syncBridgeUrlToOffscreen();
+}
+
+async function syncBridgeUrlToOffscreen(): Promise<void> {
+  try {
+    await chrome.runtime.sendMessage({
+      type: "offscreen_set_bridge_url",
+      bridgeUrl: currentBridgeUrl
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    recordBridgeError(`通知 offscreen 重连失败：${message}`);
+  }
 }
 
 function normalizeBridgeUrl(value: string): string {
@@ -345,4 +406,21 @@ function normalizeBridgeUrl(value: string): string {
     return `ws://${trimmed}`;
   }
   return trimmed;
+}
+
+function setupKeepalive(): void {
+  chrome.alarms.create("browser-bridge-keepalive", { periodInMinutes: 0.4 });
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === "browser-bridge-keepalive") {
+      void ensureOffscreenDocument();
+    }
+  });
+}
+
+function recordBridgeError(message: string): void {
+  lastBridgeError = message;
+  void chrome.storage.local.set({ bridgeLastError: message });
+  if (message) {
+    console.warn(`[浏览器桥接] ${message}`);
+  }
 }

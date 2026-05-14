@@ -55,6 +55,18 @@ dd {
   word-break: break-word;
 }
 
+.diagnostics {
+  margin: 8px 0 10px;
+  border: 1px solid #d8dee4;
+  border-radius: 6px;
+  padding: 8px;
+  color: #53616c;
+  background: #ffffff;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
 form {
   display: grid;
   gap: 10px;
