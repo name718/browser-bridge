@@ -1,6 +1,5 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { createServer } from "node:net";
 import { writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -9,27 +8,9 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = resolve(scriptDir, "..");
 const serverPath = resolve(packageDir, "dist/index.js");
-const bridgePort = Number(process.env.BROWSER_BRIDGE_PORT ?? 17321);
 
 const requestedTool = readArg("--tool");
 const screenshotOut = readArg("--out");
-
-if (!(await isPortAvailable(bridgePort))) {
-  process.stderr.write(
-    [
-      `冒烟测试需要临时启动 MCP Server，但 127.0.0.1:${bridgePort} 已被占用。`,
-      "请先停止你手动启动的旧 MCP Server，再重新运行 smoke。",
-      "",
-      "可先查看占用进程：",
-      `lsof -nP -iTCP:${bridgePort} -sTCP:LISTEN`,
-      "",
-      "如果确认是旧测试进程，可以停止后再执行：",
-      "pnpm smoke"
-    ].join("\n")
-  );
-  process.stderr.write("\n");
-  process.exit(2);
-}
 
 const client = new Client({
   name: "browser-bridge-smoke-test",
@@ -118,17 +99,4 @@ function readJsonArg(name) {
     throw new Error(`${name} 必须是 JSON 对象`);
   }
   return parsed;
-}
-
-function isPortAvailable(port) {
-  return new Promise((resolve) => {
-    const server = createServer();
-    server.once("error", () => {
-      resolve(false);
-    });
-    server.once("listening", () => {
-      server.close(() => resolve(true));
-    });
-    server.listen(port, "127.0.0.1");
-  });
 }

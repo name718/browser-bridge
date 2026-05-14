@@ -20,7 +20,7 @@ type PopupStatus = {
 
 void chrome.runtime.sendMessage({ type: "popup_status" }, (status: PopupStatus) => {
   const statusText = document.querySelector("#status");
-  const bridgeUrl = document.querySelector("#bridge-url");
+  const bridgeUrl = document.querySelector<HTMLInputElement>("#bridge-url");
   const allowlist = document.querySelector<HTMLTextAreaElement>("#allowlist");
   const denylist = document.querySelector<HTMLTextAreaElement>("#denylist");
   const blockRisk = document.querySelector<HTMLInputElement>("#block-risk");
@@ -33,13 +33,36 @@ void chrome.runtime.sendMessage({ type: "popup_status" }, (status: PopupStatus) 
   }
 
   statusText.textContent = status?.connected ? "已连接" : "未连接";
-  bridgeUrl.textContent = status?.bridgeUrl ?? "-";
+  bridgeUrl.value = status?.bridgeUrl ?? "ws://127.0.0.1:17321";
   allowlist.value = status?.security?.allowlist.join("\n") ?? "http://*\nhttps://*";
   denylist.value = status?.security?.denylist.join("\n") ?? "";
   blockRisk.checked = status?.security?.blockHighRiskActions ?? true;
   screenshotEnabled.checked = status?.security?.screenshotEnabled ?? true;
   dot.classList.toggle("connected", Boolean(status?.connected));
   auditLog.replaceChildren(...(status?.audit?.entries ?? []).map(renderAuditItem));
+});
+
+document.querySelector("#bridge-form")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+
+  const bridgeUrl = document.querySelector<HTMLInputElement>("#bridge-url");
+  const saveStatus = document.querySelector("#bridge-save-status");
+  if (!bridgeUrl || !saveStatus) {
+    return;
+  }
+
+  chrome.runtime.sendMessage({
+    type: "popup_save_bridge",
+    bridgeUrl: bridgeUrl.value
+  }, (response) => {
+    if (response?.bridgeUrl) {
+      bridgeUrl.value = response.bridgeUrl;
+    }
+    saveStatus.textContent = "已保存，正在重连";
+    window.setTimeout(() => {
+      saveStatus.textContent = "";
+    }, 1500);
+  });
 });
 
 document.querySelector("#security-form")?.addEventListener("submit", (event) => {

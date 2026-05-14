@@ -3,7 +3,7 @@
   "name": "浏览器桥接",
   "version": "0.1.0",
   "description": "通过本地 MCP 服务把 AI 代理连接到用户的 Chrome 浏览器。",
-  "permissions": ["activeTab", "tabs", "scripting", "storage"],
+  "permissions": ["activeTab", "tabs", "scripting", "storage", "offscreen"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js",

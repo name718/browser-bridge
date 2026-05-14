@@ -1,5 +1,14 @@
 import { z } from "zod";
-import { type BrowserBridge } from "../bridge/browser-bridge.js";
+import { type BridgeRequest, type BrowserStatus } from "@browser-bridge/shared";
+
+export type BrowserToolBridge = {
+  getStatus: () => BrowserStatus | Promise<BrowserStatus>;
+  call: <T = unknown>(
+    tool: BridgeRequest["tool"],
+    params?: Record<string, unknown>,
+    options?: { tabId?: number; timeoutMs?: number }
+  ) => Promise<T>;
+};
 
 const optionalTabId = z.object({
   tabId: z.number().int().positive().optional()
@@ -61,7 +70,7 @@ export type BrowserToolDefinition = {
   handler: (args: unknown) => Promise<unknown>;
 };
 
-export function createBrowserTools(bridge: BrowserBridge): BrowserToolDefinition[] {
+export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefinition[] {
   return [
     {
       name: "browser_status",

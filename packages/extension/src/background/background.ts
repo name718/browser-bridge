@@ -4,7 +4,7 @@ import {
   type BridgeRequest,
   type BridgeResponse
 } from "@browser-bridge/shared";
-import { BRIDGE_URL, EXTENSION_VERSION } from "../shared/config.js";
+import { DEFAULT_BRIDGE_URL } from "../shared/config.js";
 import {
   assertActionAllowed,
   assertUrlAllowed,
@@ -13,20 +13,30 @@ import {
 } from "./security.js";
 import { appendAuditLog, getAuditLog } from "./audit.js";
 
-const PROTOCOL_VERSION = "0.1.0";
-let socket: WebSocket | undefined;
-let reconnectTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
 let connected = false;
+let currentBridgeUrl = DEFAULT_BRIDGE_URL;
 
-connect();
+void ensureOffscreenDocument();
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "popup_status") {
-    void getSecurityConfig().then((security) => {
-      void getAuditLog(8).then((audit) => {
-        sendResponse({ connected, bridgeUrl: BRIDGE_URL, security, audit });
-      });
+    void getPopupStatus().then(sendResponse);
+    return true;
+  }
+  if (message?.type === "popup_save_bridge") {
+    void setBridgeUrl(String(message.bridgeUrl ?? "")).then(() => {
+      sendResponse({ ok: true, bridgeUrl: currentBridgeUrl });
     });
+    return true;
+  }
+  if (message?.type === "offscreen_status") {
+    connected = Boolean(message.connected);
+    currentBridgeUrl = typeof message.bridgeUrl === "string" ? message.bridgeUrl : currentBridgeUrl;
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (message?.type === "offscreen_bridge_request") {
+    void handleBridgeRequest(message.request as BridgeRequest).then(sendResponse);
     return true;
   }
   if (message?.type === "popup_save_security") {
@@ -37,54 +47,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   return false;
 });
-
-function connect(): void {
-  clearReconnect();
-
-  socket = new WebSocket(BRIDGE_URL);
-
-  socket.addEventListener("open", () => {
-    connected = true;
-    socket?.send(JSON.stringify({
-      kind: "hello",
-      payload: {
-        type: "extension_hello",
-        extensionVersion: EXTENSION_VERSION,
-        protocolVersion: PROTOCOL_VERSION
-      }
-    }));
-  });
-
-  socket.addEventListener("message", (event) => {
-    void handleSocketMessage(String(event.data));
-  });
-
-  socket.addEventListener("close", () => {
-    connected = false;
-    scheduleReconnect();
-  });
-
-  socket.addEventListener("error", () => {
-    connected = false;
-  });
-}
-
-async function handleSocketMessage(raw: string): Promise<void> {
-  let envelope: unknown;
-  try {
-    envelope = JSON.parse(raw);
-  } catch {
-    return;
-  }
-
-  if (!isRecord(envelope) || envelope.kind !== "request" || !isRecord(envelope.payload)) {
-    return;
-  }
-
-  const request = envelope.payload as BridgeRequest;
-  const response = await handleBridgeRequest(request);
-  socket?.send(JSON.stringify({ kind: "response", payload: response }));
-}
 
 async function handleBridgeRequest(request: BridgeRequest): Promise<BridgeResponse> {
   try {
@@ -309,18 +271,78 @@ function normalizeTab(tab: chrome.tabs.Tab): BrowserTab {
   };
 }
 
-function scheduleReconnect(): void {
-  clearReconnect();
-  reconnectTimer = globalThis.setTimeout(connect, 1500);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
-function clearReconnect(): void {
-  if (reconnectTimer !== undefined) {
-    globalThis.clearTimeout(reconnectTimer);
-    reconnectTimer = undefined;
+async function getPopupStatus(): Promise<Record<string, unknown>> {
+  await ensureOffscreenDocument();
+  const [security, audit, offscreenStatus] = await Promise.all([
+    getSecurityConfig(),
+    getAuditLog(8),
+    getOffscreenStatus()
+  ]);
+
+  connected = Boolean(offscreenStatus.connected);
+  currentBridgeUrl = offscreenStatus.bridgeUrl ?? currentBridgeUrl;
+  return { connected, bridgeUrl: currentBridgeUrl, security, audit };
+}
+
+async function getOffscreenStatus(): Promise<{ connected: boolean; bridgeUrl?: string }> {
+  try {
+    const status = await chrome.runtime.sendMessage({ type: "offscreen_get_status" });
+    return {
+      connected: Boolean(status?.connected),
+      bridgeUrl: typeof status?.bridgeUrl === "string" ? status.bridgeUrl : undefined
+    };
+  } catch {
+    return { connected, bridgeUrl: currentBridgeUrl };
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+async function ensureOffscreenDocument(): Promise<void> {
+  const offscreen = chrome.offscreen;
+  if (!offscreen) {
+    return;
+  }
+
+  const hasDocument = await offscreen.hasDocument();
+  if (hasDocument) {
+    return;
+  }
+
+  await offscreen.createDocument({
+    url: "offscreen.html",
+    reasons: [chrome.offscreen.Reason.WORKERS],
+    justification: "保持浏览器桥接 WebSocket 连接"
+  });
+}
+
+async function getBridgeUrl(): Promise<string> {
+  const stored = await chrome.storage.local.get("bridgeUrl");
+  return typeof stored.bridgeUrl === "string" && stored.bridgeUrl.trim()
+    ? stored.bridgeUrl.trim()
+    : DEFAULT_BRIDGE_URL;
+}
+
+async function setBridgeUrl(value: string): Promise<void> {
+  const normalized = normalizeBridgeUrl(value);
+  await chrome.storage.local.set({ bridgeUrl: normalized });
+  currentBridgeUrl = normalized;
+  await ensureOffscreenDocument();
+  await chrome.runtime.sendMessage({
+    type: "offscreen_set_bridge_url",
+    bridgeUrl: normalized
+  });
+}
+
+function normalizeBridgeUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return DEFAULT_BRIDGE_URL;
+  }
+  if (!/^wss?:\/\//.test(trimmed)) {
+    return `ws://${trimmed}`;
+  }
+  return trimmed;
 }

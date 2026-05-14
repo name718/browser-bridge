@@ -68,14 +68,18 @@ label {
   font-size: 12px;
 }
 
-textarea {
+textarea,
+input[type="text"] {
   box-sizing: border-box;
   width: 100%;
-  resize: vertical;
   border: 1px solid #c8d0d7;
   border-radius: 6px;
   padding: 7px;
   font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+textarea {
+  resize: vertical;
 }
 
 .check-row {
@@ -94,7 +98,8 @@ button {
   cursor: pointer;
 }
 
-#save-status {
+#save-status,
+#bridge-save-status {
   min-height: 16px;
   margin: 0;
   color: #1f7a4d;

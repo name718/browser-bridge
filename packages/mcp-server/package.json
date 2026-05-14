@@ -3,12 +3,15 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "browser-bridge-mcp": "dist/index.js"
+    "browser-bridge-mcp": "dist/index.js",
+    "browser-bridge-daemon": "dist/daemon.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/index.ts",
+    "dev:daemon": "tsx src/daemon.ts",
+    "daemon": "node dist/daemon.js",
     "smoke": "node scripts/smoke-test.mjs"
   },
   "dependencies": {

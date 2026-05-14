@@ -44,13 +44,16 @@ pnpm typecheck
 pnpm build
 ```
 
-启动 MCP 服务：
+启动 MCP 代理：
 
 ```sh
 pnpm dev:server
 ```
 
-本地 WebSocket 桥接服务监听 `127.0.0.1:17321`。
+MCP 代理会自动拉起常驻 daemon。daemon 默认使用两个本地端口：
+
+- `127.0.0.1:17320`：给 MCP 代理调用的 HTTP API。
+- `127.0.0.1:17321`：给 Chrome 插件连接的 WebSocket。
 
 执行本地 MCP 冒烟测试：
 
@@ -67,6 +70,22 @@ pnpm smoke
 5. 选择 `packages/extension/dist`。
 
 插件加载后，启动 MCP 服务，并打开插件弹窗确认连接状态。
+
+插件弹窗里可以填写桥接地址。默认连接 daemon 的 WebSocket：
+
+```text
+ws://127.0.0.1:17321
+```
+
+当 AI Agent 第一次调用 MCP 工具时，MCP 代理会自动启动 daemon。daemon 日志会打印需要填写的桥接地址。把该地址保存到插件中后，插件会自动重连；之后同一个地址会持久化保存，不需要每次重新配置。
+
+插件会用 Chrome offscreen 隐藏页维持 WebSocket 连接，避免 Manifest V3 background service worker 休眠导致连接断开。
+
+也可以手动启动 daemon：
+
+```sh
+pnpm --filter @browser-bridge/mcp-server daemon
+```
 
 ## MCP 接入
 

@@ -12,6 +12,49 @@ Chrome 插件加载目录：
 /Users/didi/Desktop/my-project/browser-bridge-1/packages/extension/dist
 ```
 
+## 插件桥接地址
+
+当前架构分为两层：
+
+- MCP 代理：Claude Code、Codex、Gemini CLI 调用的 stdio server，即 `dist/index.js`。
+- 常驻 daemon：负责连接 Chrome 插件，并提供本地 HTTP API，即 `dist/daemon.js`。
+
+MCP 代理会自动拉起 daemon。daemon 启动后会在日志里打印类似信息：
+
+```json
+{"bridgeUrl":"ws://127.0.0.1:17321","hint":"请在浏览器桥接插件中填写 ws://127.0.0.1:17321"}
+```
+
+打开 Chrome 工具栏里的“浏览器桥接”插件，把 `ws://127.0.0.1:17321` 填到“桥接地址”里，点击“保存并重连”。
+
+插件会持久化保存这个地址，并自动重连。只要后续 MCP 服务仍使用同一个端口，就不需要重复配置。
+
+插件内部使用 Chrome offscreen 隐藏页维持 WebSocket 连接，因此关闭插件弹窗后连接也应保持。
+
+如果你希望手动提前启动 daemon，可以运行：
+
+```sh
+pnpm --filter @browser-bridge/mcp-server daemon
+```
+
+如果你希望某个 AI Agent 使用独立端口，可以启动 daemon 时设置：
+
+```sh
+BROWSER_BRIDGE_PORT=17322 BROWSER_BRIDGE_API_PORT=17323 node /Users/didi/Desktop/my-project/browser-bridge-1/packages/mcp-server/dist/daemon.js
+```
+
+然后在插件中填写：
+
+```text
+ws://127.0.0.1:17322
+```
+
+对应的 MCP 代理也需要设置相同环境变量：
+
+```sh
+BROWSER_BRIDGE_PORT=17322 BROWSER_BRIDGE_API_PORT=17323 node /Users/didi/Desktop/my-project/browser-bridge-1/packages/mcp-server/dist/index.js
+```
+
 ## 通用 MCP JSON 配置
 
 如果 MCP 客户端支持 JSON 格式配置，可以使用仓库里的 `mcp.json`：
@@ -92,4 +135,4 @@ pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_screenshot --ar
 pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_screenshot --args '{"format":"png"}' --out /tmp/browser-bridge.png
 ```
 
-如果你已经手动启动了 MCP 服务，并且它正在监听 `127.0.0.1:17321`，先停止旧进程再运行冒烟测试。
+冒烟测试会通过 MCP 代理自动拉起 daemon。如果 daemon 已经在运行，会直接复用。

@@ -5,18 +5,17 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema
 } from "@modelcontextprotocol/sdk/types.js";
-import { BrowserBridge } from "./bridge/browser-bridge.js";
+import { DaemonBridgeClient } from "./bridge/daemon-client.js";
 import { createBrowserTools } from "./tools/browser-tools.js";
 import { Logger } from "./logger/logger.js";
 import { sanitizeForLog } from "./security/sanitize.js";
 
 const logger = new Logger("mcp-server");
 const bridgePort = Number(process.env.BROWSER_BRIDGE_PORT ?? 17321);
-const bridge = new BrowserBridge(bridgePort);
+const apiPort = Number(process.env.BROWSER_BRIDGE_API_PORT ?? 17320);
+const bridge = new DaemonBridgeClient(bridgePort, apiPort);
 const tools = createBrowserTools(bridge);
 const toolMap = new Map(tools.map((tool) => [tool.name, tool]));
-
-bridge.start();
 
 const server = new Server(
   {
@@ -79,7 +78,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-logger.info("mcp server started", { bridgePort });
+logger.info("mcp server started", {
+  apiUrl: `http://127.0.0.1:${apiPort}`,
+  bridgeUrl: `ws://127.0.0.1:${bridgePort}`,
+  hint: `请在浏览器桥接插件中填写 ws://127.0.0.1:${bridgePort}`
+});
 
 function formatScreenshotResult(result: unknown): {
   content: Array<

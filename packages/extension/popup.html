@@ -17,11 +17,15 @@
           <dt>状态</dt>
           <dd id="status">检查中</dd>
         </div>
-        <div class="row">
-          <dt>桥接地址</dt>
-          <dd id="bridge-url">-</dd>
-        </div>
       </dl>
+      <form id="bridge-form">
+        <label>
+          <span>桥接地址</span>
+          <input id="bridge-url" type="text" spellcheck="false" placeholder="ws://127.0.0.1:17321" />
+        </label>
+        <button type="submit">保存并重连</button>
+        <p id="bridge-save-status"></p>
+      </form>
       <form id="security-form">
         <label>
           <span>允许列表</span>

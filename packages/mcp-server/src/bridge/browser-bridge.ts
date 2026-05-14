@@ -14,6 +14,12 @@ type PendingRequest = {
   timeout: NodeJS.Timeout;
 };
 
+type ConnectionWaiter = {
+  resolve: () => void;
+  reject: (reason: Error) => void;
+  timeout: NodeJS.Timeout;
+};
+
 export class BrowserBridge {
   private readonly logger = new Logger("browser-bridge");
   private readonly pending = new Map<string, PendingRequest>();
@@ -21,6 +27,7 @@ export class BrowserBridge {
   private socket?: WebSocket;
   private connectedAt?: string;
   private extensionVersion?: string;
+  private readonly connectionWaiters = new Set<ConnectionWaiter>();
 
   constructor(private readonly port: number) {}
 
@@ -39,7 +46,11 @@ export class BrowserBridge {
     });
 
     this.server.on("listening", () => {
-      this.logger.info("bridge listening", { port: this.port });
+      this.logger.info("bridge listening", {
+        port: this.port,
+        bridgeUrl: `ws://127.0.0.1:${this.port}`,
+        hint: `请在浏览器桥接插件中填写 ws://127.0.0.1:${this.port}`
+      });
     });
 
     this.server.on("error", (error) => {
@@ -64,10 +75,7 @@ export class BrowserBridge {
     params?: Record<string, unknown>,
     options?: { tabId?: number; timeoutMs?: number }
   ): Promise<T> {
-    const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      throw new Error("BROWSER_NOT_CONNECTED: Chrome 插件未连接");
-    }
+    const socket = await this.getConnectedSocket(options?.timeoutMs);
 
     const id = randomUUID();
     const timeoutMs = options?.timeoutMs ?? 10_000;
@@ -96,6 +104,35 @@ export class BrowserBridge {
     return result;
   }
 
+  private async getConnectedSocket(timeoutMs = 5_000): Promise<WebSocket> {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      return this.socket;
+    }
+
+    await this.waitForConnection(Math.min(timeoutMs, 5_000));
+
+    const socket = this.socket;
+    if (socket?.readyState === WebSocket.OPEN) {
+      return socket;
+    }
+
+    throw new Error(`BROWSER_NOT_CONNECTED: Chrome 插件未连接。请打开“浏览器桥接”插件，并填写 ws://127.0.0.1:${this.port}`);
+  }
+
+  private waitForConnection(timeoutMs: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const waiter: ConnectionWaiter = {
+        resolve,
+        reject,
+        timeout: setTimeout(() => {
+          this.connectionWaiters.delete(waiter);
+          reject(new Error(`BROWSER_NOT_CONNECTED: Chrome 插件未连接。请打开“浏览器桥接”插件，并填写 ws://127.0.0.1:${this.port}`));
+        }, timeoutMs)
+      };
+      this.connectionWaiters.add(waiter);
+    });
+  }
+
   private attachSocket(socket: WebSocket): void {
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
       this.socket.close(1012, "Replacing existing extension connection");
@@ -105,6 +142,7 @@ export class BrowserBridge {
     this.connectedAt = new Date().toISOString();
     this.extensionVersion = undefined;
     this.logger.info("extension connected");
+    this.resolveConnectionWaiters();
 
     socket.on("message", (raw) => {
       this.handleMessage(raw.toString());
@@ -175,6 +213,14 @@ export class BrowserBridge {
       clearTimeout(pending.timeout);
       pending.reject(new Error(message));
       this.pending.delete(id);
+    }
+  }
+
+  private resolveConnectionWaiters(): void {
+    for (const waiter of this.connectionWaiters) {
+      clearTimeout(waiter.timeout);
+      waiter.resolve();
+      this.connectionWaiters.delete(waiter);
     }
   }
 }
