@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Browser Bridge</title>
+    <link rel="stylesheet" href="/src/popup/popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Browser Bridge</h1>
+        <span id="status-dot" class="dot"></span>
+      </header>
+      <dl>
+        <div>
+          <dt>Status</dt>
+          <dd id="status">Checking</dd>
+        </div>
+        <div>
+          <dt>Bridge</dt>
+          <dd id="bridge-url">-</dd>
+        </div>
+      </dl>
+    </main>
+    <script type="module" src="/src/popup/popup.ts"></script>
+  </body>
+</html>
+

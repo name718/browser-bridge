@@ -1,0 +1,17 @@
+{
+  "name": "browser-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm --filter @browser-bridge/shared build && pnpm --filter @browser-bridge/extension typecheck && pnpm --filter @browser-bridge/mcp-server typecheck",
+    "dev:server": "pnpm --filter @browser-bridge/mcp-server dev",
+    "build:extension": "pnpm --filter @browser-bridge/extension build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "typescript": "^5.4.5"
+  },
+  "packageManager": "pnpm@9.0.0"
+}

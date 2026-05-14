@@ -1,0 +1,178 @@
+import { randomUUID } from "node:crypto";
+import { WebSocketServer, WebSocket } from "ws";
+import {
+  type BridgeRequest,
+  type BridgeResponse,
+  type BrowserStatus,
+  PROTOCOL_VERSION
+} from "@browser-bridge/shared";
+import { Logger } from "../logger/logger.js";
+
+type PendingRequest = {
+  resolve: (value: unknown) => void;
+  reject: (reason: Error) => void;
+  timeout: NodeJS.Timeout;
+};
+
+export class BrowserBridge {
+  private readonly logger = new Logger("browser-bridge");
+  private readonly pending = new Map<string, PendingRequest>();
+  private server?: WebSocketServer;
+  private socket?: WebSocket;
+  private connectedAt?: string;
+  private extensionVersion?: string;
+
+  constructor(private readonly port: number) {}
+
+  start(): void {
+    if (this.server) {
+      return;
+    }
+
+    this.server = new WebSocketServer({
+      host: "127.0.0.1",
+      port: this.port
+    });
+
+    this.server.on("connection", (socket) => {
+      this.attachSocket(socket);
+    });
+
+    this.server.on("listening", () => {
+      this.logger.info("bridge listening", { port: this.port });
+    });
+  }
+
+  getStatus(): BrowserStatus {
+    return {
+      connected: this.socket?.readyState === WebSocket.OPEN,
+      protocolVersion: PROTOCOL_VERSION,
+      extensionVersion: this.extensionVersion,
+      connectedAt: this.connectedAt
+    };
+  }
+
+  async call<T = unknown>(
+    tool: BridgeRequest["tool"],
+    params?: Record<string, unknown>,
+    options?: { tabId?: number; timeoutMs?: number }
+  ): Promise<T> {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      throw new Error("BROWSER_NOT_CONNECTED: Chrome extension is not connected");
+    }
+
+    const id = randomUUID();
+    const timeoutMs = options?.timeoutMs ?? 10_000;
+    const request: BridgeRequest = {
+      id,
+      tool,
+      params,
+      tabId: options?.tabId,
+      timeoutMs
+    };
+
+    const result = new Promise<T>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`ACTION_TIMEOUT: ${tool} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.pending.set(id, {
+        resolve: (value) => resolve(value as T),
+        reject,
+        timeout
+      });
+    });
+
+    socket.send(JSON.stringify({ kind: "request", payload: request }));
+    return result;
+  }
+
+  private attachSocket(socket: WebSocket): void {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      this.socket.close(1012, "Replacing existing extension connection");
+    }
+
+    this.socket = socket;
+    this.connectedAt = new Date().toISOString();
+    this.extensionVersion = undefined;
+    this.logger.info("extension connected");
+
+    socket.on("message", (raw) => {
+      this.handleMessage(raw.toString());
+    });
+
+    socket.on("close", () => {
+      this.logger.warn("extension disconnected");
+      if (this.socket === socket) {
+        this.socket = undefined;
+        this.connectedAt = undefined;
+        this.extensionVersion = undefined;
+      }
+      this.rejectAll("BROWSER_NOT_CONNECTED: Chrome extension disconnected");
+    });
+
+    socket.on("error", (error) => {
+      this.logger.error("extension socket error", { message: error.message });
+    });
+  }
+
+  private handleMessage(raw: string): void {
+    let message: unknown;
+    try {
+      message = JSON.parse(raw);
+    } catch {
+      this.logger.warn("invalid json from extension");
+      return;
+    }
+
+    if (!isRecord(message)) {
+      return;
+    }
+
+    if (message.kind === "hello" && isRecord(message.payload)) {
+      this.extensionVersion = String(message.payload.extensionVersion ?? "unknown");
+      this.logger.info("extension hello", {
+        extensionVersion: this.extensionVersion,
+        protocolVersion: message.payload.protocolVersion
+      });
+      return;
+    }
+
+    if (message.kind !== "response" || !isRecord(message.payload)) {
+      return;
+    }
+
+    const response = message.payload as BridgeResponse;
+    const pending = this.pending.get(response.id);
+    if (!pending) {
+      return;
+    }
+
+    clearTimeout(pending.timeout);
+    this.pending.delete(response.id);
+
+    if (response.ok) {
+      pending.resolve(response.data);
+      return;
+    }
+
+    const code = response.error?.code ?? "INTERNAL_ERROR";
+    const detail = response.error?.message ?? "Browser bridge request failed";
+    pending.reject(new Error(`${code}: ${detail}`));
+  }
+
+  private rejectAll(message: string): void {
+    for (const [id, pending] of this.pending.entries()) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error(message));
+      this.pending.delete(id);
+    }
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
