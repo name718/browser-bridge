@@ -41,6 +41,13 @@ export class BrowserBridge {
     this.server.on("listening", () => {
       this.logger.info("bridge listening", { port: this.port });
     });
+
+    this.server.on("error", (error) => {
+      this.logger.error("bridge listen failed", {
+        port: this.port,
+        message: error.message
+      });
+    });
   }
 
   getStatus(): BrowserStatus {
