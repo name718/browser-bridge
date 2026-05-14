@@ -8,7 +8,7 @@ import { BRIDGE_URL, EXTENSION_VERSION } from "../shared/config.js";
 
 const PROTOCOL_VERSION = "0.1.0";
 let socket: WebSocket | undefined;
-let reconnectTimer: number | undefined;
+let reconnectTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
 let connected = false;
 
 connect();
@@ -199,12 +199,12 @@ function normalizeTab(tab: chrome.tabs.Tab): BrowserTab {
 
 function scheduleReconnect(): void {
   clearReconnect();
-  reconnectTimer = window.setTimeout(connect, 1500);
+  reconnectTimer = globalThis.setTimeout(connect, 1500);
 }
 
 function clearReconnect(): void {
   if (reconnectTimer !== undefined) {
-    window.clearTimeout(reconnectTimer);
+    globalThis.clearTimeout(reconnectTimer);
     reconnectTimer = undefined;
   }
 }
