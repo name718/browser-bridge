@@ -15,6 +15,7 @@
 - 读取浏览器连接状态。
 - 读取当前活动标签页。
 - 读取页面文本和结构化页面快照。
+- 读取当前选中文本和页面链接。
 - 通过 `elementId`、选择器或文本点击页面元素。
 - 截取当前可视区域截图。
 
@@ -72,4 +73,4 @@ pnpm smoke
 
 ## 安全
 
-第一层安全机制支持通过插件存储配置域名允许列表、拒绝列表，并会拦截高风险点击请求。详情见 [docs/security.md](/Users/didi/Desktop/my-project/browser-bridge-1/docs/security.md)。
+第一层安全机制支持在插件弹窗中配置域名允许列表、拒绝列表、截图开关和高风险点击确认。详情见 [docs/security.md](/Users/didi/Desktop/my-project/browser-bridge-1/docs/security.md)。

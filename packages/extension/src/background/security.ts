@@ -7,6 +7,11 @@ export type SecurityConfig = {
   screenshotEnabled: boolean;
 };
 
+export type RiskCheck = {
+  risky: boolean;
+  reason?: string;
+};
+
 const DEFAULT_SECURITY_CONFIG: SecurityConfig = {
   allowlist: ["http://*", "https://*"],
   denylist: [],
@@ -91,6 +96,21 @@ export async function assertActionAllowed(request: BridgeRequest): Promise<void>
     return;
   }
 
+  const risk = getRequestRisk(request);
+  if (risk.risky) {
+    throw new Error(`USER_CONFIRMATION_REQUIRED: ${risk.reason ?? "高风险浏览器操作需要确认"}`);
+  }
+}
+
+export async function getActionRisk(request: BridgeRequest): Promise<RiskCheck> {
+  const config = await getSecurityConfig();
+  if (!config.blockHighRiskActions || request.tool !== "browser_click") {
+    return { risky: false };
+  }
+  return getRequestRisk(request);
+}
+
+function getRequestRisk(request: BridgeRequest): RiskCheck {
   const text = [
     request.params?.text,
     request.params?.selector,
@@ -100,8 +120,9 @@ export async function assertActionAllowed(request: BridgeRequest): Promise<void>
     .join(" ");
 
   if (HIGH_RISK_TEXT_PATTERNS.some((pattern) => pattern.test(text))) {
-    throw new Error("USER_CONFIRMATION_REQUIRED: 高风险浏览器操作已被拦截");
+    return { risky: true, reason: "点击目标看起来是删除、支付、提交、发送、发布或审批等高风险操作" };
   }
+  return { risky: false };
 }
 
 function matchesAny(url: string, patterns: string[]): boolean {

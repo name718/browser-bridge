@@ -47,6 +47,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type !== "browser_bridge_request") {
+    if (message?.type === "browser_bridge_confirm") {
+      const confirmed = window.confirm(`浏览器桥接需要确认：\n${message.reason ?? "高风险操作"}`);
+      sendResponse({ confirmed });
+      return true;
+    }
     return false;
   }
 
@@ -74,6 +79,10 @@ async function handleRequest(request: BridgeRequest): Promise<unknown> {
       return getVisibleText();
     case "browser_get_page_snapshot":
       return getPageSnapshot();
+    case "browser_get_selected_text":
+      return getSelectedText();
+    case "browser_get_links":
+      return getLinks();
     case "browser_click":
       return clickElement(request.params ?? {});
     case "browser_type":
@@ -87,6 +96,30 @@ async function handleRequest(request: BridgeRequest): Promise<unknown> {
     default:
       throw new Error(`INTERNAL_ERROR: 不支持的页面工具 ${request.tool}`);
   }
+}
+
+function getSelectedText(): { text: string } {
+  return { text: window.getSelection()?.toString() ?? "" };
+}
+
+function getLinks(): { links: Array<{ text?: string; href: string; visible: boolean; rect?: DOMRectInit }> } {
+  const links = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"))
+    .slice(0, 500)
+    .map((link) => {
+      const rect = link.getBoundingClientRect();
+      return {
+        text: getElementText(link),
+        href: link.href,
+        visible: isVisible(link),
+        rect: {
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height
+        }
+      };
+    });
+  return { links };
 }
 
 function getPageSnapshot(): PageSnapshot {
@@ -175,7 +208,7 @@ function findTarget(params: Record<string, unknown>): HTMLElement {
 
 async function clickElement(params: Record<string, unknown>): Promise<{ clicked: boolean }> {
   const element = findTarget(params);
-  if (await isHighRiskBlockingEnabled()) {
+  if (params.__confirmedHighRisk !== true && await isHighRiskBlockingEnabled()) {
     assertElementClickSafe(element);
   }
   element.scrollIntoView({ block: "center", inline: "center" });
@@ -194,7 +227,10 @@ function assertElementClickSafe(element: HTMLElement): void {
     .join(" ");
 
   if (HIGH_RISK_TEXT_PATTERNS.some((pattern) => pattern.test(text))) {
-    throw new Error("USER_CONFIRMATION_REQUIRED: 高风险浏览器操作已被拦截");
+    const confirmed = window.confirm(`浏览器桥接需要确认：\n点击目标看起来是高风险操作。\n\n${text}`);
+    if (!confirmed) {
+      throw new Error("USER_REJECTED: 用户已取消高风险浏览器操作");
+    }
   }
 }
 

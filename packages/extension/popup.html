@@ -12,24 +12,36 @@
         <h1>浏览器桥接</h1>
         <span id="status-dot" class="dot"></span>
       </header>
-      <dl>
-        <div>
+      <dl class="status-list">
+        <div class="row">
           <dt>状态</dt>
           <dd id="status">检查中</dd>
         </div>
-        <div>
+        <div class="row">
           <dt>桥接地址</dt>
           <dd id="bridge-url">-</dd>
         </div>
-        <div>
-          <dt>允许列表</dt>
-          <dd id="allowlist">-</dd>
-        </div>
-        <div>
-          <dt>拒绝列表</dt>
-          <dd id="denylist">-</dd>
-        </div>
       </dl>
+      <form id="security-form">
+        <label>
+          <span>允许列表</span>
+          <textarea id="allowlist" rows="3" spellcheck="false"></textarea>
+        </label>
+        <label>
+          <span>拒绝列表</span>
+          <textarea id="denylist" rows="3" spellcheck="false"></textarea>
+        </label>
+        <label class="check-row">
+          <input id="block-risk" type="checkbox" />
+          <span>高风险点击需要确认</span>
+        </label>
+        <label class="check-row">
+          <input id="screenshot-enabled" type="checkbox" />
+          <span>允许截图</span>
+        </label>
+        <button type="submit">保存配置</button>
+        <p id="save-status"></p>
+      </form>
     </main>
     <script type="module" src="/src/popup/popup.ts"></script>
   </body>

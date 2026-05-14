@@ -29,6 +29,18 @@ export type BrowserScreenshot = {
   dataUrl: string;
 };
 
+export type BrowserLink = {
+  text?: string;
+  href: string;
+  visible: boolean;
+  rect?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+};
+
 export type BrowserElement = {
   elementId: string;
   role: string;

@@ -80,4 +80,10 @@ pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_status
 pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_screenshot --args '{"format":"png"}'
 ```
 
+截图保存到指定文件：
+
+```sh
+pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_screenshot --args '{"format":"png"}' --out /tmp/browser-bridge.png
+```
+
 如果你已经手动启动了 MCP 服务，并且它正在监听 `127.0.0.1:17321`，先停止旧进程再运行冒烟测试。

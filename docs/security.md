@@ -10,6 +10,17 @@
 - 高风险点击会被拦截，例如删除、支付、提交、发送、发布、审批等。
 - 默认允许截图。
 
+## 插件弹窗配置
+
+打开插件弹窗后可以直接配置：
+
+- 允许列表。
+- 拒绝列表。
+- 高风险点击是否需要确认。
+- 是否允许截图。
+
+配置会保存到 `chrome.storage.local`。
+
 ## Chrome 存储配置
 
 插件会从 `chrome.storage.local` 读取安全配置：
@@ -27,12 +38,12 @@ chrome.storage.local.set({
 
 ## 高风险拦截
 
-第一层安全机制会拦截高风险 `browser_click` 请求，并返回：
+第一层安全机制会识别高风险 `browser_click` 请求，并要求用户在页面确认框中确认。用户取消时返回：
 
 ```text
-USER_CONFIRMATION_REQUIRED
+USER_REJECTED
 ```
 
 当前高风险关键词包括 delete、remove、pay、purchase、submit、send、publish、approve、reject，以及常见中文关键词。
 
-当前版本只做拦截，不弹确认框。后续版本应在插件弹窗或页面内浮层中加入明确的用户确认流程。
+当前版本使用页面原生确认框。后续版本可以替换为更清晰的插件浮层确认。

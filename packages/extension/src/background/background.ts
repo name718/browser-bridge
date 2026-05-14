@@ -8,6 +8,7 @@ import { BRIDGE_URL, EXTENSION_VERSION } from "../shared/config.js";
 import {
   assertActionAllowed,
   assertUrlAllowed,
+  getActionRisk,
   getSecurityConfig
 } from "./security.js";
 
@@ -22,6 +23,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "popup_status") {
     void getSecurityConfig().then((security) => {
       sendResponse({ connected, bridgeUrl: BRIDGE_URL, security });
+    });
+    return true;
+  }
+  if (message?.type === "popup_save_security") {
+    void chrome.storage.local.set(message.security ?? {}).then(() => {
+      sendResponse({ ok: true });
     });
     return true;
   }
@@ -108,6 +115,8 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return activateTab(Number(request.params?.tabId));
     case "browser_get_page_text":
     case "browser_get_page_snapshot":
+    case "browser_get_selected_text":
+    case "browser_get_links":
     case "browser_screenshot":
     case "browser_click":
     case "browser_type":
@@ -165,7 +174,7 @@ async function sendToContentScript(request: BridgeRequest): Promise<unknown> {
 
   const tab = await chrome.tabs.get(tabId);
   await assertUrlAllowed(tab.url);
-  await assertActionAllowed(request);
+  const confirmedHighRisk = await confirmHighRiskAction(tabId, request);
 
   if (request.tool === "browser_screenshot") {
     return captureScreenshot(tab, request);
@@ -174,7 +183,14 @@ async function sendToContentScript(request: BridgeRequest): Promise<unknown> {
   await ensureContentScript(tabId);
   const response = await chrome.tabs.sendMessage(tabId, {
     type: "browser_bridge_request",
-    request: { ...request, tabId }
+    request: {
+      ...request,
+      tabId,
+      params: {
+        ...(isRecord(request.params) ? request.params : {}),
+        __confirmedHighRisk: confirmedHighRisk
+      }
+    }
   });
 
   if (!response?.ok) {
@@ -188,6 +204,33 @@ async function sendToContentScript(request: BridgeRequest): Promise<unknown> {
   }
 
   return response.data;
+}
+
+async function confirmHighRiskAction(tabId: number, request: BridgeRequest): Promise<boolean> {
+  try {
+    await assertActionAllowed(request);
+    return false;
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.startsWith("USER_CONFIRMATION_REQUIRED:")) {
+      throw error;
+    }
+  }
+
+  const risk = await getActionRisk(request);
+  const confirmed = await confirmInPage(tabId, risk.reason ?? "高风险浏览器操作需要确认");
+  if (!confirmed) {
+    throw new Error("USER_REJECTED: 用户已取消高风险浏览器操作");
+  }
+  return true;
+}
+
+async function confirmInPage(tabId: number, reason: string): Promise<boolean> {
+  await ensureContentScript(tabId);
+  const response = await chrome.tabs.sendMessage(tabId, {
+    type: "browser_bridge_confirm",
+    reason
+  });
+  return Boolean(response?.confirmed);
 }
 
 async function captureScreenshot(

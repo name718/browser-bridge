@@ -1,6 +1,8 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { createServer } from "node:net";
+import { writeFile, mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -10,6 +12,7 @@ const serverPath = resolve(packageDir, "dist/index.js");
 const bridgePort = Number(process.env.BROWSER_BRIDGE_PORT ?? 17321);
 
 const requestedTool = readArg("--tool");
+const screenshotOut = readArg("--out");
 
 if (!(await isPortAvailable(bridgePort))) {
   process.stderr.write(
@@ -68,7 +71,27 @@ async function callAndWrite(name, args) {
     arguments: args
   });
 
+  if (name === "browser_screenshot") {
+    await saveScreenshotContent(result, screenshotOut);
+  }
+
   write(name, result);
+}
+
+async function saveScreenshotContent(result, outPath) {
+  const image = result.content?.find((item) => item.type === "image");
+  if (!image?.data) {
+    return;
+  }
+
+  const ext = image.mimeType === "image/jpeg" ? "jpg" : "png";
+  const target = outPath ?? resolve(
+    tmpdir(),
+    `browser-bridge-screenshot-${Date.now()}.${ext}`
+  );
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(target, Buffer.from(image.data, "base64"));
+  process.stdout.write(`\n截图已保存：${target}\n`);
 }
 
 function write(label, value) {

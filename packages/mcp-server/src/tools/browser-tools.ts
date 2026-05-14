@@ -86,6 +86,24 @@ export function createBrowserTools(bridge: BrowserBridge): BrowserToolDefinition
       }
     },
     {
+      name: "browser_get_selected_text",
+      description: "返回页面中当前选中的文本。",
+      inputSchema: schema({ tabId: { type: "number" } }),
+      handler: async (args) => {
+        const parsed = optionalTabId.parse(args ?? {});
+        return bridge.call("browser_get_selected_text", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_get_links",
+      description: "返回页面中的链接列表。",
+      inputSchema: schema({ tabId: { type: "number" } }),
+      handler: async (args) => {
+        const parsed = optionalTabId.parse(args ?? {});
+        return bridge.call("browser_get_links", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
       name: "browser_screenshot",
       description: "截取当前标签页或指定标签页的可视区域。",
       inputSchema: schema({

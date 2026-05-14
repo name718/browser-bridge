@@ -1,5 +1,5 @@
 body {
-  min-width: 280px;
+  min-width: 320px;
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #172026;
@@ -34,11 +34,11 @@ h1 {
   background: #1f9d55;
 }
 
-dl {
+.status-list {
   margin: 0;
 }
 
-div {
+.row {
   padding: 10px 0;
   border-top: 1px solid #e2e6ea;
 }
@@ -55,3 +55,48 @@ dd {
   word-break: break-word;
 }
 
+form {
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #e2e6ea;
+}
+
+label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+}
+
+textarea {
+  box-sizing: border-box;
+  width: 100%;
+  resize: vertical;
+  border: 1px solid #c8d0d7;
+  border-radius: 6px;
+  padding: 7px;
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+button {
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: #ffffff;
+  background: #1769aa;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#save-status {
+  min-height: 16px;
+  margin: 0;
+  color: #1f7a4d;
+  font-size: 12px;
+}
