@@ -7,7 +7,8 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm --filter @browser-bridge/shared build && pnpm --filter @browser-bridge/extension typecheck && pnpm --filter @browser-bridge/mcp-server typecheck",
     "dev:server": "pnpm --filter @browser-bridge/mcp-server dev",
-    "build:extension": "pnpm --filter @browser-bridge/extension build"
+    "build:extension": "pnpm --filter @browser-bridge/extension build",
+    "smoke": "pnpm --filter @browser-bridge/mcp-server smoke"
   },
   "devDependencies": {
     "@types/node": "^20.12.12",

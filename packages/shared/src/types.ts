@@ -21,6 +21,14 @@ export type PageSnapshot = {
   elements: BrowserElement[];
 };
 
+export type BrowserScreenshot = {
+  tabId: number;
+  url?: string;
+  title?: string;
+  mimeType: "image/png" | "image/jpeg";
+  dataUrl: string;
+};
+
 export type BrowserElement = {
   elementId: string;
   role: string;
@@ -74,3 +82,8 @@ export type WaitForParams = {
   timeoutMs?: number;
 };
 
+export type ScreenshotParams = {
+  tabId?: number;
+  format?: "png" | "jpeg";
+  quality?: number;
+};

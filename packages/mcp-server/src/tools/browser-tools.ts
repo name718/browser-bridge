@@ -41,6 +41,11 @@ const waitForSchema = optionalTabId.extend({
   timeoutMs: z.number().int().positive().optional()
 });
 
+const screenshotSchema = optionalTabId.extend({
+  format: z.enum(["png", "jpeg"]).optional(),
+  quality: z.number().int().min(0).max(100).optional()
+});
+
 export type BrowserToolDefinition = {
   name: string;
   description: string;
@@ -78,6 +83,19 @@ export function createBrowserTools(bridge: BrowserBridge): BrowserToolDefinition
       handler: async (args) => {
         const parsed = optionalTabId.parse(args ?? {});
         return bridge.call("browser_get_page_snapshot", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_screenshot",
+      description: "Capture the visible viewport of the active tab or a specified tab.",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        format: { type: "string", enum: ["png", "jpeg"] },
+        quality: { type: "number" }
+      }),
+      handler: async (args) => {
+        const parsed = screenshotSchema.parse(args ?? {});
+        return bridge.call("browser_screenshot", parsed, { tabId: parsed.tabId });
       }
     },
     {
@@ -183,4 +201,3 @@ function schema(
     additionalProperties: false
   };
 }
-

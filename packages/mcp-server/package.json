@@ -7,8 +7,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dev": "tsx src/index.ts"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json --noEmit",
+    "dev": "tsx src/index.ts",
+    "smoke": "tsx scripts/smoke-test.ts"
   },
   "dependencies": {
     "@browser-bridge/shared": "workspace:*",
@@ -21,4 +22,3 @@
     "tsx": "^4.15.7"
   }
 }
-

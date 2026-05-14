@@ -49,6 +49,12 @@ pnpm dev:server
 
 The local WebSocket bridge listens on `127.0.0.1:17321`.
 
+Run a local MCP smoke test:
+
+```sh
+pnpm smoke
+```
+
 ## Loading the Chrome Extension
 
 1. Run `pnpm build`.
@@ -58,3 +64,11 @@ The local WebSocket bridge listens on `127.0.0.1:17321`.
 5. Select `packages/extension/dist`.
 
 After the extension is loaded, start the MCP server and open the extension popup to confirm the bridge status.
+
+## MCP Setup
+
+Use [mcp.json](/Users/didi/Desktop/my-project/browser-bridge-1/mcp.json) for MCP clients that accept JSON config. See [docs/mcp-setup.md](/Users/didi/Desktop/my-project/browser-bridge-1/docs/mcp-setup.md) for Codex, Claude, Gemini CLI, and smoke-test notes.
+
+## Security
+
+The first security layer supports domain allowlist/denylist through extension storage and blocks high-risk click requests. See [docs/security.md](/Users/didi/Desktop/my-project/browser-bridge-1/docs/security.md).

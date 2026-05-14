@@ -5,6 +5,11 @@ import {
   type BridgeResponse
 } from "@browser-bridge/shared";
 import { BRIDGE_URL, EXTENSION_VERSION } from "../shared/config.js";
+import {
+  assertActionAllowed,
+  assertUrlAllowed,
+  getSecurityConfig
+} from "./security.js";
 
 const PROTOCOL_VERSION = "0.1.0";
 let socket: WebSocket | undefined;
@@ -15,7 +20,9 @@ connect();
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "popup_status") {
-    sendResponse({ connected, bridgeUrl: BRIDGE_URL });
+    void getSecurityConfig().then((security) => {
+      sendResponse({ connected, bridgeUrl: BRIDGE_URL, security });
+    });
     return true;
   }
   return false;
@@ -101,6 +108,7 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return activateTab(Number(request.params?.tabId));
     case "browser_get_page_text":
     case "browser_get_page_snapshot":
+    case "browser_screenshot":
     case "browser_click":
     case "browser_type":
     case "browser_clear":
@@ -129,6 +137,7 @@ async function openUrl(url: string): Promise<BrowserTab> {
   if (!url) {
     throw new Error("INVALID_PARAMS: url is required");
   }
+  await assertUrlAllowed(url);
   const tab = await chrome.tabs.create({ url, active: true });
   return normalizeTab(tab);
 }
@@ -154,6 +163,14 @@ async function sendToContentScript(request: BridgeRequest): Promise<unknown> {
     throw new Error("TAB_NOT_FOUND: Missing tab id");
   }
 
+  const tab = await chrome.tabs.get(tabId);
+  await assertUrlAllowed(tab.url);
+  await assertActionAllowed(request);
+
+  if (request.tool === "browser_screenshot") {
+    return captureScreenshot(tab, request);
+  }
+
   await ensureContentScript(tabId);
   const response = await chrome.tabs.sendMessage(tabId, {
     type: "browser_bridge_request",
@@ -171,6 +188,35 @@ async function sendToContentScript(request: BridgeRequest): Promise<unknown> {
   }
 
   return response.data;
+}
+
+async function captureScreenshot(
+  tab: chrome.tabs.Tab,
+  request: BridgeRequest
+): Promise<Record<string, unknown>> {
+  if (!tab.id) {
+    throw new Error("TAB_NOT_FOUND: Tab has no id");
+  }
+
+  const params = isRecord(request.params) ? request.params : {};
+  const requestedFormat = params.format === "jpeg" ? "jpeg" : "png";
+  const quality = typeof params.quality === "number" ? params.quality : undefined;
+  await chrome.tabs.update(tab.id, { active: true });
+  if (tab.windowId) {
+    await chrome.windows.update(tab.windowId, { focused: true });
+  }
+  const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+    format: requestedFormat,
+    quality
+  });
+
+  return {
+    tabId: tab.id,
+    url: tab.url,
+    title: tab.title,
+    mimeType: requestedFormat === "jpeg" ? "image/jpeg" : "image/png",
+    dataUrl
+  };
 }
 
 async function ensureContentScript(tabId: number): Promise<void> {

@@ -3,6 +3,7 @@ export type BridgeTool =
   | "browser_get_active_tab"
   | "browser_get_page_text"
   | "browser_get_page_snapshot"
+  | "browser_screenshot"
   | "browser_click"
   | "browser_list_tabs"
   | "browser_open_url"
@@ -68,4 +69,3 @@ export type BridgeEvent =
   | { type: "heartbeat"; at: string };
 
 export const PROTOCOL_VERSION = "0.1.0";
-

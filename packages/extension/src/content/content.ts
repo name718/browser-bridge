@@ -16,6 +16,30 @@ const ACTIONABLE_SELECTOR = [
   "[contenteditable='true']"
 ].join(",");
 
+const HIGH_RISK_TEXT_PATTERNS = [
+  /delete/i,
+  /remove/i,
+  /destroy/i,
+  /drop/i,
+  /pay/i,
+  /purchase/i,
+  /submit/i,
+  /send/i,
+  /publish/i,
+  /approve/i,
+  /reject/i,
+  /删除/,
+  /移除/,
+  /支付/,
+  /购买/,
+  /提交/,
+  /发送/,
+  /发布/,
+  /审批/,
+  /通过/,
+  /拒绝/
+];
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "browser_bridge_ping") {
     sendResponse({ ok: true });
@@ -149,11 +173,36 @@ function findTarget(params: Record<string, unknown>): HTMLElement {
   return element;
 }
 
-function clickElement(params: Record<string, unknown>): { clicked: boolean } {
+async function clickElement(params: Record<string, unknown>): Promise<{ clicked: boolean }> {
   const element = findTarget(params);
+  if (await isHighRiskBlockingEnabled()) {
+    assertElementClickSafe(element);
+  }
   element.scrollIntoView({ block: "center", inline: "center" });
   element.click();
   return { clicked: true };
+}
+
+function assertElementClickSafe(element: HTMLElement): void {
+  const text = [
+    getElementText(element),
+    element.getAttribute("aria-label"),
+    element.getAttribute("title"),
+    element.getAttribute("value")
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+
+  if (HIGH_RISK_TEXT_PATTERNS.some((pattern) => pattern.test(text))) {
+    throw new Error("USER_CONFIRMATION_REQUIRED: High-risk browser action was blocked");
+  }
+}
+
+async function isHighRiskBlockingEnabled(): Promise<boolean> {
+  const stored = await chrome.storage.local.get("blockHighRiskActions");
+  return typeof stored.blockHighRiskActions === "boolean"
+    ? stored.blockHighRiskActions
+    : true;
 }
 
 function typeIntoElement(params: Record<string, unknown>): { typed: boolean } {

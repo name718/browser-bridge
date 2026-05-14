@@ -51,6 +51,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     const result = await tool.handler(request.params.arguments ?? {});
+    if (request.params.name === "browser_screenshot") {
+      return formatScreenshotResult(result);
+    }
     return {
       content: [
         {
@@ -78,3 +81,48 @@ const transport = new StdioServerTransport();
 await server.connect(transport);
 logger.info("mcp server started", { bridgePort });
 
+function formatScreenshotResult(result: unknown): {
+  content: Array<
+    | { type: "text"; text: string }
+    | { type: "image"; data: string; mimeType: string }
+  >;
+} {
+  if (!isRecord(result) || typeof result.dataUrl !== "string") {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }
+      ]
+    };
+  }
+
+  const [header, data] = result.dataUrl.split(",", 2);
+  const mimeType = typeof result.mimeType === "string"
+    ? result.mimeType
+    : header.match(/^data:(.*);base64$/)?.[1] ?? "image/png";
+
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          tabId: result.tabId,
+          url: result.url,
+          title: result.title,
+          mimeType
+        }, null, 2)
+      },
+      {
+        type: "image",
+        data,
+        mimeType
+      }
+    ]
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
