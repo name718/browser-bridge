@@ -129,6 +129,26 @@ pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_get_audit_log -
 pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_screenshot --args '{"format":"png"}'
 ```
 
+执行结构化浏览器步骤：
+
+```sh
+pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_run_steps --args '{"steps":[{"action":"open","url":"https://example.com"},{"action":"waitFor","text":"Example Domain","timeoutMs":5000},{"action":"getText"}],"stopOnError":true}'
+```
+
+`browser_run_steps` 支持的动作：
+
+- `open`：打开 URL。
+- `activateTab`：激活指定标签页。
+- `click`：按 `target`、文本、选择器等点击元素。
+- `type`：向输入框输入 `value`。
+- `clear`：清空输入框。
+- `scroll`：滚动页面。
+- `waitFor`：等待元素或文本出现。
+- `getText`：读取页面可见文本。
+- `snapshot`：读取页面文本和可操作元素。
+- `screenshot`：截图，批量结果里只返回截图元信息。
+- `sleep`：等待一段时间。
+
 截图保存到指定文件：
 
 ```sh

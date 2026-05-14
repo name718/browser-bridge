@@ -63,6 +63,51 @@ const screenshotSchema = optionalTabId.extend({
   quality: z.number().int().min(0).max(100).optional()
 });
 
+const stepTargetSchema = z.object({
+  elementId: z.string().optional(),
+  selector: z.string().optional(),
+  text: z.string().optional(),
+  role: z.string().optional(),
+  ariaLabel: z.string().optional(),
+  placeholder: z.string().optional(),
+  href: z.string().optional()
+}).partial();
+
+const runStepSchema = stepTargetSchema.extend({
+  action: z.enum([
+    "open",
+    "activateTab",
+    "click",
+    "type",
+    "clear",
+    "scroll",
+    "waitFor",
+    "getText",
+    "snapshot",
+    "screenshot",
+    "sleep"
+  ]),
+  description: z.string().optional(),
+  tabId: z.number().int().positive().optional(),
+  target: stepTargetSchema.optional(),
+  url: z.string().url().optional(),
+  value: z.string().optional(),
+  direction: z.enum(["up", "down", "left", "right"]).optional(),
+  amount: z.number().positive().optional(),
+  timeoutMs: z.number().int().positive().optional(),
+  delayMs: z.number().int().nonnegative().optional(),
+  format: z.enum(["png", "jpeg"]).optional(),
+  quality: z.number().int().min(0).max(100).optional()
+});
+
+const runStepsSchema = optionalTabId.extend({
+  steps: z.array(runStepSchema).min(1).max(50),
+  stopOnError: z.boolean().optional(),
+  delayMs: z.number().int().nonnegative().optional(),
+  timeoutMs: z.number().int().positive().optional(),
+  screenshotOnError: z.boolean().optional()
+});
+
 export type BrowserToolDefinition = {
   name: string;
   description: string;
@@ -235,6 +280,54 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
           timeoutMs: parsed.timeoutMs
         });
       }
+    },
+    {
+      name: "browser_run_steps",
+      description: "按顺序执行结构化浏览器操作步骤。支持 open、click、type、clear、scroll、waitFor、getText、snapshot、screenshot、sleep 等动作。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        stopOnError: { type: "boolean" },
+        delayMs: { type: "number" },
+        timeoutMs: { type: "number" },
+        screenshotOnError: { type: "boolean" },
+        steps: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              action: {
+                type: "string",
+                enum: ["open", "activateTab", "click", "type", "clear", "scroll", "waitFor", "getText", "snapshot", "screenshot", "sleep"]
+              },
+              description: { type: "string" },
+              tabId: { type: "number" },
+              target: {
+                type: "object",
+                properties: stepTargetProperties(),
+                additionalProperties: false
+              },
+              url: { type: "string" },
+              value: { type: "string" },
+              direction: { type: "string", enum: ["up", "down", "left", "right"] },
+              amount: { type: "number" },
+              timeoutMs: { type: "number" },
+              delayMs: { type: "number" },
+              format: { type: "string", enum: ["png", "jpeg"] },
+              quality: { type: "number" },
+              ...stepTargetProperties()
+            },
+            required: ["action"],
+            additionalProperties: false
+          }
+        }
+      }, ["steps"]),
+      handler: async (args) => {
+        const parsed = runStepsSchema.parse(args ?? {});
+        return bridge.call("browser_run_steps", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: parsed.timeoutMs
+        });
+      }
     }
   ];
 }
@@ -248,5 +341,17 @@ function schema(
     properties,
     required,
     additionalProperties: false
+  };
+}
+
+function stepTargetProperties(): Record<string, unknown> {
+  return {
+    elementId: { type: "string" },
+    selector: { type: "string" },
+    text: { type: "string" },
+    role: { type: "string" },
+    ariaLabel: { type: "string" },
+    placeholder: { type: "string" },
+    href: { type: "string" }
   };
 }

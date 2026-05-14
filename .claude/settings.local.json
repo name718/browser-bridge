@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "mcp__browser-bridge__browser_run_steps",
+      "mcp__browser-bridge__browser_get_page_text",
+      "mcp__browser-bridge__browser_get_page_snapshot",
+      "mcp__browser-bridge__browser_click"
     ]
   }
 }

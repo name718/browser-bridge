@@ -72,7 +72,7 @@ export class DaemonBridgeClient {
       bridgeUrl: `ws://127.0.0.1:${this.bridgePort}`
     });
 
-    const deadline = Date.now() + 3_000;
+    const deadline = Date.now() + 5_000;
     while (Date.now() < deadline) {
       if (await this.isDaemonReady()) {
         return;
@@ -85,7 +85,7 @@ export class DaemonBridgeClient {
 
   private async isDaemonReady(): Promise<boolean> {
     try {
-      await this.request("/status", { method: "GET", timeoutMs: 500 });
+      await this.request("/status", { method: "GET", timeoutMs: 2_000 });
       return true;
     } catch {
       return false;
@@ -126,4 +126,3 @@ function delay(ms: number): Promise<void> {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
-

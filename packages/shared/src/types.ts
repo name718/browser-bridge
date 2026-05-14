@@ -115,3 +115,71 @@ export type ScreenshotParams = {
   format?: "png" | "jpeg";
   quality?: number;
 };
+
+export type BrowserStepAction =
+  | "open"
+  | "activateTab"
+  | "click"
+  | "type"
+  | "clear"
+  | "scroll"
+  | "waitFor"
+  | "getText"
+  | "snapshot"
+  | "screenshot"
+  | "sleep";
+
+export type BrowserStepTarget = {
+  elementId?: string;
+  selector?: string;
+  text?: string;
+  role?: string;
+  ariaLabel?: string;
+  placeholder?: string;
+  href?: string;
+};
+
+export type BrowserStep = BrowserStepTarget & {
+  action: BrowserStepAction;
+  description?: string;
+  tabId?: number;
+  target?: BrowserStepTarget;
+  url?: string;
+  value?: string;
+  direction?: "up" | "down" | "left" | "right";
+  amount?: number;
+  timeoutMs?: number;
+  delayMs?: number;
+  format?: "png" | "jpeg";
+  quality?: number;
+};
+
+export type BrowserRunStepsParams = {
+  steps: BrowserStep[];
+  tabId?: number;
+  stopOnError?: boolean;
+  delayMs?: number;
+  timeoutMs?: number;
+  screenshotOnError?: boolean;
+};
+
+export type BrowserStepResult = {
+  index: number;
+  action: BrowserStepAction;
+  description?: string;
+  ok: boolean;
+  elapsedMs: number;
+  tabId?: number;
+  data?: unknown;
+  error?: {
+    code: string;
+    message: string;
+  };
+};
+
+export type BrowserRunStepsResult = {
+  ok: boolean;
+  stoppedAt?: number;
+  tabId?: number;
+  results: BrowserStepResult[];
+};

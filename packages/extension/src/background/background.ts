@@ -1,5 +1,9 @@
 import {
   type BrowserTab,
+  type BrowserRunStepsResult,
+  type BrowserStep,
+  type BrowserStepAction,
+  type BrowserStepResult,
   type BridgeErrorCode,
   type BridgeRequest,
   type BridgeResponse
@@ -97,6 +101,8 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return sendToContentScript(request);
     case "browser_get_audit_log":
       return getAuditLog(typeof request.params?.limit === "number" ? request.params.limit : 20);
+    case "browser_run_steps":
+      return runSteps(request);
     case "browser_screenshot":
     case "browser_click":
     case "browser_type":
@@ -106,6 +112,120 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return sendToContentScript(request);
     default:
       throw new Error(`INTERNAL_ERROR: 不支持的工具 ${request.tool}`);
+  }
+}
+
+async function runSteps(request: BridgeRequest): Promise<BrowserRunStepsResult> {
+  const params = isRecord(request.params) ? request.params : {};
+  const steps = Array.isArray(params.steps) ? params.steps : undefined;
+  if (!steps?.length) {
+    throw new Error("INVALID_PARAMS: steps 参数必填");
+  }
+  if (steps.length > 50) {
+    throw new Error("INVALID_PARAMS: steps 最多支持 50 步");
+  }
+
+  let currentTabId = request.tabId ?? numberParam(params, "tabId");
+  const stopOnError = params.stopOnError !== false;
+  const defaultDelayMs = numberParam(params, "delayMs") ?? 0;
+  const screenshotOnError = params.screenshotOnError === true;
+  const results: BrowserStepResult[] = [];
+
+  for (const [index, rawStep] of steps.entries()) {
+    if (!isRecord(rawStep)) {
+      const result = makeStepError(index, "sleep", undefined, "INVALID_PARAMS", "步骤必须是对象", 0, currentTabId);
+      results.push(result);
+      if (stopOnError) {
+        return { ok: false, stoppedAt: index, tabId: currentTabId, results };
+      }
+      continue;
+    }
+
+    const startedAt = Date.now();
+    let action: BrowserStepAction = "sleep";
+    const description = stringParam(rawStep, "description");
+    try {
+      action = parseStepAction(rawStep.action);
+      const step = rawStep as BrowserStep;
+      const data = await runStep(step, currentTabId);
+      currentTabId = extractTabId(data) ?? numberParam(rawStep, "tabId") ?? currentTabId;
+      results.push({
+        index,
+        action,
+        description,
+        ok: true,
+        elapsedMs: Date.now() - startedAt,
+        tabId: currentTabId,
+        data: sanitizeStepData(action, data)
+      });
+
+      const delayMs = numberParam(rawStep, "delayMs") ?? defaultDelayMs;
+      if (delayMs > 0) {
+        await delay(delayMs);
+      }
+    } catch (error) {
+      const { code, message } = normalizeError(error);
+      const errorScreenshot = screenshotOnError
+        ? await takeErrorScreenshot(currentTabId)
+        : undefined;
+      results.push(makeStepError(
+        index,
+        action,
+        description,
+        code,
+        message,
+        Date.now() - startedAt,
+        currentTabId,
+        errorScreenshot
+      ));
+      if (stopOnError) {
+        return { ok: false, stoppedAt: index, tabId: currentTabId, results };
+      }
+    }
+  }
+
+  return { ok: results.every((result) => result.ok), tabId: currentTabId, results };
+}
+
+async function runStep(step: BrowserStep, currentTabId?: number): Promise<unknown> {
+  switch (step.action) {
+    case "open":
+      if (!step.url) {
+        throw new Error("INVALID_PARAMS: open 步骤需要 url");
+      }
+      return openUrl(step.url);
+    case "activateTab":
+      return activateTab(requiredTabId(step, currentTabId));
+    case "click":
+      return sendToContentScript(stepRequest("browser_click", step, currentTabId, targetParams(step)));
+    case "type":
+      return sendToContentScript(stepRequest("browser_type", step, currentTabId, {
+        ...targetParams(step),
+        text: step.value ?? step.text
+      }));
+    case "clear":
+      return sendToContentScript(stepRequest("browser_clear", step, currentTabId, targetParams(step)));
+    case "scroll":
+      return sendToContentScript(stepRequest("browser_scroll", step, currentTabId, {
+        direction: step.direction ?? "down",
+        amount: step.amount
+      }));
+    case "waitFor":
+      return sendToContentScript(stepRequest("browser_wait_for", step, currentTabId, targetParams(step)));
+    case "getText":
+      return sendToContentScript(stepRequest("browser_get_page_text", step, currentTabId, {}));
+    case "snapshot":
+      return sendToContentScript(stepRequest("browser_get_page_snapshot", step, currentTabId, {}));
+    case "screenshot":
+      return sendToContentScript(stepRequest("browser_screenshot", step, currentTabId, {
+        format: step.format,
+        quality: step.quality
+      }));
+    case "sleep":
+      await delay(step.delayMs ?? step.timeoutMs ?? 500);
+      return { slept: true };
+    default:
+      throw new Error(`INVALID_PARAMS: 不支持的步骤动作 ${(step as BrowserStep).action}`);
   }
 }
 
@@ -283,8 +403,151 @@ function normalizeTab(tab: chrome.tabs.Tab): BrowserTab {
   };
 }
 
+function parseStepAction(value: unknown): BrowserStepAction {
+  const allowed: BrowserStepAction[] = [
+    "open",
+    "activateTab",
+    "click",
+    "type",
+    "clear",
+    "scroll",
+    "waitFor",
+    "getText",
+    "snapshot",
+    "screenshot",
+    "sleep"
+  ];
+  if (typeof value === "string" && allowed.includes(value as BrowserStepAction)) {
+    return value as BrowserStepAction;
+  }
+  throw new Error("INVALID_PARAMS: action 不支持或缺失");
+}
+
+function targetParams(step: BrowserStep): Record<string, unknown> {
+  const target = isRecord(step.target) ? step.target : {};
+  return {
+    elementId: step.elementId ?? target.elementId,
+    selector: step.selector ?? target.selector,
+    text: step.text ?? target.text,
+    role: step.role ?? target.role,
+    ariaLabel: step.ariaLabel ?? target.ariaLabel,
+    placeholder: step.placeholder ?? target.placeholder,
+    href: step.href ?? target.href
+  };
+}
+
+function stepRequest(
+  tool: BridgeRequest["tool"],
+  step: BrowserStep,
+  currentTabId: number | undefined,
+  params: Record<string, unknown>
+): BridgeRequest {
+  return {
+    id: crypto.randomUUID(),
+    tool,
+    tabId: step.tabId ?? currentTabId,
+    timeoutMs: step.timeoutMs,
+    params: {
+      ...params,
+      tabId: step.tabId ?? currentTabId,
+      timeoutMs: step.timeoutMs
+    }
+  };
+}
+
+function requiredTabId(step: BrowserStep, currentTabId: number | undefined): number {
+  const tabId = step.tabId ?? currentTabId;
+  if (!tabId) {
+    throw new Error("INVALID_PARAMS: activateTab 步骤需要 tabId");
+  }
+  return tabId;
+}
+
+function extractTabId(data: unknown): number | undefined {
+  if (isRecord(data) && typeof data.tabId === "number") {
+    return data.tabId;
+  }
+  if (isRecord(data) && typeof data.id === "number") {
+    return data.id;
+  }
+  return undefined;
+}
+
+function sanitizeStepData(action: BrowserStepAction, data: unknown): unknown {
+  if (action === "screenshot" && isRecord(data)) {
+    return {
+      tabId: data.tabId,
+      url: data.url,
+      title: data.title,
+      mimeType: data.mimeType,
+      dataUrlLength: typeof data.dataUrl === "string" ? data.dataUrl.length : undefined
+    };
+  }
+  return data;
+}
+
+function makeStepError(
+  index: number,
+  action: BrowserStepAction,
+  description: string | undefined,
+  code: string,
+  message: string,
+  elapsedMs: number,
+  tabId?: number,
+  data?: unknown
+): BrowserStepResult {
+  return {
+    index,
+    action,
+    description,
+    ok: false,
+    elapsedMs,
+    tabId,
+    data,
+    error: { code, message }
+  };
+}
+
+async function takeErrorScreenshot(tabId?: number): Promise<unknown> {
+  try {
+    const id = tabId ?? (await getActiveTab()).id;
+    const tab = await chrome.tabs.get(id);
+    return sanitizeStepData("screenshot", await captureScreenshot(tab, {
+      id: crypto.randomUUID(),
+      tool: "browser_screenshot",
+      tabId: id,
+      params: { format: "png" }
+    }));
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeError(error: unknown): { code: string; message: string } {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes(": ")) {
+    const [code, detail] = message.split(/: (.*)/s, 2);
+    return { code, message: detail || message };
+  }
+  return { code: "INTERNAL_ERROR", message };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function stringParam(params: Record<string, unknown>, key: string): string | undefined {
+  const value = params[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function numberParam(params: Record<string, unknown>, key: string): number | undefined {
+  const value = params[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function getPopupStatus(): Promise<Record<string, unknown>> {

@@ -14,7 +14,8 @@ export type BridgeTool =
   | "browser_type"
   | "browser_clear"
   | "browser_scroll"
-  | "browser_wait_for";
+  | "browser_wait_for"
+  | "browser_run_steps";
 
 export type BridgeRequest = {
   id: string;
