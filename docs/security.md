@@ -1,18 +1,18 @@
-# Security
+# 安全说明
 
-Browser Bridge uses a local Chrome extension as the browser authority. The MCP server never reads cookies directly and does not execute arbitrary JavaScript.
+浏览器桥接使用本地 Chrome 插件作为浏览器权限入口。MCP 服务不会直接读取 Cookie，也不会执行任意 JavaScript。
 
-## Defaults
+## 默认行为
 
-- Only `http` and `https` pages are supported.
-- Default allowlist is `http://*` and `https://*`.
-- Default denylist is empty.
-- High-risk click actions are blocked when their text, selector, or element id appears risky.
-- Screenshot capture is enabled by default.
+- 只支持 `http` 和 `https` 页面。
+- 默认允许列表是 `http://*` 和 `https://*`。
+- 默认拒绝列表为空。
+- 高风险点击会被拦截，例如删除、支付、提交、发送、发布、审批等。
+- 默认允许截图。
 
-## Chrome Storage Config
+## Chrome 存储配置
 
-The extension reads security settings from `chrome.storage.local`.
+插件会从 `chrome.storage.local` 读取安全配置：
 
 ```js
 chrome.storage.local.set({
@@ -23,17 +23,16 @@ chrome.storage.local.set({
 });
 ```
 
-Patterns support `*` wildcards. A URL is allowed only when it matches the allowlist and does not match the denylist.
+匹配规则支持 `*` 通配符。页面 URL 必须命中允许列表，并且不能命中拒绝列表。
 
-## High-Risk Blocking
+## 高风险拦截
 
-The first security layer blocks risky `browser_click` requests and returns:
+第一层安全机制会拦截高风险 `browser_click` 请求，并返回：
 
 ```text
 USER_CONFIRMATION_REQUIRED
 ```
 
-Current risky patterns include delete, remove, pay, purchase, submit, send, publish, approve, reject, and common Chinese equivalents.
+当前高风险关键词包括 delete、remove、pay、purchase、submit、send、publish、approve、reject，以及常见中文关键词。
 
-The current behavior is blocking-only. A later version should add an explicit user confirmation UI in the extension popup or an in-page overlay.
-
+当前版本只做拦截，不弹确认框。后续版本应在插件弹窗或页面内浮层中加入明确的用户确认流程。

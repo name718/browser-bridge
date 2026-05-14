@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Browser Bridge",
+  "name": "浏览器桥接",
   "version": "0.1.0",
-  "description": "Bridge local AI agents to the user's Chrome browser through a local MCP server.",
+  "description": "通过本地 MCP 服务把 AI 代理连接到用户的 Chrome 浏览器。",
   "permissions": ["activeTab", "tabs", "scripting", "storage"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
@@ -10,7 +10,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Browser Bridge",
+    "default_title": "浏览器桥接",
     "default_popup": "popup.html"
   },
   "content_scripts": [
@@ -21,4 +21,3 @@
     }
   ]
 }
-

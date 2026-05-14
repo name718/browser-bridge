@@ -30,7 +30,7 @@ try {
 
   const tools = await client.listTools();
   const toolNames = tools.tools.map((tool) => tool.name).sort();
-  write("tools", toolNames);
+  write("工具列表", toolNames);
 
   if (requestedTool) {
     await callAndWrite(requestedTool, readJsonArg("--args") ?? {});
@@ -73,8 +73,7 @@ function readJsonArg(name: string): Record<string, unknown> | undefined {
 
   const parsed = JSON.parse(value) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${name} must be a JSON object`);
+    throw new Error(`${name} 必须是 JSON 对象`);
   }
   return parsed as Record<string, unknown>;
 }
-

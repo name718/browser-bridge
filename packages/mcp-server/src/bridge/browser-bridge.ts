@@ -59,7 +59,7 @@ export class BrowserBridge {
   ): Promise<T> {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
-      throw new Error("BROWSER_NOT_CONNECTED: Chrome extension is not connected");
+      throw new Error("BROWSER_NOT_CONNECTED: Chrome 插件未连接");
     }
 
     const id = randomUUID();
@@ -75,7 +75,7 @@ export class BrowserBridge {
     const result = new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`ACTION_TIMEOUT: ${tool} timed out after ${timeoutMs}ms`));
+        reject(new Error(`ACTION_TIMEOUT: ${tool} 在 ${timeoutMs}ms 内未返回`));
       }, timeoutMs);
 
       this.pending.set(id, {
@@ -110,7 +110,7 @@ export class BrowserBridge {
         this.connectedAt = undefined;
         this.extensionVersion = undefined;
       }
-      this.rejectAll("BROWSER_NOT_CONNECTED: Chrome extension disconnected");
+      this.rejectAll("BROWSER_NOT_CONNECTED: Chrome 插件已断开连接");
     });
 
     socket.on("error", (error) => {
@@ -159,7 +159,7 @@ export class BrowserBridge {
     }
 
     const code = response.error?.code ?? "INTERNAL_ERROR";
-    const detail = response.error?.message ?? "Browser bridge request failed";
+    const detail = response.error?.message ?? "浏览器桥接请求失败";
     pending.reject(new Error(`${code}: ${detail}`));
   }
 
@@ -175,4 +175,3 @@ export class BrowserBridge {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
-

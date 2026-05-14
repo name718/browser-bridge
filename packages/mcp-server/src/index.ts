@@ -41,7 +41,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const tool = toolMap.get(request.params.name);
   if (!tool) {
-    throw new Error(`Unknown tool: ${request.params.name}`);
+    throw new Error(`未知工具：${request.params.name}`);
   }
 
   logger.info("tool call", {

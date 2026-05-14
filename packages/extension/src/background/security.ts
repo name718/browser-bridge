@@ -62,21 +62,21 @@ export async function getSecurityConfig(): Promise<SecurityConfig> {
 
 export async function assertUrlAllowed(url: string | undefined): Promise<void> {
   if (!url) {
-    throw new Error("TAB_NOT_FOUND: Tab URL is unavailable");
+    throw new Error("TAB_NOT_FOUND: 标签页 URL 不可用");
   }
 
   const parsed = parseUrl(url);
   if (!parsed || !["http:", "https:"].includes(parsed.protocol)) {
-    throw new Error("UNSUPPORTED_PAGE: Only http and https pages are supported");
+    throw new Error("UNSUPPORTED_PAGE: 仅支持 http 和 https 页面");
   }
 
   const config = await getSecurityConfig();
   if (matchesAny(url, config.denylist)) {
-    throw new Error("DOMAIN_NOT_ALLOWED: URL is denied by Browser Bridge security config");
+    throw new Error("DOMAIN_NOT_ALLOWED: 当前 URL 被浏览器桥接安全配置拒绝");
   }
 
   if (!matchesAny(url, config.allowlist)) {
-    throw new Error("DOMAIN_NOT_ALLOWED: URL is not allowed by Browser Bridge security config");
+    throw new Error("DOMAIN_NOT_ALLOWED: 当前 URL 不在浏览器桥接允许列表中");
   }
 }
 
@@ -84,7 +84,7 @@ export async function assertActionAllowed(request: BridgeRequest): Promise<void>
   const config = await getSecurityConfig();
 
   if (request.tool === "browser_screenshot" && !config.screenshotEnabled) {
-    throw new Error("PERMISSION_DENIED: Screenshots are disabled by Browser Bridge security config");
+    throw new Error("PERMISSION_DENIED: 浏览器桥接安全配置已禁用截图");
   }
 
   if (!config.blockHighRiskActions || request.tool !== "browser_click") {
@@ -100,7 +100,7 @@ export async function assertActionAllowed(request: BridgeRequest): Promise<void>
     .join(" ");
 
   if (HIGH_RISK_TEXT_PATTERNS.some((pattern) => pattern.test(text))) {
-    throw new Error("USER_CONFIRMATION_REQUIRED: High-risk browser action was blocked");
+    throw new Error("USER_CONFIRMATION_REQUIRED: 高风险浏览器操作已被拦截");
   }
 }
 
@@ -134,4 +134,3 @@ function stringArray(value: unknown): string[] | undefined {
   const strings = value.filter((item): item is string => typeof item === "string");
   return strings.length > 0 ? strings : undefined;
 }
-

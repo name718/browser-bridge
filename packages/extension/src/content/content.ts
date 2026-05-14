@@ -85,7 +85,7 @@ async function handleRequest(request: BridgeRequest): Promise<unknown> {
     case "browser_wait_for":
       return waitForElement(request.params ?? {}, request.timeoutMs);
     default:
-      throw new Error(`INTERNAL_ERROR: Unsupported content tool ${request.tool}`);
+      throw new Error(`INTERNAL_ERROR: 不支持的页面工具 ${request.tool}`);
   }
 }
 
@@ -162,13 +162,13 @@ function findTarget(params: Record<string, unknown>): HTMLElement {
     element = findByText(text);
   }
   if (!element || !(element instanceof HTMLElement)) {
-    throw new Error("ELEMENT_NOT_FOUND: Element not found");
+    throw new Error("ELEMENT_NOT_FOUND: 未找到元素");
   }
   if (!isVisible(element)) {
-    throw new Error("ELEMENT_NOT_VISIBLE: Element is not visible");
+    throw new Error("ELEMENT_NOT_VISIBLE: 元素不可见");
   }
   if (isDisabled(element)) {
-    throw new Error("ELEMENT_DISABLED: Element is disabled");
+    throw new Error("ELEMENT_DISABLED: 元素已禁用");
   }
   return element;
 }
@@ -194,7 +194,7 @@ function assertElementClickSafe(element: HTMLElement): void {
     .join(" ");
 
   if (HIGH_RISK_TEXT_PATTERNS.some((pattern) => pattern.test(text))) {
-    throw new Error("USER_CONFIRMATION_REQUIRED: High-risk browser action was blocked");
+    throw new Error("USER_CONFIRMATION_REQUIRED: 高风险浏览器操作已被拦截");
   }
 }
 
@@ -209,7 +209,7 @@ function typeIntoElement(params: Record<string, unknown>): { typed: boolean } {
   const element = findTarget(params);
   const text = stringParam(params, "text");
   if (!text) {
-    throw new Error("INVALID_PARAMS: text is required");
+    throw new Error("INVALID_PARAMS: text 参数必填");
   }
   setElementValue(element, text, false);
   return { typed: true };
@@ -250,7 +250,7 @@ async function waitForElement(
     }
   }
 
-  throw new Error(`ACTION_TIMEOUT: Element not found within ${timeoutMs}ms`);
+  throw new Error(`ACTION_TIMEOUT: ${timeoutMs}ms 内未找到元素`);
 }
 
 function setElementValue(element: HTMLElement, value: string, replace: boolean): void {
@@ -277,7 +277,7 @@ function setElementValue(element: HTMLElement, value: string, replace: boolean):
     return;
   }
 
-  throw new Error("UNSUPPORTED_PAGE: Target element does not accept text input");
+  throw new Error("UNSUPPORTED_PAGE: 目标元素不支持文本输入");
 }
 
 function findByText(text: string): HTMLElement | null {

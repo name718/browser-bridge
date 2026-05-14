@@ -20,7 +20,7 @@ void chrome.runtime.sendMessage({ type: "popup_status" }, (status: PopupStatus) 
     return;
   }
 
-  statusText.textContent = status?.connected ? "Connected" : "Disconnected";
+  statusText.textContent = status?.connected ? "已连接" : "未连接";
   bridgeUrl.textContent = status?.bridgeUrl ?? "-";
   allowlist.textContent = status?.security?.allowlist.join(", ") ?? "-";
   denylist.textContent = status?.security?.denylist.join(", ") || "-";

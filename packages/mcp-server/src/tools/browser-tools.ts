@@ -57,19 +57,19 @@ export function createBrowserTools(bridge: BrowserBridge): BrowserToolDefinition
   return [
     {
       name: "browser_status",
-      description: "Return whether the Chrome extension is connected to the local Browser Bridge.",
+      description: "返回 Chrome 插件是否已连接到本地浏览器桥接服务。",
       inputSchema: schema({}),
       handler: async () => bridge.getStatus()
     },
     {
       name: "browser_get_active_tab",
-      description: "Return the active Chrome tab.",
+      description: "返回当前活动的 Chrome 标签页。",
       inputSchema: schema({}),
       handler: async () => bridge.call("browser_get_active_tab")
     },
     {
       name: "browser_get_page_text",
-      description: "Return visible text from the active tab or a specified tab.",
+      description: "返回当前标签页或指定标签页中的可见文本。",
       inputSchema: schema({ tabId: { type: "number" } }),
       handler: async (args) => {
         const parsed = optionalTabId.parse(args ?? {});
@@ -78,7 +78,7 @@ export function createBrowserTools(bridge: BrowserBridge): BrowserToolDefinition
     },
     {
       name: "browser_get_page_snapshot",
-      description: "Return title, URL, visible text, and actionable elements from a page.",
+      description: "返回页面标题、URL、可见文本和可操作元素列表。",
       inputSchema: schema({ tabId: { type: "number" } }),
       handler: async (args) => {
         const parsed = optionalTabId.parse(args ?? {});
@@ -87,7 +87,7 @@ export function createBrowserTools(bridge: BrowserBridge): BrowserToolDefinition
     },
     {
       name: "browser_screenshot",
-      description: "Capture the visible viewport of the active tab or a specified tab.",
+      description: "截取当前标签页或指定标签页的可视区域。",
       inputSchema: schema({
         tabId: { type: "number" },
         format: { type: "string", enum: ["png", "jpeg"] },
@@ -100,7 +100,7 @@ export function createBrowserTools(bridge: BrowserBridge): BrowserToolDefinition
     },
     {
       name: "browser_click",
-      description: "Click an element by elementId, selector, or visible text.",
+      description: "通过 elementId、选择器或可见文本点击页面元素。",
       inputSchema: schema({
         tabId: { type: "number" },
         elementId: { type: "string" },
@@ -114,25 +114,25 @@ export function createBrowserTools(bridge: BrowserBridge): BrowserToolDefinition
     },
     {
       name: "browser_list_tabs",
-      description: "List open Chrome tabs.",
+      description: "列出已打开的 Chrome 标签页。",
       inputSchema: schema({}),
       handler: async () => bridge.call("browser_list_tabs")
     },
     {
       name: "browser_open_url",
-      description: "Open a URL in a new Chrome tab.",
+      description: "在新的 Chrome 标签页中打开 URL。",
       inputSchema: schema({ url: { type: "string" } }, ["url"]),
       handler: async (args) => bridge.call("browser_open_url", openUrlSchema.parse(args ?? {}))
     },
     {
       name: "browser_activate_tab",
-      description: "Activate a Chrome tab by tabId.",
+      description: "通过 tabId 激活指定 Chrome 标签页。",
       inputSchema: schema({ tabId: { type: "number" } }, ["tabId"]),
       handler: async (args) => bridge.call("browser_activate_tab", activateTabSchema.parse(args ?? {}))
     },
     {
       name: "browser_type",
-      description: "Type text into an element by elementId or selector.",
+      description: "通过 elementId 或选择器向页面元素输入文本。",
       inputSchema: schema({
         tabId: { type: "number" },
         elementId: { type: "string" },
@@ -146,7 +146,7 @@ export function createBrowserTools(bridge: BrowserBridge): BrowserToolDefinition
     },
     {
       name: "browser_clear",
-      description: "Clear an input element by elementId or selector.",
+      description: "通过 elementId 或选择器清空输入元素。",
       inputSchema: schema({
         tabId: { type: "number" },
         elementId: { type: "string" },
@@ -159,7 +159,7 @@ export function createBrowserTools(bridge: BrowserBridge): BrowserToolDefinition
     },
     {
       name: "browser_scroll",
-      description: "Scroll the page up, down, left, or right.",
+      description: "向上、向下、向左或向右滚动页面。",
       inputSchema: schema({
         tabId: { type: "number" },
         direction: { type: "string", enum: ["up", "down", "left", "right"] },
@@ -172,7 +172,7 @@ export function createBrowserTools(bridge: BrowserBridge): BrowserToolDefinition
     },
     {
       name: "browser_wait_for",
-      description: "Wait for an element matching a selector or visible text.",
+      description: "等待匹配选择器或可见文本的元素出现。",
       inputSchema: schema({
         tabId: { type: "number" },
         selector: { type: "string" },

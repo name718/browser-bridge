@@ -116,14 +116,14 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
     case "browser_wait_for":
       return sendToContentScript(request);
     default:
-      throw new Error(`INTERNAL_ERROR: Unsupported tool ${request.tool}`);
+      throw new Error(`INTERNAL_ERROR: 不支持的工具 ${request.tool}`);
   }
 }
 
 async function getActiveTab(): Promise<BrowserTab> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) {
-    throw new Error("TAB_NOT_ACTIVE: No active tab found");
+    throw new Error("TAB_NOT_ACTIVE: 未找到活动标签页");
   }
   return normalizeTab(tab);
 }
@@ -135,7 +135,7 @@ async function listTabs(): Promise<BrowserTab[]> {
 
 async function openUrl(url: string): Promise<BrowserTab> {
   if (!url) {
-    throw new Error("INVALID_PARAMS: url is required");
+    throw new Error("INVALID_PARAMS: url 参数必填");
   }
   await assertUrlAllowed(url);
   const tab = await chrome.tabs.create({ url, active: true });
@@ -144,11 +144,11 @@ async function openUrl(url: string): Promise<BrowserTab> {
 
 async function activateTab(tabId: number): Promise<BrowserTab> {
   if (!Number.isFinite(tabId)) {
-    throw new Error("INVALID_PARAMS: tabId is required");
+    throw new Error("INVALID_PARAMS: tabId 参数必填");
   }
   const tab = await chrome.tabs.update(tabId, { active: true });
   if (!tab) {
-    throw new Error("TAB_NOT_FOUND: Tab not found");
+    throw new Error("TAB_NOT_FOUND: 未找到标签页");
   }
   if (tab.windowId) {
     await chrome.windows.update(tab.windowId, { focused: true });
@@ -160,7 +160,7 @@ async function sendToContentScript(request: BridgeRequest): Promise<unknown> {
   const requestedTabId = request.tabId ?? Number(request.params?.tabId);
   const tabId = requestedTabId || (await getActiveTab()).id;
   if (!tabId) {
-    throw new Error("TAB_NOT_FOUND: Missing tab id");
+    throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
   }
 
   const tab = await chrome.tabs.get(tabId);
@@ -179,7 +179,7 @@ async function sendToContentScript(request: BridgeRequest): Promise<unknown> {
 
   if (!response?.ok) {
     const code = response?.error?.code ?? "INTERNAL_ERROR";
-    const message = response?.error?.message ?? "Content script request failed";
+    const message = response?.error?.message ?? "页面脚本请求失败";
     throw new Error(`${code}: ${message}`);
   }
 
@@ -195,7 +195,7 @@ async function captureScreenshot(
   request: BridgeRequest
 ): Promise<Record<string, unknown>> {
   if (!tab.id) {
-    throw new Error("TAB_NOT_FOUND: Tab has no id");
+    throw new Error("TAB_NOT_FOUND: 标签页没有 ID");
   }
 
   const params = isRecord(request.params) ? request.params : {};
@@ -232,7 +232,7 @@ async function ensureContentScript(tabId: number): Promise<void> {
 
 function normalizeTab(tab: chrome.tabs.Tab): BrowserTab {
   if (!tab.id) {
-    throw new Error("TAB_NOT_FOUND: Tab has no id");
+    throw new Error("TAB_NOT_FOUND: 标签页没有 ID");
   }
   return {
     id: tab.id,
