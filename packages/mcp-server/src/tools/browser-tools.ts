@@ -8,18 +8,26 @@ const optionalTabId = z.object({
 const clickSchema = optionalTabId.extend({
   elementId: z.string().optional(),
   selector: z.string().optional(),
-  text: z.string().optional()
+  text: z.string().optional(),
+  role: z.string().optional(),
+  ariaLabel: z.string().optional(),
+  placeholder: z.string().optional(),
+  href: z.string().optional()
 });
 
 const typeSchema = optionalTabId.extend({
   elementId: z.string().optional(),
   selector: z.string().optional(),
+  ariaLabel: z.string().optional(),
+  placeholder: z.string().optional(),
   text: z.string()
 });
 
 const clearSchema = optionalTabId.extend({
   elementId: z.string().optional(),
-  selector: z.string().optional()
+  selector: z.string().optional(),
+  placeholder: z.string().optional(),
+  ariaLabel: z.string().optional()
 });
 
 const openUrlSchema = z.object({
@@ -104,6 +112,12 @@ export function createBrowserTools(bridge: BrowserBridge): BrowserToolDefinition
       }
     },
     {
+      name: "browser_get_audit_log",
+      description: "返回最近的浏览器桥接审计日志。",
+      inputSchema: schema({ limit: { type: "number" } }),
+      handler: async (args) => bridge.call("browser_get_audit_log", (args ?? {}) as Record<string, unknown>)
+    },
+    {
       name: "browser_screenshot",
       description: "截取当前标签页或指定标签页的可视区域。",
       inputSchema: schema({
@@ -123,7 +137,11 @@ export function createBrowserTools(bridge: BrowserBridge): BrowserToolDefinition
         tabId: { type: "number" },
         elementId: { type: "string" },
         selector: { type: "string" },
-        text: { type: "string" }
+        text: { type: "string" },
+        role: { type: "string" },
+        ariaLabel: { type: "string" },
+        placeholder: { type: "string" },
+        href: { type: "string" }
       }),
       handler: async (args) => {
         const parsed = clickSchema.parse(args ?? {});
@@ -155,6 +173,8 @@ export function createBrowserTools(bridge: BrowserBridge): BrowserToolDefinition
         tabId: { type: "number" },
         elementId: { type: "string" },
         selector: { type: "string" },
+        ariaLabel: { type: "string" },
+        placeholder: { type: "string" },
         text: { type: "string" }
       }, ["text"]),
       handler: async (args) => {
@@ -168,7 +188,9 @@ export function createBrowserTools(bridge: BrowserBridge): BrowserToolDefinition
       inputSchema: schema({
         tabId: { type: "number" },
         elementId: { type: "string" },
-        selector: { type: "string" }
+        selector: { type: "string" },
+        ariaLabel: { type: "string" },
+        placeholder: { type: "string" }
       }),
       handler: async (args) => {
         const parsed = clearSchema.parse(args ?? {});

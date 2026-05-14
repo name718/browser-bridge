@@ -18,6 +18,7 @@
 - 读取当前选中文本和页面链接。
 - 通过 `elementId`、选择器或文本点击页面元素。
 - 截取当前可视区域截图。
+- 查看最近的浏览器操作审计日志。
 
 暂不支持任意 JavaScript 执行、Cookie 读取、网络拦截等高风险能力。
 
@@ -73,4 +74,4 @@ pnpm smoke
 
 ## 安全
 
-第一层安全机制支持在插件弹窗中配置域名允许列表、拒绝列表、截图开关和高风险点击确认。详情见 [docs/security.md](/Users/didi/Desktop/my-project/browser-bridge-1/docs/security.md)。
+第一层安全机制支持在插件弹窗中配置域名允许列表、拒绝列表、截图开关和高风险点击确认。高风险确认会显示页面内浮层，最近操作会写入审计日志。详情见 [docs/security.md](/Users/didi/Desktop/my-project/browser-bridge-1/docs/security.md)。

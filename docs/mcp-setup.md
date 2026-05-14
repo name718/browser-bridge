@@ -74,6 +74,12 @@ pnpm smoke
 pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_status
 ```
 
+查看审计日志：
+
+```sh
+pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_get_audit_log --args '{"limit":10}'
+```
+
 调用带参数的工具：
 
 ```sh

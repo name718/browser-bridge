@@ -61,17 +61,31 @@ export type BrowserElement = {
   };
 };
 
+export type BrowserAuditEntry = {
+  at: string;
+  tool: string;
+  url?: string;
+  ok: boolean;
+  errorCode?: string;
+};
+
 export type ClickParams = {
   tabId?: number;
   elementId?: string;
   selector?: string;
   text?: string;
+  role?: string;
+  ariaLabel?: string;
+  placeholder?: string;
+  href?: string;
 };
 
 export type TypeParams = {
   tabId?: number;
   elementId?: string;
   selector?: string;
+  ariaLabel?: string;
+  placeholder?: string;
   text: string;
 };
 
@@ -79,6 +93,8 @@ export type ClearParams = {
   tabId?: number;
   elementId?: string;
   selector?: string;
+  ariaLabel?: string;
+  placeholder?: string;
 };
 
 export type ScrollParams = {

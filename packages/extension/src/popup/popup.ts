@@ -7,6 +7,15 @@ type PopupStatus = {
     blockHighRiskActions: boolean;
     screenshotEnabled: boolean;
   };
+  audit?: {
+    entries: Array<{
+      at: string;
+      tool: string;
+      url?: string;
+      ok: boolean;
+      errorCode?: string;
+    }>;
+  };
 };
 
 void chrome.runtime.sendMessage({ type: "popup_status" }, (status: PopupStatus) => {
@@ -16,9 +25,10 @@ void chrome.runtime.sendMessage({ type: "popup_status" }, (status: PopupStatus) 
   const denylist = document.querySelector<HTMLTextAreaElement>("#denylist");
   const blockRisk = document.querySelector<HTMLInputElement>("#block-risk");
   const screenshotEnabled = document.querySelector<HTMLInputElement>("#screenshot-enabled");
+  const auditLog = document.querySelector("#audit-log");
   const dot = document.querySelector("#status-dot");
 
-  if (!statusText || !bridgeUrl || !allowlist || !denylist || !blockRisk || !screenshotEnabled || !dot) {
+  if (!statusText || !bridgeUrl || !allowlist || !denylist || !blockRisk || !screenshotEnabled || !auditLog || !dot) {
     return;
   }
 
@@ -29,6 +39,7 @@ void chrome.runtime.sendMessage({ type: "popup_status" }, (status: PopupStatus) 
   blockRisk.checked = status?.security?.blockHighRiskActions ?? true;
   screenshotEnabled.checked = status?.security?.screenshotEnabled ?? true;
   dot.classList.toggle("connected", Boolean(status?.connected));
+  auditLog.replaceChildren(...(status?.audit?.entries ?? []).map(renderAuditItem));
 });
 
 document.querySelector("#security-form")?.addEventListener("submit", (event) => {
@@ -65,4 +76,12 @@ function parseLines(value: string): string[] {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+function renderAuditItem(entry: NonNullable<PopupStatus["audit"]>["entries"][number]): HTMLLIElement {
+  const item = document.createElement("li");
+  const time = new Date(entry.at).toLocaleTimeString();
+  item.textContent = `${time} ${entry.ok ? "成功" : "失败"} ${entry.tool}${entry.errorCode ? ` (${entry.errorCode})` : ""}`;
+  item.title = entry.url ?? "";
+  return item;
 }

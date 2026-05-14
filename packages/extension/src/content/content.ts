@@ -48,8 +48,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type !== "browser_bridge_request") {
     if (message?.type === "browser_bridge_confirm") {
-      const confirmed = window.confirm(`浏览器桥接需要确认：\n${message.reason ?? "高风险操作"}`);
-      sendResponse({ confirmed });
+      void showConfirmationOverlay(String(message.reason ?? "高风险操作"))
+        .then((confirmed) => sendResponse({ confirmed }));
       return true;
     }
     return false;
@@ -179,10 +179,14 @@ function ensureElementId(element: HTMLElement, index: number): string {
   return id;
 }
 
-function findTarget(params: Record<string, unknown>): HTMLElement {
+function findTarget(params: Record<string, unknown>, options: { allowText?: boolean } = {}): HTMLElement {
   const elementId = stringParam(params, "elementId");
   const selector = stringParam(params, "selector");
   const text = stringParam(params, "text");
+  const role = stringParam(params, "role");
+  const ariaLabel = stringParam(params, "ariaLabel");
+  const placeholder = stringParam(params, "placeholder");
+  const href = stringParam(params, "href");
 
   let element: Element | null = null;
   if (elementId) {
@@ -191,8 +195,20 @@ function findTarget(params: Record<string, unknown>): HTMLElement {
   if (!element && selector) {
     element = document.querySelector(selector);
   }
-  if (!element && text) {
+  if (!element && text && options.allowText !== false) {
     element = findByText(text);
+  }
+  if (!element && ariaLabel) {
+    element = findByAttribute("aria-label", ariaLabel);
+  }
+  if (!element && placeholder) {
+    element = findByAttribute("placeholder", placeholder);
+  }
+  if (!element && href) {
+    element = findByHref(href);
+  }
+  if (!element && role) {
+    element = findByRole(role, options.allowText === false ? undefined : text);
   }
   if (!element || !(element instanceof HTMLElement)) {
     throw new Error("ELEMENT_NOT_FOUND: 未找到元素");
@@ -207,16 +223,16 @@ function findTarget(params: Record<string, unknown>): HTMLElement {
 }
 
 async function clickElement(params: Record<string, unknown>): Promise<{ clicked: boolean }> {
-  const element = findTarget(params);
+  const element = findTarget(params, { allowText: true });
   if (params.__confirmedHighRisk !== true && await isHighRiskBlockingEnabled()) {
-    assertElementClickSafe(element);
+    await assertElementClickSafe(element);
   }
   element.scrollIntoView({ block: "center", inline: "center" });
   element.click();
   return { clicked: true };
 }
 
-function assertElementClickSafe(element: HTMLElement): void {
+async function assertElementClickSafe(element: HTMLElement): Promise<void> {
   const text = [
     getElementText(element),
     element.getAttribute("aria-label"),
@@ -227,11 +243,103 @@ function assertElementClickSafe(element: HTMLElement): void {
     .join(" ");
 
   if (HIGH_RISK_TEXT_PATTERNS.some((pattern) => pattern.test(text))) {
-    const confirmed = window.confirm(`浏览器桥接需要确认：\n点击目标看起来是高风险操作。\n\n${text}`);
+    const confirmed = await showConfirmationOverlay(`点击目标看起来是高风险操作。\n\n${text}`);
     if (!confirmed) {
       throw new Error("USER_REJECTED: 用户已取消高风险浏览器操作");
     }
   }
+}
+
+function showConfirmationOverlay(reason: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    document.querySelector("#browser-bridge-confirm-overlay")?.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "browser-bridge-confirm-overlay";
+    overlay.style.cssText = [
+      "position:fixed",
+      "inset:0",
+      "z-index:2147483647",
+      "display:flex",
+      "align-items:center",
+      "justify-content:center",
+      "background:rgba(11,18,32,.48)",
+      "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"
+    ].join(";");
+
+    const panel = document.createElement("div");
+    panel.style.cssText = [
+      "box-sizing:border-box",
+      "width:min(420px,calc(100vw - 32px))",
+      "border-radius:8px",
+      "background:#fff",
+      "box-shadow:0 18px 50px rgba(0,0,0,.28)",
+      "padding:18px",
+      "color:#172026"
+    ].join(";");
+
+    const title = document.createElement("h2");
+    title.textContent = "确认浏览器操作";
+    title.style.cssText = "margin:0 0 10px;font-size:18px;line-height:1.3";
+
+    const body = document.createElement("p");
+    body.textContent = reason;
+    body.style.cssText = "margin:0 0 14px;font-size:13px;line-height:1.5;color:#3c4852;white-space:pre-line";
+
+    const url = document.createElement("p");
+    url.textContent = location.href;
+    url.style.cssText = [
+      "margin:0 0 16px",
+      "padding:8px",
+      "border-radius:6px",
+      "background:#f3f6f8",
+      "font-size:12px",
+      "line-height:1.4",
+      "word-break:break-all",
+      "color:#53616c"
+    ].join(";");
+
+    const actions = document.createElement("div");
+    actions.style.cssText = "display:flex;gap:10px;justify-content:flex-end";
+
+    const cancel = document.createElement("button");
+    cancel.textContent = "取消";
+    cancel.style.cssText = buttonStyle("#eef2f5", "#172026");
+
+    const confirm = document.createElement("button");
+    confirm.textContent = "确认执行";
+    confirm.style.cssText = buttonStyle("#b42318", "#fff");
+
+    const cleanup = (value: boolean) => {
+      overlay.remove();
+      resolve(value);
+    };
+
+    cancel.addEventListener("click", () => cleanup(false), { once: true });
+    confirm.addEventListener("click", () => cleanup(true), { once: true });
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        cleanup(false);
+      }
+    });
+
+    actions.append(cancel, confirm);
+    panel.append(title, body, url, actions);
+    overlay.append(panel);
+    document.documentElement.append(overlay);
+  });
+}
+
+function buttonStyle(background: string, color: string): string {
+  return [
+    "border:0",
+    "border-radius:6px",
+    "padding:8px 12px",
+    "font-size:13px",
+    "cursor:pointer",
+    `background:${background}`,
+    `color:${color}`
+  ].join(";");
 }
 
 async function isHighRiskBlockingEnabled(): Promise<boolean> {
@@ -242,7 +350,7 @@ async function isHighRiskBlockingEnabled(): Promise<boolean> {
 }
 
 function typeIntoElement(params: Record<string, unknown>): { typed: boolean } {
-  const element = findTarget(params);
+  const element = findTarget(params, { allowText: false });
   const text = stringParam(params, "text");
   if (!text) {
     throw new Error("INVALID_PARAMS: text 参数必填");
@@ -252,7 +360,7 @@ function typeIntoElement(params: Record<string, unknown>): { typed: boolean } {
 }
 
 function clearElement(params: Record<string, unknown>): { cleared: boolean } {
-  const element = findTarget(params);
+  const element = findTarget(params, { allowText: false });
   setElementValue(element, "", true);
   return { cleared: true };
 }
@@ -320,6 +428,34 @@ function findByText(text: string): HTMLElement | null {
   const normalized = normalizeText(text);
   const candidates = Array.from(document.querySelectorAll<HTMLElement>(ACTIONABLE_SELECTOR));
   return candidates.find((element) => normalizeText(getElementText(element) ?? "").includes(normalized)) ?? null;
+}
+
+function findByAttribute(attribute: string, value: string): HTMLElement | null {
+  const normalized = normalizeText(value);
+  const selector = `[${attribute}]`;
+  const candidates = Array.from(document.querySelectorAll<HTMLElement>(selector));
+  return candidates.find((element) => normalizeText(element.getAttribute(attribute) ?? "") === normalized) ?? null;
+}
+
+function findByHref(href: string): HTMLElement | null {
+  const candidates = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"));
+  return candidates.find((element) => element.href === href || element.getAttribute("href") === href) ?? null;
+}
+
+function findByRole(role: string, text?: string): HTMLElement | null {
+  const normalizedRole = normalizeText(role);
+  const normalizedText = text ? normalizeText(text) : undefined;
+  const candidates = Array.from(document.querySelectorAll<HTMLElement>(ACTIONABLE_SELECTOR));
+  return candidates.find((element) => {
+    const roleMatches = inferRole(element) === normalizedRole || element.getAttribute("role") === normalizedRole;
+    if (!roleMatches) {
+      return false;
+    }
+    if (!normalizedText) {
+      return true;
+    }
+    return normalizeText(getElementText(element) ?? "").includes(normalizedText);
+  }) ?? null;
 }
 
 function getElementText(element: HTMLElement): string | undefined {

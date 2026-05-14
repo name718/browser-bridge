@@ -100,3 +100,32 @@ button {
   color: #1f7a4d;
   font-size: 12px;
 }
+
+.audit-section {
+  margin-top: 10px;
+  border-top: 1px solid #e2e6ea;
+  padding-top: 10px;
+}
+
+.audit-section h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+#audit-log {
+  display: grid;
+  gap: 5px;
+  max-height: 120px;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  color: #53616c;
+}
+
+#audit-log li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

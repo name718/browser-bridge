@@ -11,6 +11,7 @@ import {
   getActionRisk,
   getSecurityConfig
 } from "./security.js";
+import { appendAuditLog, getAuditLog } from "./audit.js";
 
 const PROTOCOL_VERSION = "0.1.0";
 let socket: WebSocket | undefined;
@@ -22,7 +23,9 @@ connect();
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "popup_status") {
     void getSecurityConfig().then((security) => {
-      sendResponse({ connected, bridgeUrl: BRIDGE_URL, security });
+      void getAuditLog(8).then((audit) => {
+        sendResponse({ connected, bridgeUrl: BRIDGE_URL, security, audit });
+      });
     });
     return true;
   }
@@ -117,6 +120,9 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
     case "browser_get_page_snapshot":
     case "browser_get_selected_text":
     case "browser_get_links":
+      return sendToContentScript(request);
+    case "browser_get_audit_log":
+      return getAuditLog(typeof request.params?.limit === "number" ? request.params.limit : 20);
     case "browser_screenshot":
     case "browser_click":
     case "browser_type":
@@ -174,36 +180,51 @@ async function sendToContentScript(request: BridgeRequest): Promise<unknown> {
 
   const tab = await chrome.tabs.get(tabId);
   await assertUrlAllowed(tab.url);
+
   const confirmedHighRisk = await confirmHighRiskAction(tabId, request);
 
   if (request.tool === "browser_screenshot") {
     return captureScreenshot(tab, request);
   }
 
-  await ensureContentScript(tabId);
-  const response = await chrome.tabs.sendMessage(tabId, {
-    type: "browser_bridge_request",
-    request: {
-      ...request,
-      tabId,
-      params: {
-        ...(isRecord(request.params) ? request.params : {}),
-        __confirmedHighRisk: confirmedHighRisk
+  try {
+    await ensureContentScript(tabId);
+    const response = await chrome.tabs.sendMessage(tabId, {
+      type: "browser_bridge_request",
+      request: {
+        ...request,
+        tabId,
+        params: {
+          ...(isRecord(request.params) ? request.params : {}),
+          __confirmedHighRisk: confirmedHighRisk
+        }
       }
+    });
+
+    if (!response?.ok) {
+      const code = response?.error?.code ?? "INTERNAL_ERROR";
+      const message = response?.error?.message ?? "页面脚本请求失败";
+      throw new Error(`${code}: ${message}`);
     }
-  });
 
-  if (!response?.ok) {
-    const code = response?.error?.code ?? "INTERNAL_ERROR";
-    const message = response?.error?.message ?? "页面脚本请求失败";
-    throw new Error(`${code}: ${message}`);
+    await appendAuditLog({ tool: request.tool, url: tab.url, ok: true });
+
+    if (response.data && typeof response.data === "object" && "tabId" in response.data) {
+      return { ...response.data, tabId };
+    }
+
+    return response.data;
+  } catch (error) {
+    if (error instanceof Error && !error.message.includes(": 页面脚本请求失败")) {
+      await appendAuditLog({
+        tool: request.tool,
+        url: tab.url,
+        ok: false,
+        errorCode: error.message.split(":", 1)[0]
+      });
+    }
+    throw error;
   }
-
-  if (response.data && typeof response.data === "object" && "tabId" in response.data) {
-    return { ...response.data, tabId };
-  }
-
-  return response.data;
 }
 
 async function confirmHighRiskAction(tabId: number, request: BridgeRequest): Promise<boolean> {
@@ -252,6 +273,8 @@ async function captureScreenshot(
     format: requestedFormat,
     quality
   });
+
+  await appendAuditLog({ tool: request.tool, url: tab.url, ok: true });
 
   return {
     tabId: tab.id,
