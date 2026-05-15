@@ -61,6 +61,33 @@ export type BrowserElement = {
   };
 };
 
+export type BrowserFindParams = {
+  tabId?: number;
+  query?: string;
+  text?: string;
+  role?: string;
+  ariaLabel?: string;
+  placeholder?: string;
+  href?: string;
+  selector?: string;
+  elementId?: string;
+  nearText?: string;
+  visibleOnly?: boolean;
+  viewportOnly?: boolean;
+  limit?: number;
+  timeoutMs?: number;
+};
+
+export type BrowserFindResult = {
+  matched: boolean;
+  query?: string;
+  count: number;
+  matches: Array<BrowserElement & {
+    confidence: number;
+    reasons: string[];
+  }>;
+};
+
 export type BrowserAuditEntry = {
   at: string;
   tool: string;
@@ -71,6 +98,7 @@ export type BrowserAuditEntry = {
 
 export type ClickParams = {
   tabId?: number;
+  query?: string;
   elementId?: string;
   selector?: string;
   text?: string;
@@ -82,15 +110,29 @@ export type ClickParams = {
 
 export type TypeParams = {
   tabId?: number;
+  query?: string;
   elementId?: string;
   selector?: string;
   ariaLabel?: string;
   placeholder?: string;
   text: string;
+  replace?: boolean;
+};
+
+export type BrowserFormField = BrowserStepTarget & {
+  value: string;
+  replace?: boolean;
+};
+
+export type BrowserFillFormParams = {
+  tabId?: number;
+  fields: BrowserFormField[];
+  timeoutMs?: number;
 };
 
 export type ClearParams = {
   tabId?: number;
+  query?: string;
   elementId?: string;
   selector?: string;
   ariaLabel?: string;
@@ -105,6 +147,7 @@ export type ScrollParams = {
 
 export type WaitForParams = {
   tabId?: number;
+  query?: string;
   selector?: string;
   text?: string;
   timeoutMs?: number;
@@ -120,16 +163,21 @@ export type BrowserStepAction =
   | "open"
   | "activateTab"
   | "click"
+  | "hover"
   | "type"
+  | "fillForm"
   | "clear"
   | "scroll"
   | "waitFor"
+  | "pressKey"
+  | "assertText"
   | "getText"
   | "snapshot"
   | "screenshot"
   | "sleep";
 
 export type BrowserStepTarget = {
+  query?: string;
   elementId?: string;
   selector?: string;
   text?: string;
@@ -137,6 +185,7 @@ export type BrowserStepTarget = {
   ariaLabel?: string;
   placeholder?: string;
   href?: string;
+  nearText?: string;
 };
 
 export type BrowserStep = BrowserStepTarget & {
@@ -146,10 +195,16 @@ export type BrowserStep = BrowserStepTarget & {
   target?: BrowserStepTarget;
   url?: string;
   value?: string;
+  fields?: BrowserFormField[];
+  replace?: boolean;
   direction?: "up" | "down" | "left" | "right";
   amount?: number;
   timeoutMs?: number;
   delayMs?: number;
+  key?: string;
+  contains?: string;
+  visibleOnly?: boolean;
+  viewportOnly?: boolean;
   format?: "png" | "jpeg";
   quality?: number;
 };

@@ -96,6 +96,9 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return activateTab(Number(request.params?.tabId));
     case "browser_get_page_text":
     case "browser_get_page_snapshot":
+    case "browser_get_interactives":
+    case "browser_find":
+    case "browser_assert_text":
     case "browser_get_selected_text":
     case "browser_get_links":
       return sendToContentScript(request);
@@ -105,6 +108,11 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return runSteps(request);
     case "browser_screenshot":
     case "browser_click":
+    case "browser_find_and_click":
+    case "browser_find_and_type":
+    case "browser_fill_form":
+    case "browser_hover":
+    case "browser_press_key":
     case "browser_type":
     case "browser_clear":
     case "browser_scroll":
@@ -197,11 +205,19 @@ async function runStep(step: BrowserStep, currentTabId?: number): Promise<unknow
     case "activateTab":
       return activateTab(requiredTabId(step, currentTabId));
     case "click":
-      return sendToContentScript(stepRequest("browser_click", step, currentTabId, targetParams(step)));
+      return sendToContentScript(stepRequest("browser_find_and_click", step, currentTabId, targetParams(step)));
+    case "hover":
+      return sendToContentScript(stepRequest("browser_hover", step, currentTabId, targetParams(step)));
     case "type":
-      return sendToContentScript(stepRequest("browser_type", step, currentTabId, {
+      return sendToContentScript(stepRequest("browser_find_and_type", step, currentTabId, {
         ...targetParams(step),
-        text: step.value ?? step.text
+        text: step.value ?? step.text,
+        replace: step.replace
+      }));
+    case "fillForm":
+      return sendToContentScript(stepRequest("browser_fill_form", step, currentTabId, {
+        fields: step.fields,
+        timeoutMs: step.timeoutMs
       }));
     case "clear":
       return sendToContentScript(stepRequest("browser_clear", step, currentTabId, targetParams(step)));
@@ -212,6 +228,13 @@ async function runStep(step: BrowserStep, currentTabId?: number): Promise<unknow
       }));
     case "waitFor":
       return sendToContentScript(stepRequest("browser_wait_for", step, currentTabId, targetParams(step)));
+    case "pressKey":
+      return sendToContentScript(stepRequest("browser_press_key", step, currentTabId, { key: step.key }));
+    case "assertText":
+      return sendToContentScript(stepRequest("browser_assert_text", step, currentTabId, {
+        text: step.text,
+        contains: step.contains
+      }));
     case "getText":
       return sendToContentScript(stepRequest("browser_get_page_text", step, currentTabId, {}));
     case "snapshot":
@@ -408,10 +431,14 @@ function parseStepAction(value: unknown): BrowserStepAction {
     "open",
     "activateTab",
     "click",
+    "hover",
     "type",
+    "fillForm",
     "clear",
     "scroll",
     "waitFor",
+    "pressKey",
+    "assertText",
     "getText",
     "snapshot",
     "screenshot",
@@ -426,13 +453,17 @@ function parseStepAction(value: unknown): BrowserStepAction {
 function targetParams(step: BrowserStep): Record<string, unknown> {
   const target = isRecord(step.target) ? step.target : {};
   return {
+    query: step.query ?? target.query,
     elementId: step.elementId ?? target.elementId,
     selector: step.selector ?? target.selector,
     text: step.text ?? target.text,
     role: step.role ?? target.role,
     ariaLabel: step.ariaLabel ?? target.ariaLabel,
     placeholder: step.placeholder ?? target.placeholder,
-    href: step.href ?? target.href
+    href: step.href ?? target.href,
+    nearText: step.nearText ?? target.nearText,
+    visibleOnly: step.visibleOnly,
+    viewportOnly: step.viewportOnly
   };
 }
 

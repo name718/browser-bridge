@@ -92,7 +92,7 @@ export async function assertActionAllowed(request: BridgeRequest): Promise<void>
     throw new Error("PERMISSION_DENIED: 浏览器桥接安全配置已禁用截图");
   }
 
-  if (!config.blockHighRiskActions || request.tool !== "browser_click") {
+  if (!config.blockHighRiskActions || !isClickTool(request.tool)) {
     return;
   }
 
@@ -104,7 +104,7 @@ export async function assertActionAllowed(request: BridgeRequest): Promise<void>
 
 export async function getActionRisk(request: BridgeRequest): Promise<RiskCheck> {
   const config = await getSecurityConfig();
-  if (!config.blockHighRiskActions || request.tool !== "browser_click") {
+  if (!config.blockHighRiskActions || !isClickTool(request.tool)) {
     return { risky: false };
   }
   return getRequestRisk(request);
@@ -113,6 +113,7 @@ export async function getActionRisk(request: BridgeRequest): Promise<RiskCheck> 
 function getRequestRisk(request: BridgeRequest): RiskCheck {
   const text = [
     request.params?.text,
+    request.params?.query,
     request.params?.selector,
     request.params?.elementId
   ]
@@ -123,6 +124,10 @@ function getRequestRisk(request: BridgeRequest): RiskCheck {
     return { risky: true, reason: "点击目标看起来是删除、支付、提交、发送、发布或审批等高风险操作" };
   }
   return { risky: false };
+}
+
+function isClickTool(tool: BridgeRequest["tool"]): boolean {
+  return tool === "browser_click" || tool === "browser_find_and_click";
 }
 
 function matchesAny(url: string, patterns: string[]): boolean {

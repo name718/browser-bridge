@@ -140,14 +140,64 @@ pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_run_steps --arg
 - `open`：打开 URL。
 - `activateTab`：激活指定标签页。
 - `click`：按 `target`、文本、选择器等点击元素。
+- `hover`：悬停元素，适合头像菜单、下拉菜单。
 - `type`：向输入框输入 `value`。
+- `fillForm`：一次性填写多个表单字段。
 - `clear`：清空输入框。
 - `scroll`：滚动页面。
 - `waitFor`：等待元素或文本出现。
+- `pressKey`：发送按键，例如 `Enter`、`Escape`、`Tab`。
+- `assertText`：断言页面出现指定文本。
 - `getText`：读取页面可见文本。
 - `snapshot`：读取页面文本和可操作元素。
 - `screenshot`：截图，批量结果里只返回截图元信息。
 - `sleep`：等待一段时间。
+
+## 更快的浏览器操作方式
+
+不要默认让 Agent 先读取完整 DOM 再自己分析。优先使用浏览器端查找能力，让插件直接在页面里匹配、排序和执行。
+
+快速获取可交互元素摘要：
+
+```sh
+pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_get_interactives --args '{"viewportOnly":true,"limit":50}'
+```
+
+在浏览器端查找元素：
+
+```sh
+pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_find --args '{"query":"退出登录","role":"button","limit":5}'
+```
+
+查找并点击：
+
+```sh
+pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_find_and_click --args '{"query":"退出登录","role":"button"}'
+```
+
+查找并输入：
+
+```sh
+pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_find_and_type --args '{"query":"搜索","text":"订单号 123456"}'
+```
+
+一次性填写表单：
+
+```sh
+pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_fill_form --args '{"fields":[{"query":"账号","value":"demo-user"},{"query":"密码","value":"demo-password"}],"timeoutMs":5000}'
+```
+
+悬停后点击下拉菜单：
+
+```sh
+pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_run_steps --args '{"steps":[{"action":"hover","query":"头像"},{"action":"click","query":"退出登录"}],"stopOnError":true,"screenshotOnError":true}'
+```
+
+提交后断言页面文本：
+
+```sh
+pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_run_steps --args '{"steps":[{"action":"click","query":"提交"},{"action":"assertText","text":"提交成功","timeoutMs":8000}],"stopOnError":true,"screenshotOnError":true}'
+```
 
 截图保存到指定文件：
 
