@@ -15,6 +15,111 @@ function round2(n) {
   return Math.round(n * 100) / 100
 }
 
+const DEBUG_EXPORT = true
+
+function readProp(node, key) {
+  try {
+    const value = node[key]
+    return value === undefined ? null : value
+  } catch {
+    return null
+  }
+}
+
+function cloneProp(node, key) {
+  return clone(readProp(node, key))
+}
+
+function normalizeBox(box) {
+  if (!box) return null
+  const x = box.x != null ? box.x : box.left
+  const y = box.y != null ? box.y : box.top
+  const width = box.width != null ? box.width : (box.right != null && x != null ? box.right - x : null)
+  const height = box.height != null ? box.height : (box.bottom != null && y != null ? box.bottom - y : null)
+  if (x == null || y == null || width == null || height == null) return null
+  return {
+    x: round2(x),
+    y: round2(y),
+    width: round2(width),
+    height: round2(height),
+  }
+}
+
+function deriveContentBounds(nodes) {
+  const boxes = []
+
+  function walk(items) {
+    for (const item of items || []) {
+      const box = item && (item.absoluteBoundingBox || item.absoluteRenderBounds)
+      const normalized = normalizeBox(box)
+      if (normalized) boxes.push(normalized)
+      if (item && item.children) walk(item.children)
+    }
+  }
+
+  walk(nodes)
+  if (!boxes.length) return null
+
+  const minX = Math.min.apply(null, boxes.map(box => box.x))
+  const minY = Math.min.apply(null, boxes.map(box => box.y))
+  const maxX = Math.max.apply(null, boxes.map(box => box.x + box.width))
+  const maxY = Math.max.apply(null, boxes.map(box => box.y + box.height))
+
+  return {
+    x: round2(minX),
+    y: round2(minY),
+    width: round2(maxX - minX),
+    height: round2(maxY - minY),
+  }
+}
+
+function extractRawSnapshot(node) {
+  const keys = [
+    'absoluteBoundingBox',
+    'absoluteRenderBounds',
+    'absoluteTransform',
+    'relativeTransform',
+    'layoutMode',
+    'layoutWrap',
+    'layoutPositioning',
+    'primaryAxisAlignItems',
+    'counterAxisAlignItems',
+    'primaryAxisSizingMode',
+    'counterAxisSizingMode',
+    'paddingLeft',
+    'paddingRight',
+    'paddingTop',
+    'paddingBottom',
+    'itemSpacing',
+    'layoutGrids',
+    'exportSettings',
+    'componentProperties',
+    'variantProperties',
+    'textAutoResize',
+    'fontName',
+    'fontSize',
+    'fontWeight',
+    'lineHeight',
+    'letterSpacing',
+    'isMask',
+  ]
+  const raw = {}
+  for (const key of keys) {
+    const value = readProp(node, key)
+    if (value !== null) raw[key] = clone(value)
+  }
+  return raw
+}
+
+function debugLog(tag, payload) {
+  if (!DEBUG_EXPORT) return
+  try {
+    console.log('[ExportDebug][' + tag + ']', JSON.stringify(payload))
+  } catch (e) {
+    console.log('[ExportDebug][' + tag + ']', payload)
+  }
+}
+
 // ─── 文字样式（通过 CSS 解析 + 文本样式匹配） ───
 
 // 缓存文本样式列表（只读取一次）
@@ -272,15 +377,34 @@ async function extractImageForNode(node) {
 // ─── 核心：完整节点提取（异步） ───
 
 async function extractNode(node, options = {}) {
-  const { includeImages = false, imageNodes = new Set() } = options
+  const {
+    includeImages = false,
+    imageNodes = new Set(),
+    parentId = null,
+    depth = 0,
+    index = 0,
+    siblingCount = 1,
+    pathIds = [],
+    pathNames = [],
+  } = options
 
   try {
     const type = node.type
+    const currentPathIds = pathIds.concat(node.id || '')
+    const currentPathNames = pathNames.concat(node.name || '')
+    const raw = extractRawSnapshot(node)
     const data = {
       id: node.id || '',
       type,
       name: node.name || '',
       visible: node.visible !== false,
+      parentId,
+      depth,
+      index,
+      siblingCount,
+      pathIds: currentPathIds,
+      pathNames: currentPathNames,
+      nodePath: currentPathNames.filter(Boolean).join(' / '),
     }
 
     // 坐标尺寸
@@ -288,11 +412,17 @@ async function extractNode(node, options = {}) {
     if (node.y != null) data.y = round2(node.y)
     if (node.width != null) data.width = round2(node.width)
     if (node.height != null) data.height = round2(node.height)
+    data.absoluteBoundingBox = normalizeBox(readProp(node, 'absoluteBoundingBox'))
+    data.absoluteRenderBounds = normalizeBox(readProp(node, 'absoluteRenderBounds'))
+    data.absoluteTransform = cloneProp(node, 'absoluteTransform')
+    data.relativeTransform = cloneProp(node, 'relativeTransform')
 
     // 文本：内容 + 完整样式
     if (type === 'TEXT') {
       data.characters = node.characters || ''
       data.textStyle = await extractTextStyle(node)
+      const textAutoResize = readProp(node, 'textAutoResize')
+      if (textAutoResize) data.textAutoResize = textAutoResize
     }
 
     // FRAME：获取 CSS 用于解析布局
@@ -382,6 +512,14 @@ async function extractNode(node, options = {}) {
     // 自动布局
     const autoLayout = extractAutoLayout(node, frameCSS)
     if (autoLayout) data.autoLayout = autoLayout
+    const layoutPositioning = readProp(node, 'layoutPositioning')
+    if (layoutPositioning) data.layoutPositioning = layoutPositioning
+
+    const layoutGrids = cloneProp(node, 'layoutGrids')
+    if (layoutGrids && layoutGrids.length) data.layoutGrids = layoutGrids
+
+    const exportSettings = cloneProp(node, 'exportSettings')
+    if (exportSettings && exportSettings.length) data.exportSettings = exportSettings
 
     // 约束
     if (node.constraints) {
@@ -396,12 +534,55 @@ async function extractNode(node, options = {}) {
       data.mainComponentId = node.mainComponent.id
       data.mainComponentName = node.mainComponent.name
     }
+    const componentProperties = cloneProp(node, 'componentProperties')
+    if (componentProperties) data.componentProperties = componentProperties
+    const variantProperties = cloneProp(node, 'variantProperties')
+    if (variantProperties) data.variantProperties = variantProperties
+
+    data.raw = raw
+
+    debugLog('Node', {
+      depth,
+      index,
+      type,
+      name: data.name,
+      id: data.id,
+      parentId,
+      box: data.absoluteBoundingBox || { x: data.x, y: data.y, width: data.width, height: data.height },
+      rawKeys: Object.keys(raw),
+    })
+    if (type === 'TEXT') {
+      debugLog('Text', {
+        id: data.id,
+        characters: data.characters,
+        textStyle: data.textStyle,
+        box: data.absoluteBoundingBox,
+      })
+    }
+    if (autoLayout || layoutGrids || exportSettings) {
+      debugLog('Layout', {
+        id: data.id,
+        autoLayout,
+        layoutGrids,
+        exportSettings,
+      })
+    }
 
     // 子节点递归
     if (node.children && node.children.length > 0) {
       data.children = []
-      for (const child of node.children) {
-        data.children.push(await extractNode(child, options))
+      for (let i = 0; i < node.children.length; i++) {
+        const child = node.children[i]
+        data.children.push(await extractNode(child, {
+          includeImages,
+          imageNodes,
+          parentId: data.id,
+          depth: depth + 1,
+          index: i,
+          siblingCount: node.children.length,
+          pathIds: currentPathIds,
+          pathNames: currentPathNames,
+        }))
       }
     }
 
@@ -474,8 +655,18 @@ async function run() {
 
     const options = { includeImages, imageNodes: new Set() }
     const extractedNodes = []
-    for (const node of nodes) {
-      extractedNodes.push(await extractNode(node, options))
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i]
+      extractedNodes.push(await extractNode(node, {
+        includeImages,
+        imageNodes: options.imageNodes,
+        parentId: page.id || null,
+        depth: 0,
+        index: i,
+        siblingCount: nodes.length,
+        pathIds: [page.id || ''],
+        pathNames: [page.name || ''],
+      }))
     }
 
     // 导出图片
@@ -485,8 +676,15 @@ async function run() {
     }
 
     const designData = {
+      schemaVersion: 2,
       fileName: doc.name || 'untitled',
+      pageId: page.id || '',
       pageName: page.name || 'untitled',
+      pageSize: {
+        width: page.width != null ? round2(page.width) : null,
+        height: page.height != null ? round2(page.height) : null,
+      },
+      contentBounds: deriveContentBounds(extractedNodes),
       exportMode: mode,
       exportedAt: new Date().toISOString(),
       nodeCount: extractedNodes.length,
@@ -496,6 +694,16 @@ async function run() {
     if (includeImages && Object.keys(images).length > 0) {
       designData.images = images
     }
+
+    debugLog('Page', {
+      fileName: designData.fileName,
+      pageName: designData.pageName,
+      pageId: designData.pageId,
+      pageSize: designData.pageSize,
+      contentBounds: designData.contentBounds,
+      nodeCount: designData.nodeCount,
+      imageCount: Object.keys(images).length,
+    })
 
     const json = JSON.stringify(designData, null, 2)
 
