@@ -157,6 +157,20 @@ pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_run_steps --arg
 
 不要默认让 Agent 先读取完整 DOM 再自己分析。优先使用浏览器端查找能力，让插件直接在页面里匹配、排序和执行。
 
+低 token 意图式操作：
+
+```sh
+pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_act --args '{"action":"click","target":"提交","role":"button","nearText":"订单信息","viewportOnly":true}'
+```
+
+输入文本：
+
+```sh
+pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_act --args '{"action":"type","target":"搜索","value":"订单号 123456","replace":true}'
+```
+
+`browser_act` 会优先在浏览器端查找和执行，只返回命中的控件摘要、置信度和执行结果。只有调试失败原因时，再使用 `browser_find`、`browser_get_interactives` 或 `browser_get_page_snapshot`。
+
 快速获取可交互元素摘要：
 
 ```sh

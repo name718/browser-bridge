@@ -98,6 +98,7 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
     case "browser_get_page_snapshot":
     case "browser_get_interactives":
     case "browser_find":
+    case "browser_act":
     case "browser_assert_text":
     case "browser_get_selected_text":
     case "browser_get_links":

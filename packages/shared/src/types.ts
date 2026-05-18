@@ -88,6 +88,41 @@ export type BrowserFindResult = {
   }>;
 };
 
+export type BrowserActAction =
+  | "click"
+  | "type"
+  | "hover"
+  | "clear"
+  | "waitFor"
+  | "assertText";
+
+export type BrowserActParams = BrowserStepTarget & {
+  action: BrowserActAction;
+  target?: string;
+  value?: string;
+  replace?: boolean;
+  confidenceThreshold?: number;
+  timeoutMs?: number;
+  visibleOnly?: boolean;
+  viewportOnly?: boolean;
+};
+
+export type BrowserActResult = {
+  ok: boolean;
+  action: BrowserActAction;
+  matched?: {
+    elementId: string;
+    role: string;
+    tagName: string;
+    text?: string;
+    ariaLabel?: string;
+    placeholder?: string;
+    confidence?: number;
+    reasons?: string[];
+  };
+  result?: unknown;
+};
+
 export type BrowserAuditEntry = {
   at: string;
   tool: string;

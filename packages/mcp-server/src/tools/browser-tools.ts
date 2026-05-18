@@ -95,6 +95,26 @@ const findSchema = optionalTabId.extend({
   timeoutMs: z.number().int().positive().optional()
 });
 
+const actSchema = optionalTabId.extend({
+  action: z.enum(["click", "type", "hover", "clear", "waitFor", "assertText"]),
+  target: z.string().optional(),
+  query: z.string().optional(),
+  text: z.string().optional(),
+  value: z.string().optional(),
+  role: z.string().optional(),
+  ariaLabel: z.string().optional(),
+  placeholder: z.string().optional(),
+  href: z.string().optional(),
+  selector: z.string().optional(),
+  elementId: z.string().optional(),
+  nearText: z.string().optional(),
+  replace: z.boolean().optional(),
+  visibleOnly: z.boolean().optional(),
+  viewportOnly: z.boolean().optional(),
+  confidenceThreshold: z.number().min(0).max(1).optional(),
+  timeoutMs: z.number().int().positive().optional()
+});
+
 const pressKeySchema = optionalTabId.extend({
   key: z.string()
 });
@@ -214,7 +234,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_get_page_snapshot",
-      description: "返回页面标题、URL、可见文本和可操作元素列表。",
+      description: "调试/兜底工具：返回页面标题、URL、大段可见文本和可操作元素列表，消耗 token 较高。点击、输入、等待等操作应优先使用 browser_act、browser_find_and_click、browser_find_and_type 或 browser_run_steps。",
       inputSchema: schema({ tabId: { type: "number" } }),
       handler: async (args) => {
         const parsed = optionalTabId.parse(args ?? {});
@@ -247,6 +267,37 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
       handler: async (args) => {
         const parsed = findSchema.parse(args ?? {});
         return bridge.call("browser_find", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_act",
+      description: "低 token 意图式浏览器操作。直接传 action 和 target/query，由浏览器端查找元素、校验置信度并执行，避免先拉取完整 DOM/snapshot。适合点击按钮、输入文本、悬停、清空、等待元素和断言文本。",
+      inputSchema: schema({
+        action: { type: "string", enum: ["click", "type", "hover", "clear", "waitFor", "assertText"] },
+        target: { type: "string" },
+        query: { type: "string" },
+        text: { type: "string" },
+        value: { type: "string" },
+        role: { type: "string" },
+        ariaLabel: { type: "string" },
+        placeholder: { type: "string" },
+        href: { type: "string" },
+        selector: { type: "string" },
+        elementId: { type: "string" },
+        nearText: { type: "string" },
+        replace: { type: "boolean" },
+        visibleOnly: { type: "boolean" },
+        viewportOnly: { type: "boolean" },
+        confidenceThreshold: { type: "number" },
+        timeoutMs: { type: "number" },
+        tabId: { type: "number" }
+      }, ["action"]),
+      handler: async (args) => {
+        const parsed = actSchema.parse(args ?? {});
+        return bridge.call("browser_act", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: parsed.timeoutMs
+        });
       }
     },
     {

@@ -5,6 +5,7 @@ export type BridgeTool =
   | "browser_get_page_snapshot"
   | "browser_get_interactives"
   | "browser_find"
+  | "browser_act"
   | "browser_find_and_click"
   | "browser_find_and_type"
   | "browser_fill_form"

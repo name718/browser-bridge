@@ -1,5 +1,7 @@
 import {
   type BrowserElement,
+  type BrowserActAction,
+  type BrowserActResult,
   type BrowserFindResult,
   type BridgeRequest,
   type PageSnapshot
@@ -91,6 +93,8 @@ async function handleRequest(request: BridgeRequest): Promise<unknown> {
       return getInteractives(request.params ?? {});
     case "browser_find":
       return findElements(request.params ?? {});
+    case "browser_act":
+      return act(request.params ?? {}, request.timeoutMs);
     case "browser_assert_text":
       return assertText(request.params ?? {}, request.timeoutMs);
     case "browser_get_selected_text":
@@ -246,6 +250,174 @@ function findElements(params: Record<string, unknown>): BrowserFindResult {
   };
 }
 
+async function act(
+  params: Record<string, unknown>,
+  requestTimeoutMs?: number
+): Promise<BrowserActResult> {
+  const action = parseActAction(stringParam(params, "action"));
+  const target = stringParam(params, "target");
+  const normalizedParams = normalizeActParams(params, target, requestTimeoutMs);
+
+  if (action === "assertText") {
+    const result = await assertText({
+      ...normalizedParams,
+      text: stringParam(params, "text") ?? target ?? stringParam(params, "query"),
+      contains: stringParam(params, "text") ?? target ?? stringParam(params, "query")
+    }, requestTimeoutMs);
+    return { ok: true, action, result };
+  }
+
+  if (action === "waitFor") {
+    const result = await waitForElement(normalizedParams, requestTimeoutMs);
+    return {
+      ok: true,
+      action,
+      matched: isRecord(result) && isRecord(result.element)
+        ? compactBrowserElement(result.element)
+        : undefined,
+      result: compactActResult(result)
+    };
+  }
+
+  const match = await resolveActTarget(normalizedParams, action);
+
+  let result: unknown;
+  switch (action) {
+    case "click":
+      result = await clickElement({ ...normalizedParams, elementId: match.elementId });
+      break;
+    case "type":
+      result = await typeIntoElement({
+        ...normalizedParams,
+        elementId: match.elementId,
+        text: stringParam(params, "value") ?? stringParam(params, "text"),
+        replace: params.replace
+      });
+      break;
+    case "hover":
+      result = await hoverElement({ ...normalizedParams, elementId: match.elementId });
+      break;
+    case "clear":
+      result = await clearElement({ ...normalizedParams, elementId: match.elementId });
+      break;
+    default:
+      throw new Error(`INVALID_PARAMS: 不支持的 browser_act 动作 ${action}`);
+  }
+
+  return {
+    ok: true,
+    action,
+    matched: compactMatchedElement(match.element, match.confidence, match.reasons),
+    result: compactActResult(result)
+  };
+}
+
+async function resolveActTarget(
+  params: Record<string, unknown>,
+  action: BrowserActAction
+): Promise<{
+  element: HTMLElement;
+  elementId: string;
+  confidence: number;
+  reasons: string[];
+}> {
+  if (stringParam(params, "elementId") || stringParam(params, "selector")) {
+    const element = await findTargetWithRetry(params, { allowText: action !== "type" && action !== "clear" });
+    return {
+      element,
+      elementId: ensureElementId(element, 0),
+      confidence: 1,
+      reasons: ["确定定位"]
+    };
+  }
+
+  const match = findBestScoredElement(params);
+  if (!match) {
+    throw new Error("ELEMENT_NOT_FOUND: 未找到元素");
+  }
+
+  const confidence = Math.min(1, Number(match.score.toFixed(2)));
+  const threshold = numberParam(params, "confidenceThreshold") ?? defaultActThreshold(action);
+  if (confidence < threshold) {
+    throw new Error(`ELEMENT_NOT_FOUND: 最高候选置信度 ${confidence} 低于阈值 ${threshold}`);
+  }
+
+  return {
+    element: match.element,
+    elementId: ensureElementId(match.element, 0),
+    confidence,
+    reasons: match.reasons
+  };
+}
+
+function normalizeActParams(
+  params: Record<string, unknown>,
+  target?: string,
+  requestTimeoutMs?: number
+): Record<string, unknown> {
+  return {
+    ...params,
+    query: stringParam(params, "query") ?? target,
+    text: stringParam(params, "text") ?? target,
+    timeoutMs: numberParam(params, "timeoutMs") ?? requestTimeoutMs
+  };
+}
+
+function parseActAction(action: string | undefined): BrowserActAction {
+  switch (action) {
+    case "click":
+    case "type":
+    case "hover":
+    case "clear":
+    case "waitFor":
+    case "assertText":
+      return action;
+    default:
+      throw new Error("INVALID_PARAMS: browser_act.action 必须是 click、type、hover、clear、waitFor 或 assertText");
+  }
+}
+
+function defaultActThreshold(action: BrowserActAction): number {
+  return action === "click" || action === "type" ? 0.42 : 0.32;
+}
+
+function compactMatchedElement(
+  element: HTMLElement,
+  confidence: number,
+  reasons: string[]
+): BrowserActResult["matched"] {
+  return {
+    elementId: ensureElementId(element, 0),
+    role: element.getAttribute("role") || inferRole(element),
+    tagName: element.tagName.toLowerCase(),
+    text: truncate(getElementText(element), 80),
+    ariaLabel: truncate(element.getAttribute("aria-label") ?? undefined, 80),
+    placeholder: truncate(getPlaceholder(element), 80),
+    confidence,
+    reasons: reasons.slice(0, 4)
+  };
+}
+
+function compactBrowserElement(element: Record<string, unknown>): BrowserActResult["matched"] {
+  return {
+    elementId: String(element.elementId ?? ""),
+    role: String(element.role ?? ""),
+    tagName: String(element.tagName ?? ""),
+    text: truncate(typeof element.text === "string" ? element.text : undefined, 80),
+    ariaLabel: truncate(typeof element.ariaLabel === "string" ? element.ariaLabel : undefined, 80),
+    placeholder: truncate(typeof element.placeholder === "string" ? element.placeholder : undefined, 80)
+  };
+}
+
+function compactActResult(result: unknown): unknown {
+  if (!isRecord(result)) {
+    return result;
+  }
+  return Object.fromEntries(
+    Object.entries(result).filter(([key]) => key !== "element" && key !== "fields")
+  );
+}
+
 async function findTargetWithRetry(
   params: Record<string, unknown>,
   options: { allowText?: boolean; timeoutMs?: number } = {}
@@ -317,9 +489,17 @@ function findTarget(params: Record<string, unknown>, options: { allowText?: bool
 }
 
 function findBestElement(params: Record<string, unknown>): HTMLElement | null {
+  return findBestScoredElement(params)?.element ?? null;
+}
+
+function findBestScoredElement(params: Record<string, unknown>): {
+  element: HTMLElement;
+  score: number;
+  reasons: string[];
+} | null {
   return scoreElements(params)
     .filter((match) => match.score > 0)
-    .sort((a, b) => b.score - a.score)[0]?.element ?? null;
+    .sort((a, b) => b.score - a.score)[0] ?? null;
 }
 
 function scoreElements(params: Record<string, unknown>): Array<{
@@ -949,6 +1129,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function normalizeText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
+}
+
+function truncate(value: string | undefined, maxLength: number): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
 }
 
 function stringParam(params: Record<string, unknown>, key: string): string | undefined {
