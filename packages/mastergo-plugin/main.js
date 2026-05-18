@@ -427,7 +427,7 @@ async function exportPngForNode(node) {
     if (!exported || typeof exported === 'string') return null
     const bytes = exported instanceof Uint8Array ? exported : new Uint8Array(exported)
     return {
-      bytes: Array.prototype.slice.call(bytes),
+      bytes,
       byteLength: bytes.length,
     }
   } catch (e) {
@@ -833,10 +833,15 @@ async function exportDesign() {
       type: 'sendData',
       text: json,
       mode,
+      stats: {
+        nodeCount: progress.total,
+        topLevelNodeCount: extractedNodes.length,
+        textCount: null,
+        jsonSize: json.length,
+      },
       zipName: includeZipAssets ? slugifyName(designData.fileName + '_' + designData.pageName, 'mastergo_export') + '.zip' : '',
       zipPayload: includeZipAssets ? {
         jsonFileName: 'design.json',
-        json,
         assets: pngAssets,
       } : null,
     })

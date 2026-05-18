@@ -179,6 +179,7 @@
     var progressTextEl = document.getElementById('progress-text');
     var currentZipPayload = null;
     var currentZipName = 'mastergo_export.zip';
+    var MAX_PREVIEW_CHARS = 250000;
 
     function showStatus(type, text) {
       statusEl.className = 'status show ' + type;
@@ -258,21 +259,21 @@
       return (crc ^ 0xffffffff) >>> 0;
     }
 
-    function writeUint16(arr, value) {
-      arr.push(value & 255, (value >>> 8) & 255);
+    function u16(value) {
+      return new Uint8Array([value & 255, (value >>> 8) & 255]);
     }
 
-    function writeUint32(arr, value) {
-      arr.push(value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255);
+    function u32(value) {
+      return new Uint8Array([value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255]);
     }
 
-    function appendBytes(arr, bytes) {
-      for (var i = 0; i < bytes.length; i++) arr.push(bytes[i]);
+    function headerBytes(parts) {
+      return new Blob(parts);
     }
 
     function makeZip(files) {
-      var output = [];
-      var central = [];
+      var outputParts = [];
+      var centralParts = [];
       var offset = 0;
 
       for (var i = 0; i < files.length; i++) {
@@ -280,60 +281,65 @@
         var nameBytes = utf8Bytes(file.name);
         var dataBytes = file.bytes;
         var checksum = crc32(dataBytes);
-        var local = [];
 
-        writeUint32(local, 0x04034b50);
-        writeUint16(local, 20);
-        writeUint16(local, 2048);
-        writeUint16(local, 0);
-        writeUint16(local, 0);
-        writeUint16(local, 0);
-        writeUint32(local, checksum);
-        writeUint32(local, dataBytes.length);
-        writeUint32(local, dataBytes.length);
-        writeUint16(local, nameBytes.length);
-        writeUint16(local, 0);
-        appendBytes(local, nameBytes);
-        appendBytes(local, dataBytes);
-        appendBytes(output, local);
+        var localHeader = headerBytes([
+          u32(0x04034b50),
+          u16(20),
+          u16(2048),
+          u16(0),
+          u16(0),
+          u16(0),
+          u32(checksum),
+          u32(dataBytes.length),
+          u32(dataBytes.length),
+          u16(nameBytes.length),
+          u16(0),
+          nameBytes
+        ]);
+        outputParts.push(localHeader, dataBytes);
 
-        var entry = [];
-        writeUint32(entry, 0x02014b50);
-        writeUint16(entry, 20);
-        writeUint16(entry, 20);
-        writeUint16(entry, 2048);
-        writeUint16(entry, 0);
-        writeUint16(entry, 0);
-        writeUint16(entry, 0);
-        writeUint32(entry, checksum);
-        writeUint32(entry, dataBytes.length);
-        writeUint32(entry, dataBytes.length);
-        writeUint16(entry, nameBytes.length);
-        writeUint16(entry, 0);
-        writeUint16(entry, 0);
-        writeUint16(entry, 0);
-        writeUint16(entry, 0);
-        writeUint32(entry, 0);
-        writeUint32(entry, offset);
-        appendBytes(entry, nameBytes);
-        appendBytes(central, entry);
+        var centralHeader = headerBytes([
+          u32(0x02014b50),
+          u16(20),
+          u16(20),
+          u16(2048),
+          u16(0),
+          u16(0),
+          u16(0),
+          u32(checksum),
+          u32(dataBytes.length),
+          u32(dataBytes.length),
+          u16(nameBytes.length),
+          u16(0),
+          u16(0),
+          u16(0),
+          u16(0),
+          u32(0),
+          u32(offset),
+          nameBytes
+        ]);
+        centralParts.push(centralHeader);
 
-        offset += local.length;
+        offset += 30 + nameBytes.length + dataBytes.length;
       }
 
-      var centralOffset = output.length;
-      appendBytes(output, central);
-      var centralSize = central.length;
-      writeUint32(output, 0x06054b50);
-      writeUint16(output, 0);
-      writeUint16(output, 0);
-      writeUint16(output, files.length);
-      writeUint16(output, files.length);
-      writeUint32(output, centralSize);
-      writeUint32(output, centralOffset);
-      writeUint16(output, 0);
+      var centralOffset = offset;
+      var centralSize = 0;
+      for (var j = 0; j < centralParts.length; j++) {
+        centralSize += centralParts[j].size;
+      }
+      var endRecord = headerBytes([
+        u32(0x06054b50),
+        u16(0),
+        u16(0),
+        u16(files.length),
+        u16(files.length),
+        u32(centralSize),
+        u32(centralOffset),
+        u16(0)
+      ]);
 
-      return new Uint8Array(output);
+      return new Blob(outputParts.concat(centralParts, [endRecord]), { type: 'application/zip' });
     }
 
     function buildZipFromPayload(payload) {
@@ -354,8 +360,7 @@
     }
 
     function downloadBytes(bytes, fileName) {
-      var blob = new Blob([bytes], { type: 'application/zip' });
-      var url = URL.createObjectURL(blob);
+      var url = URL.createObjectURL(bytes);
       var link = document.createElement('a');
       link.href = url;
       link.download = fileName || 'mastergo_export.zip';
@@ -386,11 +391,17 @@
 
       if (message.type === 'sendData') {
         var json = message.text;
-        textarea.value = json;
+        var isLargeJson = json.length > MAX_PREVIEW_CHARS;
+        textarea.value = isLargeJson
+          ? 'JSON 数据过大，UI 不再完整预览以避免内存占用。\n\n请点击“下载 ZIP”，在压缩包内查看完整 design.json。'
+          : json;
         setLoading(false);
         progressBarEl.style.width = '100%';
         progressTextEl.textContent = '导出完成';
         currentZipPayload = message.zipPayload || null;
+        if (currentZipPayload) {
+          currentZipPayload.json = json;
+        }
         currentZipName = message.zipName || 'mastergo_export.zip';
         btnDownloadZip.style.display = currentZipPayload ? 'inline-block' : 'none';
         hintEl.textContent = currentZipPayload
@@ -401,15 +412,22 @@
           document.getElementById('mode-label').textContent = '- ' + message.mode;
         }
 
-        // 统计
-        try {
+        if (message.stats) {
+          document.getElementById('stat-nodes').textContent = message.stats.nodeCount || 0;
+          document.getElementById('stat-texts').textContent = message.stats.textCount == null ? '-' : message.stats.textCount;
+          document.getElementById('stat-size').textContent = ((message.stats.jsonSize || json.length) / 1024).toFixed(1) + ' KB';
+          statsEl.style.display = 'flex';
+        } else {
+          // 旧数据兼容。新导出会直接传 stats，避免大 JSON 在 UI 中重复解析占内存。
+          try {
           var data = JSON.parse(json);
           var c = countNodes(data.nodes);
           document.getElementById('stat-nodes').textContent = c.nodes;
           document.getElementById('stat-texts').textContent = c.texts;
           document.getElementById('stat-size').textContent = (json.length / 1024).toFixed(1) + ' KB';
           statsEl.style.display = 'flex';
-        } catch {}
+          } catch {}
+        }
 
         showStatus('success', currentZipPayload ? '导出完成，点击下方按钮下载 ZIP' : '导出完成，点击下方按钮复制');
       }
@@ -436,9 +454,12 @@
         btnDownloadZip.disabled = true;
         btnDownloadZip.textContent = '生成中...';
         showStatus('loading', '正在生成 ZIP，请稍候...');
-        var zipBytes = buildZipFromPayload(currentZipPayload);
-        downloadBytes(zipBytes, currentZipName);
+        var zipBlob = buildZipFromPayload(currentZipPayload);
+        downloadBytes(zipBlob, currentZipName);
         showStatus('success', 'ZIP 已生成：' + currentZipName);
+        currentZipPayload = null;
+        btnDownloadZip.style.display = 'none';
+        hintEl.textContent = 'ZIP 已下载。为释放内存，如需再次下载请重新导出。';
       } catch (e) {
         showStatus('error', 'ZIP 生成失败：' + e.message);
       } finally {
