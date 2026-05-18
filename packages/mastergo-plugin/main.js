@@ -15,7 +15,46 @@ function round2(n) {
   return Math.round(n * 100) / 100
 }
 
-const DEBUG_EXPORT = true
+function slugifyName(name, fallback) {
+  const raw = String(name || fallback || 'node')
+  const slug = raw
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  return (slug || fallback || 'node').slice(0, 80)
+}
+
+const DEBUG_EXPORT = false
+const PNG_EXPORT_SCALE = 2
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function postProgress(stage, current, total, message) {
+  try {
+    mg.ui.postMessage({
+      type: 'progress',
+      stage,
+      current: current || 0,
+      total: total || 0,
+      message: message || '',
+    })
+  } catch { }
+}
+
+function countNodeTree(nodes) {
+  let count = 0
+  function walk(items) {
+    for (const item of items || []) {
+      count++
+      if (item.children && item.children.length) walk(item.children)
+    }
+  }
+  walk(nodes)
+  return count
+}
 
 function readProp(node, key) {
   try {
@@ -374,6 +413,56 @@ async function extractImageForNode(node) {
   }
 }
 
+async function exportPngForNode(node) {
+  try {
+    const settings = {
+      format: 'PNG',
+      constraint: { type: 'SCALE', value: PNG_EXPORT_SCALE },
+      useAbsoluteBounds: true,
+      useRenderBounds: true,
+    }
+    const exported = typeof node.exportAsync === 'function'
+      ? await node.exportAsync(settings)
+      : (typeof node.export === 'function' ? node.export(settings) : null)
+    if (!exported || typeof exported === 'string') return null
+    const bytes = exported instanceof Uint8Array ? exported : new Uint8Array(exported)
+    return {
+      bytes: Array.prototype.slice.call(bytes),
+      byteLength: bytes.length,
+    }
+  } catch (e) {
+    console.log('[Export] PNG 导出失败:', node.name, e.message)
+    return null
+  }
+}
+
+async function exportPngAssets(nodes) {
+  const assets = []
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i]
+    postProgress('png', i + 1, nodes.length, '正在导出 PNG ' + (i + 1) + '/' + nodes.length)
+    if (i % 2 === 0) await wait(0)
+    const image = await exportPngForNode(node)
+    if (!image) continue
+    const safeName = slugifyName(node.name, 'node_' + (i + 1))
+    assets.push({
+      nodeId: node.id || '',
+      nodeName: node.name || '',
+      fileName: 'png/' + String(i + 1).padStart(2, '0') + '_' + safeName + '.png',
+      mimeType: 'image/png',
+      byteLength: image.byteLength,
+      scale: PNG_EXPORT_SCALE,
+      bytes: image.bytes,
+    })
+  }
+  debugLog('PngAssets', {
+    requestedCount: nodes.length,
+    exportedCount: assets.length,
+    files: assets.map(asset => asset.fileName),
+  })
+  return assets
+}
+
 // ─── 核心：完整节点提取（异步） ───
 
 async function extractNode(node, options = {}) {
@@ -386,9 +475,18 @@ async function extractNode(node, options = {}) {
     siblingCount = 1,
     pathIds = [],
     pathNames = [],
+    progress = null,
   } = options
 
   try {
+    if (progress) {
+      progress.current++
+      if (progress.current === 1 || progress.current % 20 === 0) {
+        postProgress('json', progress.current, progress.total, '正在采集 JSON ' + progress.current + '/' + progress.total)
+        await wait(0)
+      }
+    }
+
     const type = node.type
     const currentPathIds = pathIds.concat(node.id || '')
     const currentPathNames = pathNames.concat(node.name || '')
@@ -582,6 +680,7 @@ async function extractNode(node, options = {}) {
           siblingCount: node.children.length,
           pathIds: currentPathIds,
           pathNames: currentPathNames,
+          progress,
         }))
       }
     }
@@ -617,9 +716,7 @@ async function exportImages(imageNodes) {
 
 // ─── 入口 ───
 
-async function run() {
-  console.log('[Export] === Design JSON Export ===')
-
+async function exportDesign() {
   try {
     const command = mg.command || 'exportPage'
     const doc = mg.document
@@ -635,26 +732,32 @@ async function run() {
     }
 
     const includeImages = command === 'exportPageWithImages'
+    const includeZipAssets = command === 'exportPageZip' || command === 'exportSelectionZip'
     let nodes = []
     let mode = ''
 
-    if (command === 'exportSelection') {
+    if (command === 'exportSelection' || command === 'exportSelectionZip') {
       const selection = page.selection
       if (!selection || selection.length === 0) {
         mg.closePlugin('请先选中要导出的图层')
         return
       }
       nodes = selection
-      mode = '选中图层 (' + nodes.length + ' 个)'
+      mode = includeZipAssets ? '选中图层（JSON+PNG Zip，' + nodes.length + ' 个）' : '选中图层 (' + nodes.length + ' 个)'
     } else {
       nodes = page.children || []
-      mode = includeImages ? '当前页面（含图片）' : '当前页面'
+      mode = includeZipAssets ? '当前页面（JSON+PNG Zip）' : (includeImages ? '当前页面（含图片）' : '当前页面')
     }
 
+    postProgress('start', 0, nodes.length, '准备导出 ' + mode)
     console.log('[Export] 提取中，节点数:', nodes.length)
 
     const options = { includeImages, imageNodes: new Set() }
     const extractedNodes = []
+    const progress = {
+      current: 0,
+      total: countNodeTree(nodes),
+    }
     for (let i = 0; i < nodes.length; i++) {
       const node = nodes[i]
       extractedNodes.push(await extractNode(node, {
@@ -666,14 +769,19 @@ async function run() {
         siblingCount: nodes.length,
         pathIds: [page.id || ''],
         pathNames: [page.name || ''],
+        progress,
       }))
     }
 
     // 导出图片
     let images = {}
     if (includeImages && options.imageNodes.size > 0) {
+      postProgress('embedded-images', 0, options.imageNodes.size, '正在导出内嵌图片')
       images = await exportImages(options.imageNodes)
     }
+
+    const pngAssets = includeZipAssets ? await exportPngAssets(nodes) : []
+    postProgress('json-stringify', 0, 0, '正在生成 JSON')
 
     const designData = {
       schemaVersion: 2,
@@ -691,6 +799,19 @@ async function run() {
       nodes: extractedNodes,
     }
 
+    if (includeZipAssets) {
+      designData.assets = {
+        png: pngAssets.map(asset => ({
+          nodeId: asset.nodeId,
+          nodeName: asset.nodeName,
+          fileName: asset.fileName,
+          mimeType: asset.mimeType,
+          byteLength: asset.byteLength,
+          scale: asset.scale,
+        })),
+      }
+    }
+
     if (includeImages && Object.keys(images).length > 0) {
       designData.images = images
     }
@@ -703,23 +824,55 @@ async function run() {
       contentBounds: designData.contentBounds,
       nodeCount: designData.nodeCount,
       imageCount: Object.keys(images).length,
+      pngAssetCount: pngAssets.length,
     })
 
     const json = JSON.stringify(designData, null, 2)
 
-    // 展示 UI 让用户复制
-    mg.showUI(__html__, { visible: true, width: 460, height: 400 })
-    mg.ui.postMessage({ type: 'sendData', text: json, mode })
+    mg.ui.postMessage({
+      type: 'sendData',
+      text: json,
+      mode,
+      zipName: includeZipAssets ? slugifyName(designData.fileName + '_' + designData.pageName, 'mastergo_export') + '.zip' : '',
+      zipPayload: includeZipAssets ? {
+        jsonFileName: 'design.json',
+        json,
+        assets: pngAssets,
+      } : null,
+    })
 
-    mg.ui.onmessage = function (msg) {
-      if (msg.type === 'closePlugin') {
-        mg.closePlugin('')
-      }
-    }
   } catch (e) {
     console.log('[Export] FATAL:', e.message)
-    mg.closePlugin('导出失败: ' + e.message)
+    try {
+      mg.ui.postMessage({ type: 'error', message: '导出失败: ' + e.message })
+    } catch { }
   }
+}
+
+function run() {
+  console.log('[Export] === Design JSON Export ===')
+  mg.showUI(__html__, { visible: true, width: 460, height: 430 })
+  postProgress('start', 0, 0, '正在初始化导出...')
+  let started = false
+  function startExportOnce() {
+    if (started) return
+    started = true
+    postProgress('start', 0, 0, '正在启动导出...')
+    setTimeout(function () {
+      exportDesign()
+    }, 80)
+  }
+
+  mg.ui.onmessage = function (msg) {
+    if (msg.type === 'closePlugin') {
+      mg.closePlugin('')
+      return
+    }
+    if (msg.type === 'uiReady') {
+      startExportOnce()
+    }
+  }
+  setTimeout(startExportOnce, 500)
 }
 
 run()

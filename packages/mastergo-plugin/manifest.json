@@ -9,12 +9,16 @@
       "command": "exportPage"
     },
     {
-      "name": "导出当前页面（含图片）",
-      "command": "exportPageWithImages"
+      "name": "导出当前页面（JSON+PNG Zip）",
+      "command": "exportPageZip"
     },
     {
       "name": "导出选中图层",
       "command": "exportSelection"
+    },
+    {
+      "name": "导出选中图层（JSON+PNG Zip）",
+      "command": "exportSelectionZip"
     }
   ],
   "id": 193273353174723

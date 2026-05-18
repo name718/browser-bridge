@@ -54,6 +54,38 @@
     .status.show { display: block; }
     .status.success { background: #f0f9eb; color: #34a853; }
     .status.error { background: #fef0f0; color: #d93025; }
+    .status.loading { background: #f5f8ff; color: #245bdb; }
+    .progress {
+      display: none;
+      margin-bottom: 12px;
+    }
+    .progress.show { display: block; }
+    .progress-track {
+      height: 6px;
+      border-radius: 999px;
+      background: #eef1f6;
+      overflow: hidden;
+    }
+    .progress-bar {
+      width: 0;
+      height: 100%;
+      background: #3370ff;
+      transition: width 0.2s ease;
+    }
+    .progress-text {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #646a73;
+    }
+    .is-loading .progress-bar {
+      background-image: linear-gradient(90deg, #3370ff, #6aa5ff, #3370ff);
+      background-size: 160px 100%;
+      animation: loadingStripe 1.2s linear infinite;
+    }
+    @keyframes loadingStripe {
+      from { background-position: 0 0; }
+      to { background-position: 160px 0; }
+    }
     textarea {
       width: 100%;
       height: 160px;
@@ -82,6 +114,10 @@
       transition: all 0.2s;
       font-weight: 500;
     }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
     .btn-primary {
       background: #3370ff;
       color: #fff;
@@ -93,6 +129,12 @@
       color: #1f2329;
     }
     .btn-secondary:hover { background: #e8eaed; }
+    .btn-zip {
+      background: #00a870;
+      color: #fff;
+      display: none;
+    }
+    .btn-zip:hover { background: #008f5d; }
     .hint {
       color: #8f959e;
       font-size: 11px;
@@ -110,23 +152,54 @@
     <div class="stat-item">文本 <span class="stat-value" id="stat-texts">0</span></div>
     <div class="stat-item">大小 <span class="stat-value" id="stat-size">0 KB</span></div>
   </div>
-  <div class="status" id="status"></div>
+  <div class="status show loading" id="status">正在初始化导出...</div>
+  <div class="progress show" id="progress">
+    <div class="progress-track">
+      <div class="progress-bar" id="progress-bar" style="width:18%"></div>
+    </div>
+    <div class="progress-text" id="progress-text">正在打开导出面板...</div>
+  </div>
   <textarea id="json-output" readonly placeholder="导出数据将显示在这里..."></textarea>
   <div class="btn-row">
     <button class="btn-primary" id="btn-copy">复制到剪贴板</button>
+    <button class="btn-zip" id="btn-download-zip">下载 ZIP</button>
     <button class="btn-secondary" id="btn-close">关闭</button>
   </div>
-  <div class="hint">复制 JSON 数据，可用于代码生成、设计规范提取等场景</div>
+  <div class="hint" id="hint">复制 JSON 数据，可用于代码生成、设计规范提取等场景</div>
   <script>
     var statusEl = document.getElementById('status');
     var textarea = document.getElementById('json-output');
     var btnCopy = document.getElementById('btn-copy');
+    var btnDownloadZip = document.getElementById('btn-download-zip');
     var btnClose = document.getElementById('btn-close');
     var statsEl = document.getElementById('stats');
+    var hintEl = document.getElementById('hint');
+    var progressEl = document.getElementById('progress');
+    var progressBarEl = document.getElementById('progress-bar');
+    var progressTextEl = document.getElementById('progress-text');
+    var currentZipPayload = null;
+    var currentZipName = 'mastergo_export.zip';
 
     function showStatus(type, text) {
       statusEl.className = 'status show ' + type;
       statusEl.textContent = text;
+    }
+
+    function setLoading(isLoading) {
+      document.body.className = isLoading ? 'is-loading' : '';
+      progressEl.className = isLoading ? 'progress show' : 'progress';
+      btnCopy.disabled = isLoading;
+      btnDownloadZip.disabled = isLoading;
+    }
+
+    function updateProgress(payload) {
+      var current = payload.current || 0;
+      var total = payload.total || 0;
+      var pct = total > 0 ? Math.max(4, Math.min(100, Math.round(current / total * 100))) : 18;
+      progressBarEl.style.width = pct + '%';
+      progressTextEl.textContent = payload.message || '正在导出...';
+      showStatus('loading', payload.message || '正在导出...');
+      setLoading(true);
     }
 
     function countNodes(nodes) {
@@ -142,13 +215,190 @@
       return { nodes: count, texts: texts };
     }
 
-    window.onmessage = function (event) {
-      if (event.data.type === 'sendData') {
-        var json = event.data.text;
-        textarea.value = json;
+    function utf8Bytes(str) {
+      return new TextEncoder().encode(str);
+    }
 
-        if (event.data.mode) {
-          document.getElementById('mode-label').textContent = '- ' + event.data.mode;
+    function base64ToBytes(base64) {
+      var binary = atob(base64);
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes;
+    }
+
+    function assetToBytes(asset) {
+      if (asset.bytes && asset.bytes.length != null) {
+        return new Uint8Array(asset.bytes);
+      }
+      if (asset.base64) {
+        return base64ToBytes(asset.base64);
+      }
+      return new Uint8Array(0);
+    }
+
+    function crc32(bytes) {
+      var table = crc32.table;
+      if (!table) {
+        table = [];
+        for (var n = 0; n < 256; n++) {
+          var c = n;
+          for (var k = 0; k < 8; k++) {
+            c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+          }
+          table[n] = c >>> 0;
+        }
+        crc32.table = table;
+      }
+      var crc = 0xffffffff;
+      for (var i = 0; i < bytes.length; i++) {
+        crc = table[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+      }
+      return (crc ^ 0xffffffff) >>> 0;
+    }
+
+    function writeUint16(arr, value) {
+      arr.push(value & 255, (value >>> 8) & 255);
+    }
+
+    function writeUint32(arr, value) {
+      arr.push(value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255);
+    }
+
+    function appendBytes(arr, bytes) {
+      for (var i = 0; i < bytes.length; i++) arr.push(bytes[i]);
+    }
+
+    function makeZip(files) {
+      var output = [];
+      var central = [];
+      var offset = 0;
+
+      for (var i = 0; i < files.length; i++) {
+        var file = files[i];
+        var nameBytes = utf8Bytes(file.name);
+        var dataBytes = file.bytes;
+        var checksum = crc32(dataBytes);
+        var local = [];
+
+        writeUint32(local, 0x04034b50);
+        writeUint16(local, 20);
+        writeUint16(local, 2048);
+        writeUint16(local, 0);
+        writeUint16(local, 0);
+        writeUint16(local, 0);
+        writeUint32(local, checksum);
+        writeUint32(local, dataBytes.length);
+        writeUint32(local, dataBytes.length);
+        writeUint16(local, nameBytes.length);
+        writeUint16(local, 0);
+        appendBytes(local, nameBytes);
+        appendBytes(local, dataBytes);
+        appendBytes(output, local);
+
+        var entry = [];
+        writeUint32(entry, 0x02014b50);
+        writeUint16(entry, 20);
+        writeUint16(entry, 20);
+        writeUint16(entry, 2048);
+        writeUint16(entry, 0);
+        writeUint16(entry, 0);
+        writeUint16(entry, 0);
+        writeUint32(entry, checksum);
+        writeUint32(entry, dataBytes.length);
+        writeUint32(entry, dataBytes.length);
+        writeUint16(entry, nameBytes.length);
+        writeUint16(entry, 0);
+        writeUint16(entry, 0);
+        writeUint16(entry, 0);
+        writeUint16(entry, 0);
+        writeUint32(entry, 0);
+        writeUint32(entry, offset);
+        appendBytes(entry, nameBytes);
+        appendBytes(central, entry);
+
+        offset += local.length;
+      }
+
+      var centralOffset = output.length;
+      appendBytes(output, central);
+      var centralSize = central.length;
+      writeUint32(output, 0x06054b50);
+      writeUint16(output, 0);
+      writeUint16(output, 0);
+      writeUint16(output, files.length);
+      writeUint16(output, files.length);
+      writeUint32(output, centralSize);
+      writeUint32(output, centralOffset);
+      writeUint16(output, 0);
+
+      return new Uint8Array(output);
+    }
+
+    function buildZipFromPayload(payload) {
+      var files = [{
+        name: payload.jsonFileName || 'design.json',
+        bytes: utf8Bytes(payload.json || '{}')
+      }];
+      var assets = payload.assets || [];
+      for (var i = 0; i < assets.length; i++) {
+        var bytes = assetToBytes(assets[i]);
+        if (!bytes.length) continue;
+        files.push({
+          name: assets[i].fileName,
+          bytes: bytes
+        });
+      }
+      return makeZip(files);
+    }
+
+    function downloadBytes(bytes, fileName) {
+      var blob = new Blob([bytes], { type: 'application/zip' });
+      var url = URL.createObjectURL(blob);
+      var link = document.createElement('a');
+      link.href = url;
+      link.download = fileName || 'mastergo_export.zip';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    }
+
+    setLoading(true);
+    window.parent.postMessage({ type: 'uiReady' }, '*');
+    window.parent.postMessage({ pluginMessage: { type: 'uiReady' } }, '*');
+
+    window.onmessage = function (event) {
+      var message = event.data && event.data.pluginMessage ? event.data.pluginMessage : event.data;
+      if (!message) return;
+
+      if (message.type === 'progress') {
+        updateProgress(message);
+        return;
+      }
+
+      if (message.type === 'error') {
+        setLoading(false);
+        showStatus('error', message.message || '导出失败');
+        return;
+      }
+
+      if (message.type === 'sendData') {
+        var json = message.text;
+        textarea.value = json;
+        setLoading(false);
+        progressBarEl.style.width = '100%';
+        progressTextEl.textContent = '导出完成';
+        currentZipPayload = message.zipPayload || null;
+        currentZipName = message.zipName || 'mastergo_export.zip';
+        btnDownloadZip.style.display = currentZipPayload ? 'inline-block' : 'none';
+        hintEl.textContent = currentZipPayload
+          ? 'ZIP 包含 design.json 和 png 目录，JSON 内 assets.png 会对应 PNG 文件路径'
+          : '复制 JSON 数据，可用于代码生成、设计规范提取等场景';
+
+        if (message.mode) {
+          document.getElementById('mode-label').textContent = '- ' + message.mode;
         }
 
         // 统计
@@ -161,7 +411,7 @@
           statsEl.style.display = 'flex';
         } catch {}
 
-        showStatus('success', '导出完成，点击下方按钮复制');
+        showStatus('success', currentZipPayload ? '导出完成，点击下方按钮下载 ZIP' : '导出完成，点击下方按钮复制');
       }
     };
 
@@ -177,6 +427,23 @@
         }, 1500);
       } catch (e) {
         showStatus('error', '复制失败，请手动全选复制');
+      }
+    });
+
+    btnDownloadZip.addEventListener('click', function () {
+      if (!currentZipPayload) return;
+      try {
+        btnDownloadZip.disabled = true;
+        btnDownloadZip.textContent = '生成中...';
+        showStatus('loading', '正在生成 ZIP，请稍候...');
+        var zipBytes = buildZipFromPayload(currentZipPayload);
+        downloadBytes(zipBytes, currentZipName);
+        showStatus('success', 'ZIP 已生成：' + currentZipName);
+      } catch (e) {
+        showStatus('error', 'ZIP 生成失败：' + e.message);
+      } finally {
+        btnDownloadZip.disabled = false;
+        btnDownloadZip.textContent = '下载 ZIP';
       }
     });
 
