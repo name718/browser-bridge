@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { type BridgeRequest, type BrowserStatus } from "@browser-bridge/shared";
 
 export type BrowserToolBridge = {
@@ -133,6 +136,11 @@ const getInteractivesSchema = optionalTabId.extend({
 const screenshotSchema = optionalTabId.extend({
   format: z.enum(["png", "jpeg"]).optional(),
   quality: z.number().int().min(0).max(100).optional()
+});
+
+const saveScreenshotSchema = screenshotSchema.extend({
+  path: z.string().optional(),
+  filename: z.string().optional()
 });
 
 const stepTargetSchema = z.object({
@@ -442,6 +450,29 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
       }
     },
     {
+      name: "browser_save_screenshot",
+      description: "截取当前标签页或指定标签页的可视区域，并由本地 MCP 服务保存为图片文件。默认保存到桌面，只返回文件路径和元数据，避免把大图 base64 塞进模型上下文。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        format: { type: "string", enum: ["png", "jpeg"] },
+        quality: { type: "number" },
+        path: { type: "string" },
+        filename: { type: "string" }
+      }),
+      handler: async (args) => {
+        const parsed = saveScreenshotSchema.parse(args ?? {});
+        const result = await bridge.call<Record<string, unknown>>("browser_screenshot", {
+          tabId: parsed.tabId,
+          format: parsed.format,
+          quality: parsed.quality
+        }, { tabId: parsed.tabId });
+        return saveScreenshotResult(result, {
+          path: parsed.path,
+          filename: parsed.filename
+        });
+      }
+    },
+    {
       name: "browser_click",
       description: "通过 elementId、选择器或可见文本点击页面元素。",
       inputSchema: schema({
@@ -643,4 +674,52 @@ function stepTargetProperties(): Record<string, unknown> {
     href: { type: "string" },
     nearText: { type: "string" }
   };
+}
+
+async function saveScreenshotResult(
+  result: Record<string, unknown>,
+  options: { path?: string; filename?: string }
+): Promise<Record<string, unknown>> {
+  const dataUrl = typeof result.dataUrl === "string" ? result.dataUrl : undefined;
+  if (!dataUrl) {
+    throw new Error("INTERNAL_ERROR: 截图结果缺少 dataUrl");
+  }
+
+  const [header, data] = dataUrl.split(",", 2);
+  if (!data) {
+    throw new Error("INTERNAL_ERROR: 截图 dataUrl 格式不正确");
+  }
+
+  const mimeType = typeof result.mimeType === "string"
+    ? result.mimeType
+    : header.match(/^data:(.*);base64$/)?.[1] ?? "image/png";
+  const ext = mimeType === "image/jpeg" ? "jpg" : "png";
+  const target = resolve(options.path ?? defaultScreenshotPath(options.filename, ext));
+
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(target, Buffer.from(data, "base64"));
+
+  return {
+    saved: true,
+    path: target,
+    tabId: result.tabId,
+    url: result.url,
+    title: result.title,
+    mimeType,
+    bytes: Buffer.byteLength(data, "base64")
+  };
+}
+
+function defaultScreenshotPath(filename: string | undefined, ext: string): string {
+  const safeName = sanitizeFilename(filename ?? `browser-bridge-screenshot-${timestamp()}.${ext}`);
+  const name = safeName.endsWith(`.${ext}`) ? safeName : `${safeName}.${ext}`;
+  return join(homedir(), "Desktop", name);
+}
+
+function sanitizeFilename(value: string): string {
+  return value.replace(/[/:\\]/g, "-").replace(/\s+/g, " ").trim() || `browser-bridge-screenshot-${timestamp()}.png`;
+}
+
+function timestamp(): string {
+  return new Date().toISOString().replace(/[:.]/g, "-");
 }

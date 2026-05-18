@@ -219,4 +219,12 @@ pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_run_steps --arg
 pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_screenshot --args '{"format":"png"}' --out /tmp/browser-bridge.png
 ```
 
+通过 MCP 工具直接保存截图到桌面：
+
+```sh
+pnpm --filter @browser-bridge/mcp-server smoke -- --tool browser_save_screenshot --args '{"filename":"cooper-page.png"}'
+```
+
+`browser_screenshot` 会返回 MCP image content，适合需要让支持图片内容的客户端直接查看截图。`browser_save_screenshot` 会把图片写入本地文件，只返回路径和元数据，适合避免大图 base64 占用模型上下文。`browser_run_steps` 中的 `screenshot` 步骤默认只返回截图元数据，不返回完整图片。
+
 冒烟测试会通过 MCP 代理自动拉起 daemon。如果 daemon 已经在运行，会直接复用。
