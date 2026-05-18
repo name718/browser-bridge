@@ -1,0 +1,21 @@
+{
+  "name": "Design JSON Export",
+  "apiVersion": "1.0.0",
+  "main": "main.js",
+  "ui": "ui.html",
+  "menu": [
+    {
+      "name": "导出当前页面",
+      "command": "exportPage"
+    },
+    {
+      "name": "导出当前页面（含图片）",
+      "command": "exportPageWithImages"
+    },
+    {
+      "name": "导出选中图层",
+      "command": "exportSelection"
+    }
+  ],
+  "id": 193273353174723
+}

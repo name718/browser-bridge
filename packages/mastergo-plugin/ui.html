@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      padding: 16px;
+      font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+      font-size: 13px;
+      color: #1f2329;
+      background: #fff;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .header h3 {
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .mode-tag {
+      font-size: 12px;
+      color: #8f959e;
+      font-weight: 400;
+      margin-left: 6px;
+    }
+    .stats {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 12px;
+      font-size: 12px;
+      color: #646a73;
+    }
+    .stats .stat-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .stats .stat-value {
+      font-weight: 600;
+      color: #1f2329;
+    }
+    .status {
+      padding: 10px 12px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+      font-size: 12px;
+      line-height: 1.6;
+      display: none;
+    }
+    .status.show { display: block; }
+    .status.success { background: #f0f9eb; color: #34a853; }
+    .status.error { background: #fef0f0; color: #d93025; }
+    textarea {
+      width: 100%;
+      height: 160px;
+      padding: 8px;
+      border: 1px solid #dee0e3;
+      border-radius: 6px;
+      font-family: "SF Mono", Menlo, Consolas, monospace;
+      font-size: 11px;
+      color: #1f2329;
+      resize: vertical;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    textarea:focus { border-color: #3370ff; }
+    .btn-row {
+      margin-top: 10px;
+      display: flex;
+      gap: 8px;
+    }
+    button {
+      padding: 6px 18px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-weight: 500;
+    }
+    .btn-primary {
+      background: #3370ff;
+      color: #fff;
+    }
+    .btn-primary:hover { background: #245bdb; }
+    .btn-primary:active { background: #1d49c2; }
+    .btn-secondary {
+      background: #f5f6f7;
+      color: #1f2329;
+    }
+    .btn-secondary:hover { background: #e8eaed; }
+    .hint {
+      color: #8f959e;
+      font-size: 11px;
+      margin-top: 10px;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h3>Design JSON Export <span class="mode-tag" id="mode-label"></span></h3>
+  </div>
+  <div class="stats" id="stats" style="display:none">
+    <div class="stat-item">节点 <span class="stat-value" id="stat-nodes">0</span></div>
+    <div class="stat-item">文本 <span class="stat-value" id="stat-texts">0</span></div>
+    <div class="stat-item">大小 <span class="stat-value" id="stat-size">0 KB</span></div>
+  </div>
+  <div class="status" id="status"></div>
+  <textarea id="json-output" readonly placeholder="导出数据将显示在这里..."></textarea>
+  <div class="btn-row">
+    <button class="btn-primary" id="btn-copy">复制到剪贴板</button>
+    <button class="btn-secondary" id="btn-close">关闭</button>
+  </div>
+  <div class="hint">复制 JSON 数据，可用于代码生成、设计规范提取等场景</div>
+  <script>
+    var statusEl = document.getElementById('status');
+    var textarea = document.getElementById('json-output');
+    var btnCopy = document.getElementById('btn-copy');
+    var btnClose = document.getElementById('btn-close');
+    var statsEl = document.getElementById('stats');
+
+    function showStatus(type, text) {
+      statusEl.className = 'status show ' + type;
+      statusEl.textContent = text;
+    }
+
+    function countNodes(nodes) {
+      var count = 0, texts = 0;
+      function walk(arr) {
+        for (var i = 0; i < arr.length; i++) {
+          count++;
+          if (arr[i].type === 'TEXT') texts++;
+          if (arr[i].children) walk(arr[i].children);
+        }
+      }
+      if (nodes) walk(nodes);
+      return { nodes: count, texts: texts };
+    }
+
+    window.onmessage = function (event) {
+      if (event.data.type === 'sendData') {
+        var json = event.data.text;
+        textarea.value = json;
+
+        if (event.data.mode) {
+          document.getElementById('mode-label').textContent = '- ' + event.data.mode;
+        }
+
+        // 统计
+        try {
+          var data = JSON.parse(json);
+          var c = countNodes(data.nodes);
+          document.getElementById('stat-nodes').textContent = c.nodes;
+          document.getElementById('stat-texts').textContent = c.texts;
+          document.getElementById('stat-size').textContent = (json.length / 1024).toFixed(1) + ' KB';
+          statsEl.style.display = 'flex';
+        } catch {}
+
+        showStatus('success', '导出完成，点击下方按钮复制');
+      }
+    };
+
+    btnCopy.addEventListener('click', function () {
+      textarea.select();
+      try {
+        document.execCommand('copy');
+        btnCopy.textContent = '已复制!';
+        btnCopy.style.background = '#34a853';
+        setTimeout(function () {
+          btnCopy.textContent = '复制到剪贴板';
+          btnCopy.style.background = '';
+        }, 1500);
+      } catch (e) {
+        showStatus('error', '复制失败，请手动全选复制');
+      }
+    });
+
+    btnClose.addEventListener('click', function () {
+      window.parent.postMessage({ type: 'closePlugin' }, '*');
+    });
+  </script>
+</body>
+</html>
