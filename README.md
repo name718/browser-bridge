@@ -7,6 +7,7 @@
 
 <p align="center">
   <a href="#特性">特性</a> ·
+  <a href="#使用场景">使用场景</a> ·
   <a href="#快速开始">快速开始</a> ·
   <a href="#工具一览">工具一览</a> ·
   <a href="#安全机制">安全机制</a> ·
@@ -107,6 +108,124 @@ browser_cdp_session({ enable: ["Profiler"], durationMs: 5000 })
 | **CDP** | `browser_cdp` `browser_cdp_session` | Chrome DevTools Protocol |
 | **性能分析** | `browser_responsive` `browser_network_analysis` | 响应式测试 + 网络分析 |
 | **自动化** | `browser_run_steps` `browser_get_audit_log` | 多步骤流程 + 审计 |
+
+## 使用场景
+
+你只需要用自然语言告诉 Agent 做什么，Agent 会自动选择合适的工具完成任务。
+
+### 页面分析
+
+> **你**：帮我分析一下这个页面是干什么的
+>
+> **Agent**：打开页面 → `browser_capture_page` 获取 PDF 内容 → 分析页面结构和功能，输出总结
+
+### 页面性能分析
+
+> **你**：帮我分析这个页面的加载性能
+>
+> **Agent**：`browser_network_analysis` 抓取网络请求 → `browser_cdp({ method: "Performance.getMetrics" })` 获取性能指标 → 分析慢请求、传输大小、关键指标，输出报告
+
+### 响应式布局测试
+
+> **你**：帮我看看这个页面在手机上显示正常吗
+>
+> **Agent**：`browser_responsive` 自动在 Desktop / Tablet / Mobile 三种视口下截图 → 对比截图，指出布局问题
+
+### 自动化回归测试
+
+> **你**：帮我测一下登录流程有没有问题
+>
+> **Agent**：`browser_run_steps` 按步骤操作：打开登录页 → 填写表单 → 点击登录 → 断言页面出现 "Dashboard" → 截图留档
+
+### 批量填表单
+
+> **你**：帮我把这个注册表单填了
+>
+> **Agent**：`browser_fill_form` 一次性填写邮箱、密码、昵称等所有字段，不需要逐个查找
+
+### JS 调试
+
+> **你**：帮我看看 `window.__vm__` 上的用户数据对不对
+>
+> **Agent**：`browser_evaluate({ expression: "window.__vm__" })` 直接在页面 MAIN world 执行，返回结果
+
+### Console 错误排查
+
+> **你**：帮我看看这个页面有没有报错
+>
+> **Agent**：`browser_cdp_session({ enable: ["Runtime"], durationMs: 5000 })` 收集 console.error 和未捕获异常，列出所有错误及调用栈
+
+### 网络请求分析
+
+> **你**：帮我看看有哪些接口请求慢了
+>
+> **Agent**：`browser_network_analysis` 监听 3 秒网络请求 → 按耗时排序 → 输出慢请求列表（>1s）及传输大小
+
+### CPU 性能分析
+
+> **你**：帮我 profile 一下点击按钮后的 CPU 占用
+>
+> **Agent**：`browser_cdp({ method: "Profiler.start" })` → 点击按钮 → `browser_cdp({ method: "Profiler.stop" })` → 返回火焰图数据，定位热点函数
+
+### 数据抓取
+
+> **你**：帮我把这个列表页的商品名称和价格抓下来
+>
+> **Agent**：`browser_evaluate` 注入自定义 JS 遍历 DOM → 返回结构化 JSON 数据
+
+### UI 走查
+
+> **你**：帮我截个图看看现在页面长什么样
+>
+> **Agent**：`browser_screenshot` 截取当前可视区域 → 返回截图
+
+### Bug 复现
+
+> **你**：按照步骤操作一下看看能不能复现这个 bug
+>
+> **Agent**：`browser_run_steps` 按你描述的步骤依次操作，每步 assert 校验，失败时自动截图
+
+### 内存泄漏排查
+
+> **你**：帮我看看这个页面有没有内存泄漏
+>
+> **Agent**：`browser_cdp_session({ enable: ["HeapProfiler"], durationMs: 3000 })` → 分析堆快照数据
+
+### DOM 结构查看
+
+> **你**：帮我看看这个页面的 DOM 树结构
+>
+> **Agent**：`browser_cdp({ method: "DOM.getDocument", params: { depth: 2 } })` → 返回完整 DOM 树
+
+### CSS 覆盖率
+
+> **你**：帮我看看这个页面有多少 CSS 是没用到的
+>
+> **Agent**：`browser_cdp({ method: "CSS.startCoverage" })` → 操作页面 → 获取覆盖率报告
+
+### 登录态验证
+
+> **你**：帮我看看现在是不是登录状态
+>
+> **Agent**：`browser_evaluate` 读取 cookie 或 token → 判断登录状态并返回
+
+### 截图保存
+
+> **你**：帮我把这个页面截图保存到桌面
+>
+> **Agent**：`browser_save_screenshot` 截图并保存为 PNG/JPG 文件，返回文件路径
+
+### 导出 PDF
+
+> **你**：帮我把这个文档页导出成 PDF
+>
+> **Agent**：`browser_pdf` 用 CDP `Page.printToPDF` 导出，返回 base64 PDF 数据
+
+### 可访问性检查
+
+> **你**：帮我看看这个页面的按钮有没有 aria-label
+>
+> **Agent**：`browser_get_interactives` 获取所有可交互元素 → 检查 aria 属性完整度
 
 ## 快速开始
 
