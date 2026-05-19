@@ -180,6 +180,7 @@
     var currentZipPayload = null;
     var currentZipName = 'mastergo_export.zip';
     var MAX_PREVIEW_CHARS = 250000;
+    var streamZipPayload = null;
 
     function showStatus(type, text) {
       statusEl.className = 'status show ' + type;
@@ -271,7 +272,14 @@
       return new Blob(parts);
     }
 
-    function makeZip(files) {
+    async function normalizeFileBytes(bytes) {
+      if (bytes instanceof Blob) {
+        return new Uint8Array(await bytes.arrayBuffer());
+      }
+      return bytes;
+    }
+
+    async function makeZip(files) {
       var outputParts = [];
       var centralParts = [];
       var offset = 0;
@@ -279,7 +287,7 @@
       for (var i = 0; i < files.length; i++) {
         var file = files[i];
         var nameBytes = utf8Bytes(file.name);
-        var dataBytes = file.bytes;
+        var dataBytes = await normalizeFileBytes(file.bytes);
         var checksum = crc32(dataBytes);
 
         var localHeader = headerBytes([
@@ -342,21 +350,25 @@
       return new Blob(outputParts.concat(centralParts, [endRecord]), { type: 'application/zip' });
     }
 
-    function buildZipFromPayload(payload) {
+    async function buildZipFromPayload(payload) {
+      var jsonParts = payload.jsonParts;
+      if (!jsonParts && payload.jsonNodeParts) {
+        jsonParts = [payload.jsonPrefix || ''].concat(payload.jsonNodeParts, [payload.jsonSuffix || '']);
+      }
       var files = [{
         name: payload.jsonFileName || 'design.json',
-        bytes: utf8Bytes(payload.json || '{}')
+        bytes: jsonParts ? new Blob(jsonParts, { type: 'application/json' }) : utf8Bytes(payload.json || '{}')
       }];
       var assets = payload.assets || [];
       for (var i = 0; i < assets.length; i++) {
         var bytes = assetToBytes(assets[i]);
-        if (!bytes.length) continue;
+        if (!bytes.size && !bytes.length) continue;
         files.push({
           name: assets[i].fileName,
           bytes: bytes
         });
       }
-      return makeZip(files);
+      return await makeZip(files);
     }
 
     function downloadBytes(bytes, fileName) {
@@ -386,6 +398,63 @@
       if (message.type === 'error') {
         setLoading(false);
         showStatus('error', message.message || '导出失败');
+        return;
+      }
+
+      if (message.type === 'zipStreamStart') {
+        streamZipPayload = {
+          jsonFileName: message.jsonFileName || 'design.json',
+          jsonPrefix: '',
+          jsonNodeParts: [],
+          jsonSuffix: '',
+          assets: []
+        };
+        currentZipPayload = null;
+        currentZipName = message.zipName || 'mastergo_export.zip';
+        textarea.value = '正在流式导出 ZIP...\n\nJSON 数据较大时不会在 UI 中完整预览，请在下载后的 ZIP 内查看完整 design.json。';
+        if (message.mode) {
+          document.getElementById('mode-label').textContent = '- ' + message.mode;
+        }
+        return;
+      }
+
+      if (message.type === 'zipAsset') {
+        if (!streamZipPayload) return;
+        var asset = message.asset || {};
+        asset.bytes = message.bytes;
+        streamZipPayload.assets.push(asset);
+        return;
+      }
+
+      if (message.type === 'zipJsonPart') {
+        if (!streamZipPayload) return;
+        streamZipPayload.jsonNodeParts.push(message.part || '');
+        return;
+      }
+
+      if (message.type === 'zipJsonMeta') {
+        if (!streamZipPayload) return;
+        streamZipPayload.jsonFileName = message.fileName || 'design.json';
+        streamZipPayload.jsonPrefix = message.prefix || '';
+        streamZipPayload.jsonSuffix = message.suffix || '';
+        if (message.stats) {
+          document.getElementById('stat-nodes').textContent = message.stats.nodeCount || 0;
+          document.getElementById('stat-texts').textContent = message.stats.textCount == null ? '-' : message.stats.textCount;
+          document.getElementById('stat-size').textContent = ((message.stats.jsonSize || 0) / 1024).toFixed(1) + ' KB';
+          statsEl.style.display = 'flex';
+        }
+        return;
+      }
+
+      if (message.type === 'zipStreamDone') {
+        currentZipPayload = streamZipPayload;
+        streamZipPayload = null;
+        setLoading(false);
+        progressBarEl.style.width = '100%';
+        progressTextEl.textContent = '导出完成';
+        btnDownloadZip.style.display = currentZipPayload ? 'inline-block' : 'none';
+        hintEl.textContent = 'ZIP 包含完整 design.json 和 png 目录；大 JSON 请在 ZIP 中查看。';
+        showStatus('success', '导出完成，点击下方按钮下载 ZIP');
         return;
       }
 
@@ -448,13 +517,13 @@
       }
     });
 
-    btnDownloadZip.addEventListener('click', function () {
+    btnDownloadZip.addEventListener('click', async function () {
       if (!currentZipPayload) return;
       try {
         btnDownloadZip.disabled = true;
         btnDownloadZip.textContent = '生成中...';
         showStatus('loading', '正在生成 ZIP，请稍候...');
-        var zipBlob = buildZipFromPayload(currentZipPayload);
+        var zipBlob = await buildZipFromPayload(currentZipPayload);
         downloadBytes(zipBlob, currentZipName);
         showStatus('success', 'ZIP 已生成：' + currentZipName);
         currentZipPayload = null;

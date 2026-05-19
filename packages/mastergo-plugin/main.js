@@ -112,6 +112,21 @@ function deriveContentBounds(nodes) {
   }
 }
 
+function mergeBounds(a, b) {
+  if (!a) return b || null
+  if (!b) return a
+  const minX = Math.min(a.x, b.x)
+  const minY = Math.min(a.y, b.y)
+  const maxX = Math.max(a.x + a.width, b.x + b.width)
+  const maxY = Math.max(a.y + a.height, b.y + b.height)
+  return {
+    x: round2(minX),
+    y: round2(minY),
+    width: round2(maxX - minX),
+    height: round2(maxY - minY),
+  }
+}
+
 function extractRawSnapshot(node) {
   const keys = [
     'absoluteBoundingBox',
@@ -463,6 +478,165 @@ async function exportPngAssets(nodes) {
   return assets
 }
 
+async function exportZipStreaming(ctx) {
+  const { doc, page, nodes, mode } = ctx
+  const progress = {
+    current: 0,
+    total: countNodeTree(nodes),
+  }
+  const startedAt = new Date().toISOString()
+  const zipName = slugifyName((doc.name || 'untitled') + '_' + (page.name || 'untitled'), 'mastergo_export') + '.zip'
+
+  mg.ui.postMessage({
+    type: 'zipStreamStart',
+    zipName,
+    mode,
+    jsonFileName: 'design.json',
+  })
+
+  const assetsMeta = []
+  let nodeJsonSize = 0
+  let nodeJsonBuffer = ''
+  let contentBounds = null
+
+  function emitNodeJson(part) {
+    nodeJsonSize += part.length
+    nodeJsonBuffer += part
+    if (nodeJsonBuffer.length >= 65536) {
+      mg.ui.postMessage({
+        type: 'zipJsonPart',
+        part: nodeJsonBuffer,
+      })
+      nodeJsonBuffer = ''
+    }
+  }
+
+  function flushNodeJson() {
+    if (!nodeJsonBuffer) return
+    mg.ui.postMessage({
+      type: 'zipJsonPart',
+      part: nodeJsonBuffer,
+    })
+    nodeJsonBuffer = ''
+  }
+
+  async function streamNodeJson(node, options) {
+    const data = await extractNode(node, Object.assign({}, options, { shallow: true }))
+    contentBounds = mergeBounds(contentBounds, data.absoluteBoundingBox || data.absoluteRenderBounds)
+    const children = node.children || []
+    let json = JSON.stringify(data)
+    if (!children.length) {
+      emitNodeJson(json)
+      return
+    }
+
+    emitNodeJson(json.slice(0, -1) + ',"children":[')
+    for (let i = 0; i < children.length; i++) {
+      if (i > 0) emitNodeJson(',')
+      await streamNodeJson(children[i], {
+        includeImages: false,
+        imageNodes: new Set(),
+        parentId: data.id,
+        depth: options.depth + 1,
+        index: i,
+        siblingCount: children.length,
+        pathIds: data.pathIds,
+        pathNames: data.pathNames,
+        progress,
+      })
+    }
+    emitNodeJson(']}')
+  }
+
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i]
+    if (i > 0) emitNodeJson(',\n')
+    await streamNodeJson(node, {
+      includeImages: false,
+      imageNodes: new Set(),
+      parentId: page.id || null,
+      depth: 0,
+      index: i,
+      siblingCount: nodes.length,
+      pathIds: [page.id || ''],
+      pathNames: [page.name || ''],
+      progress,
+    })
+    await wait(0)
+  }
+  flushNodeJson()
+
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i]
+    postProgress('png', i + 1, nodes.length, '正在导出 PNG ' + (i + 1) + '/' + nodes.length)
+    const image = await exportPngForNode(node)
+    if (!image) continue
+
+    const safeName = slugifyName(node.name, 'node_' + (i + 1))
+    const asset = {
+      nodeId: node.id || '',
+      nodeName: node.name || '',
+      fileName: 'png/' + String(i + 1).padStart(2, '0') + '_' + safeName + '.png',
+      mimeType: 'image/png',
+      byteLength: image.byteLength,
+      scale: PNG_EXPORT_SCALE,
+    }
+    assetsMeta.push(asset)
+    mg.ui.postMessage({
+      type: 'zipAsset',
+      asset,
+      bytes: image.bytes,
+    })
+    await wait(0)
+  }
+
+  postProgress('json-stringify', 0, 0, '正在生成 JSON')
+  const head = JSON.stringify({
+    schemaVersion: 2,
+    fileName: doc.name || 'untitled',
+    pageId: page.id || '',
+    pageName: page.name || 'untitled',
+    pageSize: {
+      width: page.width != null ? round2(page.width) : null,
+      height: page.height != null ? round2(page.height) : null,
+    },
+    contentBounds,
+    exportMode: mode,
+    exportedAt: startedAt,
+    nodeCount: nodes.length,
+    assets: {
+      png: assetsMeta,
+    },
+  }, null, 2)
+  const prefix = head.replace(/\n}$/, ',\n  "nodes": [\n')
+  const suffix = '\n  ]\n}'
+  const jsonSize = prefix.length + nodeJsonSize + suffix.length
+
+  mg.ui.postMessage({
+    type: 'zipJsonMeta',
+    fileName: 'design.json',
+    prefix,
+    suffix,
+    stats: {
+      nodeCount: progress.total,
+      topLevelNodeCount: nodes.length,
+      textCount: null,
+      jsonSize,
+    },
+  })
+
+  mg.ui.postMessage({
+    type: 'zipStreamDone',
+    mode,
+    stats: {
+      nodeCount: progress.total,
+      topLevelNodeCount: nodes.length,
+      textCount: null,
+      jsonSize,
+    },
+  })
+}
+
 // ─── 核心：完整节点提取（异步） ───
 
 async function extractNode(node, options = {}) {
@@ -476,6 +650,7 @@ async function extractNode(node, options = {}) {
     pathIds = [],
     pathNames = [],
     progress = null,
+    shallow = false,
   } = options
 
   try {
@@ -667,7 +842,7 @@ async function extractNode(node, options = {}) {
     }
 
     // 子节点递归
-    if (node.children && node.children.length > 0) {
+    if (!shallow && node.children && node.children.length > 0) {
       data.children = []
       for (let i = 0; i < node.children.length; i++) {
         const child = node.children[i]
@@ -751,6 +926,11 @@ async function exportDesign() {
 
     postProgress('start', 0, nodes.length, '准备导出 ' + mode)
     console.log('[Export] 提取中，节点数:', nodes.length)
+
+    if (includeZipAssets) {
+      await exportZipStreaming({ doc, page, nodes, mode })
+      return
+    }
 
     const options = { includeImages, imageNodes: new Set() }
     const extractedNodes = []
