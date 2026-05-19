@@ -115,6 +115,10 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return executeCdp(request);
     case "browser_cdp_session":
       return executeCdpSession(request);
+    case "browser_responsive":
+      return captureResponsive(request);
+    case "browser_network_analysis":
+      return runNetworkAnalysis(request);
     case "browser_screenshot":
     case "browser_click":
     case "browser_find_and_click":
@@ -674,9 +678,9 @@ async function executeCdpSession(request: BridgeRequest): Promise<Record<string,
   }
 
   const events: Array<{ method: string; params: Record<string, unknown> }> = [];
-  const listener = (source: chrome.debugger.Debuggee, method: string, eventParams?: Record<string, unknown>) => {
+  const listener = (source: chrome.debugger.Debuggee, method: string, eventParams?: unknown) => {
     if (source.tabId === tabId) {
-      events.push({ method, params: eventParams ?? {} });
+      events.push({ method, params: (eventParams && typeof eventParams === "object" ? eventParams as Record<string, unknown> : {}) });
     }
   };
 
@@ -706,6 +710,229 @@ async function executeCdpSession(request: BridgeRequest): Promise<Record<string,
   } catch (error) {
     await appendAuditLog({
       tool: "browser_cdp_session",
+      url: tab.url,
+      ok: false,
+      errorCode: error instanceof Error ? error.message.split(":", 1)[0] : "INTERNAL_ERROR"
+    });
+    throw error;
+  } finally {
+    chrome.debugger.onEvent.removeListener(listener);
+    try { chrome.debugger.detach(debuggee); } catch { /* ignore */ }
+  }
+}
+
+async function captureResponsive(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const rawViewports = Array.isArray(params.viewports) ? params.viewports : [];
+  const viewports: Array<{ name: string; width: number; height: number }> = rawViewports
+    .filter((v): v is Record<string, unknown> => isRecord(v))
+    .map((v) => ({
+      name: typeof v.name === "string" ? v.name : `${v.width}x${v.height}`,
+      width: typeof v.width === "number" ? v.width : 1920,
+      height: typeof v.height === "number" ? v.height : 1080
+    }));
+
+  if (viewports.length === 0) {
+    viewports.push(
+      { name: "Desktop", width: 1920, height: 1080 },
+      { name: "Tablet", width: 768, height: 1024 },
+      { name: "Mobile", width: 375, height: 812 }
+    );
+  }
+
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) {
+    throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  await assertUrlAllowed(tab.url);
+
+  if (params.url && typeof params.url === "string" && params.url !== tab.url) {
+    await chrome.tabs.update(tabId, { url: params.url });
+    await delay(2000);
+  }
+
+  const debuggee = { tabId };
+  try {
+    chrome.debugger.attach(debuggee, "1.3");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("Another debugger") || message.includes("already attached")) {
+      throw new Error("DEBUGGER_BUSY: 目标标签页已有 DevTools 打开，请关闭后重试");
+    }
+    throw new Error(`INTERNAL_ERROR: 附加调试器失败: ${message}`);
+  }
+
+  const screenshots: Array<Record<string, unknown>> = [];
+
+  try {
+    for (const vp of viewports) {
+      await sendDebuggerCommand(tabId, "Emulation.setDeviceMetricsOverride", {
+        width: vp.width,
+        height: vp.height,
+        deviceScaleFactor: 1,
+        mobile: vp.width < 768
+      });
+      await delay(500);
+
+      const screenshot = await captureScreenshot(tab, {
+        id: crypto.randomUUID(),
+        tool: "browser_screenshot",
+        tabId,
+        params: { format: "png" }
+      });
+
+      screenshots.push({
+        name: vp.name,
+        width: vp.width,
+        height: vp.height,
+        mimeType: screenshot.mimeType,
+        dataUrl: screenshot.dataUrl
+      });
+    }
+
+    // Reset
+    await sendDebuggerCommand(tabId, "Emulation.clearDeviceMetricsOverride");
+
+    await appendAuditLog({ tool: "browser_responsive", url: tab.url, ok: true });
+
+    return { tabId, url: tab.url, title: tab.title, viewports: viewports.length, screenshots };
+  } catch (error) {
+    await appendAuditLog({
+      tool: "browser_responsive",
+      url: tab.url,
+      ok: false,
+      errorCode: error instanceof Error ? error.message.split(":", 1)[0] : "INTERNAL_ERROR"
+    });
+    throw error;
+  } finally {
+    try { chrome.debugger.detach(debuggee); } catch { /* ignore */ }
+  }
+}
+
+async function runNetworkAnalysis(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const durationMs = typeof params.durationMs === "number" ? Math.max(params.durationMs, 100) : 5000;
+  const slowThresholdMs = typeof params.slowThresholdMs === "number" ? params.slowThresholdMs : 1000;
+
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) {
+    throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  await assertUrlAllowed(tab.url);
+
+  if (params.url && typeof params.url === "string" && params.url !== tab.url) {
+    await chrome.tabs.update(tabId, { url: params.url });
+    await delay(1000);
+  }
+
+  const debuggee = { tabId };
+  try {
+    chrome.debugger.attach(debuggee, "1.3");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("Another debugger") || message.includes("already attached")) {
+      throw new Error("DEBUGGER_BUSY: 目标标签页已有 DevTools 打开，请关闭后重试");
+    }
+    throw new Error(`INTERNAL_ERROR: 附加调试器失败: ${message}`);
+  }
+
+  const requests: Map<string, Record<string, unknown>> = new Map();
+  const responses: Map<string, Record<string, unknown>> = new Map();
+
+  const listener = (source: chrome.debugger.Debuggee, method: string, eventParams?: unknown) => {
+    if (source.tabId !== tabId) return;
+    const p = eventParams && typeof eventParams === "object" ? eventParams as Record<string, unknown> : {};
+    const requestId = typeof p.requestId === "string" ? p.requestId : undefined;
+    if (!requestId) return;
+
+    if (method === "Network.requestWillBeSent") {
+      const req = isRecord(p.request) ? p.request : {};
+      requests.set(requestId, {
+        url: typeof req.url === "string" ? req.url : "",
+        method: typeof req.method === "string" ? req.method : "GET",
+        type: typeof p.type === "string" ? p.type : "Other",
+        timestamp: typeof p.timestamp === "number" ? p.timestamp : 0
+      });
+    } else if (method === "Network.responseReceived") {
+      const resp = isRecord(p.response) ? p.response : {};
+      responses.set(requestId, {
+        status: typeof resp.status === "number" ? resp.status : 0,
+        mimeType: typeof resp.mimeType === "string" ? resp.mimeType : "",
+        encodedDataLength: typeof resp.encodedDataLength === "number" ? resp.encodedDataLength : 0,
+        timing: isRecord(resp.timing) ? resp.timing : {}
+      });
+    }
+  };
+
+  chrome.debugger.onEvent.addListener(listener);
+
+  try {
+    await sendDebuggerCommand(tabId, "Network.enable");
+    await delay(durationMs);
+
+    // Build analysis
+    const allRequests: Array<Record<string, unknown>> = [];
+    let totalTransferSize = 0;
+    let slowCount = 0;
+    const byType: Record<string, number> = {};
+
+    for (const [id, req] of requests) {
+      const resp = responses.get(id);
+      const duration = resp && isRecord(resp.timing)
+        ? (typeof resp.timing.responseTime === "number" && typeof req.timestamp === "number"
+          ? (resp.timing.responseTime as number) * 1000 - (req.timestamp as number) * 1000
+          : 0)
+        : 0;
+
+      const transferSize = resp ? (resp.encodedDataLength as number) || 0 : 0;
+      totalTransferSize += transferSize;
+
+      const type = (req.type as string) || "Other";
+      byType[type] = (byType[type] || 0) + 1;
+
+      const isSlow = duration > slowThresholdMs;
+      if (isSlow) slowCount++;
+
+      allRequests.push({
+        url: (req.url as string).substring(0, 120),
+        method: req.method,
+        type,
+        status: resp?.status ?? "pending",
+        durationMs: Math.round(duration),
+        sizeKB: Math.round(transferSize / 1024),
+        slow: isSlow
+      });
+    }
+
+    const slowRequests = allRequests
+      .filter((r) => r.slow)
+      .sort((a, b) => (b.durationMs as number) - (a.durationMs as number));
+
+    await appendAuditLog({ tool: "browser_network_analysis", url: tab.url, ok: true });
+
+    return {
+      tabId,
+      url: tab.url,
+      title: tab.title,
+      durationMs,
+      summary: {
+        totalRequests: allRequests.length,
+        slowRequests: slowCount,
+        totalTransferKB: Math.round(totalTransferSize / 1024),
+        byType
+      },
+      slowRequests,
+      allRequests: allRequests.sort((a, b) => (b.durationMs as number) - (a.durationMs as number)).slice(0, 50)
+    };
+  } catch (error) {
+    await appendAuditLog({
+      tool: "browser_network_analysis",
       url: tab.url,
       ok: false,
       errorCode: error instanceof Error ? error.message.split(":", 1)[0] : "INTERNAL_ERROR"

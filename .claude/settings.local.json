@@ -38,7 +38,9 @@
       "mcp__browser-bridge__browser_capture_page",
       "mcp__browser-bridge__browser_evaluate",
       "mcp__browser-bridge__browser_cdp",
-      "mcp__browser-bridge__browser_cdp_session"
+      "mcp__browser-bridge__browser_cdp_session",
+      "mcp__browser-bridge__browser_responsive",
+      "mcp__browser-bridge__browser_network_analysis"
     ]
   }
 }

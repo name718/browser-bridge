@@ -650,6 +650,59 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
       }
     },
     {
+      name: "browser_responsive",
+      description: "在多个视口尺寸下截取页面截图，用于响应式布局测试。默认使用 Desktop(1920x1080)、Tablet(768x1024)、Mobile(375x812) 三种尺寸。也可自定义视口列表。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        viewports: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              width: { type: "number" },
+              height: { type: "number" }
+            },
+            required: ["name", "width", "height"],
+            additionalProperties: false
+          }
+        },
+        url: { type: "string" }
+      }),
+      handler: async (args) => {
+        const parsed = optionalTabId.extend({
+          viewports: z.array(z.object({
+            name: z.string(),
+            width: z.number().int().positive(),
+            height: z.number().int().positive()
+          })).optional(),
+          url: z.string().optional()
+        }).parse(args ?? {});
+        return bridge.call("browser_responsive", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_network_analysis",
+      description: "开启 Network 域监听，收集指定时间内的网络请求，分析慢请求、传输大小和请求类型分布。适合页面加载性能分析。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        durationMs: { type: "number" },
+        slowThresholdMs: { type: "number" },
+        url: { type: "string" }
+      }),
+      handler: async (args) => {
+        const parsed = optionalTabId.extend({
+          durationMs: z.number().int().positive().optional(),
+          slowThresholdMs: z.number().int().positive().optional(),
+          url: z.string().optional()
+        }).parse(args ?? {});
+        return bridge.call("browser_network_analysis", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: (parsed.durationMs ?? 3000) + 5000
+        });
+      }
+    },
+    {
       name: "browser_click",
       description: "通过 elementId、选择器或可见文本点击页面元素。",
       inputSchema: schema({

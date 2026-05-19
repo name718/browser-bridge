@@ -31,7 +31,9 @@ export type BridgeTool =
   | "browser_capture_page"
   | "browser_evaluate"
   | "browser_cdp"
-  | "browser_cdp_session";
+  | "browser_cdp_session"
+  | "browser_responsive"
+  | "browser_network_analysis";
 
 export type BridgeRequest = {
   id: string;

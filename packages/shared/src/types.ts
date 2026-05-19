@@ -251,6 +251,25 @@ export type CdpEvent = {
   params: Record<string, unknown>;
 };
 
+export type ResponsiveViewport = {
+  name: string;
+  width: number;
+  height: number;
+};
+
+export type ResponsiveParams = {
+  tabId?: number;
+  viewports?: ResponsiveViewport[];
+  url?: string;
+};
+
+export type NetworkAnalysisParams = {
+  tabId?: number;
+  durationMs?: number;
+  slowThresholdMs?: number;
+  url?: string;
+};
+
 export type BrowserStepAction =
   | "open"
   | "activateTab"

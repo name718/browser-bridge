@@ -49,6 +49,40 @@ browser_cdp_session({ enable: ["Runtime"], durationMs: 5000 })
 
 返回 Runtime.consoleAPICalled 事件，包含所有 console.log/warn/error 输出。
 
+### Console 错误收集（专项）
+
+收集页面错误分三层：
+
+```
+// 1. console.error() 输出 — 业务层错误
+browser_cdp_session({ enable: ["Runtime"], durationMs: 5000 })
+// 过滤 event.method === "Runtime.consoleAPICalled" 且 params.type === "error"
+
+// 2. 未捕获异常 — JS 运行时错误
+browser_cdp({ method: "Runtime.enable" })
+browser_cdp({ method: "Runtime.evaluate", params: {
+  expression: `
+    window.__errors__ = [];
+    window.addEventListener('error', e => window.__errors__.push({
+      message: e.message, filename: e.filename, lineno: e.lineno, colno: e.colno
+    }));
+    window.addEventListener('unhandledrejection', e => window.__errors__.push({
+      message: e.reason?.message || String(e.reason), type: 'unhandledrejection'
+    }));
+  `
+}})
+// 操作页面后读取：
+browser_evaluate({ expression: "JSON.stringify(window.__errors__)" })
+
+// 3. 组合采集（推荐 — 一次拿到所有错误相关事件）
+browser_cdp_session({
+  enable: ["Runtime", "Console"],
+  durationMs: 5000
+})
+```
+
+**快速方案**：如果只需要收集错误，用 `browser_evaluate` 注入全局 error listener 最简单。如果需要完整调用栈，用 `browser_cdp_session` 监听 Runtime 域。
+
 ### 内存堆快照
 
 ```

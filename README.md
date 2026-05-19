@@ -93,7 +93,7 @@ browser_cdp_session({ enable: ["Profiler"], durationMs: 5000 })
 
 ## 工具一览
 
-共 **34 个 MCP 工具**，分为 9 大类：
+共 **36 个 MCP 工具**，分为 10 大类：
 
 | 类别 | 工具 | 说明 |
 |---|---|---|
@@ -105,6 +105,7 @@ browser_cdp_session({ enable: ["Profiler"], durationMs: 5000 })
 | **元素操作** | `browser_click` `browser_type` `browser_clear` `browser_hover` `browser_press_key` `browser_fill_form` `browser_scroll` `browser_wait_for` `browser_assert_text` | 交互操作 |
 | **脚本执行** | `browser_evaluate` | 自定义 JS 执行 |
 | **CDP** | `browser_cdp` `browser_cdp_session` | Chrome DevTools Protocol |
+| **性能分析** | `browser_responsive` `browser_network_analysis` | 响应式测试 + 网络分析 |
 | **自动化** | `browser_run_steps` `browser_get_audit_log` | 多步骤流程 + 审计 |
 
 ## 快速开始
