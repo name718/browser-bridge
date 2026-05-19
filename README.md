@@ -1,96 +1,247 @@
-# 浏览器桥接
+# Browser Bridge
 
-浏览器桥接通过 Chrome 插件和本地 MCP 服务，把本地 AI 代理连接到用户真实 Chrome 浏览器。
+<p align="center">
+<b>让 AI 代理操控你的真实浏览器</b><br/>
+通过 MCP 协议，连接 Claude Code / Cursor / Codex / Gemini CLI 到你的 Chrome 浏览器
+</p>
 
-插件负责保留浏览器访问权限，MCP 服务负责向 Claude Code、Codex、Gemini CLI 等本地代理暴露安全、结构化的浏览器工具。
+<p align="center">
+  <a href="#特性">特性</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#工具一览">工具一览</a> ·
+  <a href="#安全机制">安全机制</a> ·
+  <a href="#架构">架构</a>
+</p>
 
-## 包结构
+---
 
-- `packages/shared`：共享协议和类型定义。
-- `packages/mcp-server`：本地 MCP 服务和 WebSocket 桥接服务。
-- `packages/extension`：Chrome 插件。
+## 为什么需要 Browser Bridge？
 
-## 最小可用范围
+AI 代理擅长写代码，但面对浏览器就无能为力了。你可能遇到过这些场景：
 
-- 读取浏览器连接状态。
-- 读取当前活动标签页。
-- 读取页面文本和结构化页面快照。
-- 读取当前选中文本和页面链接。
-- 通过 `elementId`、选择器或文本点击页面元素。
-- 截取当前可视区域截图。
-- 查看最近的浏览器操作审计日志。
+- 让 AI 帮你测试网页，它只能读代码，不能点按钮
+- 想让 AI 分析页面性能，但它拿不到真实数据
+- 需要 AI 自动化填写表单、操作 SPA，但没有合适的接口
+- 用 Puppeteer 跑无头浏览器？丢失登录态、Cookie、会话全得重新来
 
-暂不支持任意 JavaScript 执行、Cookie 读取、网络拦截等高风险能力。
+**Browser Bridge 解决这个问题**：AI 代理直接操控你已登录的真实 Chrome，保留所有 Cookie、Session 和认证状态，无需任何额外配置。
 
-## 开发
+## 特性
 
-需要 Node.js 18.12 或更高版本。本项目已用 Node.js 22.22.1 验证。
+### 页面读取 — 多层级，按需选择
 
-安装依赖：
+| 工具 | 场景 | Token 成本 |
+|---|---|---|
+| `browser_get_page_text` | 提取可见文本 | 低 |
+| `browser_capture_page` | 智能降级：PDF → 截图 → DOM | 自适应 |
+| `browser_pdf` | 导出完整 PDF（类 Cmd+P） | 中 |
+| `browser_screenshot` | 可视区域截图 | 中 |
+| `browser_get_interactives` | 仅获取可交互元素 | 低 |
+| `browser_get_page_snapshot` | 全量页面快照 | 高 |
 
-```sh
+### 元素交互 — 智能定位，精准操作
+
+```
+// 一行搞定：找到搜索框并输入
+browser_find_and_type({ text: "AI Agent", placeholder: "Search" })
+
+// 意图式操作：AI 只需说"点击登录按钮"
+browser_act({ action: "click", target: "登录" })
+
+// 批量填写表单
+browser_fill_form({ fields: [
+  { placeholder: "邮箱", value: "user@example.com" },
+  { placeholder: "密码", value: "****" }
+]})
+```
+
+### 多步骤自动化
+
+```json
+browser_run_steps({
+  steps: [
+    { "action": "open", "url": "https://example.com" },
+    { "action": "click", "text": "登录" },
+    { "action": "type", "placeholder": "邮箱", "value": "user@example.com" },
+    { "action": "click", "text": "提交" },
+    { "action": "assertText", "contains": "欢迎回来" },
+    { "action": "screenshot" }
+  ]
+})
+```
+
+### 自定义 JS 执行
+
+```json
+browser_evaluate({ expression: "window.__vm__.$data.user.name" })
+browser_evaluate({ expression: "JSON.stringify(performance.getEntriesByType('navigation')[0])" })
+```
+
+### CDP 深度分析
+
+```json
+// 一次性命令
+browser_cdp({ method: "Performance.getMetrics" })
+browser_cdp({ method: "DOM.getDocument", params: { depth: 2 } })
+
+// 事件会话：抓取 3 秒内所有网络请求
+browser_cdp_session({ enable: ["Network"], durationMs: 3000 })
+
+// CPU Profiling
+browser_cdp_session({ enable: ["Profiler"], durationMs: 5000 })
+```
+
+## 工具一览
+
+共 **34 个 MCP 工具**，分为 9 大类：
+
+| 类别 | 工具 | 说明 |
+|---|---|---|
+| **连接** | `browser_use` `browser_status` | 激活和状态检查 |
+| **标签页** | `browser_list_tabs` `browser_open_url` `browser_activate_tab` `browser_get_active_tab` | 标签页管理 |
+| **页面读取** | `browser_get_page_text` `browser_get_page_snapshot` `browser_get_interactives` `browser_get_links` `browser_get_selected_text` `browser_capture_page` | 多层级内容获取 |
+| **截图/导出** | `browser_screenshot` `browser_save_screenshot` `browser_pdf` `browser_save_pdf` | 视觉捕获 |
+| **元素查找** | `browser_find` `browser_find_and_click` `browser_find_and_type` | 智能元素定位 |
+| **元素操作** | `browser_click` `browser_type` `browser_clear` `browser_hover` `browser_press_key` `browser_fill_form` `browser_scroll` `browser_wait_for` `browser_assert_text` | 交互操作 |
+| **脚本执行** | `browser_evaluate` | 自定义 JS 执行 |
+| **CDP** | `browser_cdp` `browser_cdp_session` | Chrome DevTools Protocol |
+| **自动化** | `browser_run_steps` `browser_get_audit_log` | 多步骤流程 + 审计 |
+
+## 快速开始
+
+### 1. 安装依赖
+
+```bash
 pnpm install
-```
-
-执行类型检查：
-
-```sh
-pnpm typecheck
-```
-
-构建所有包：
-
-```sh
 pnpm build
 ```
 
-启动 MCP 代理：
+### 2. 加载 Chrome 插件
 
-```sh
-pnpm dev:server
+1. 打开 `chrome://extensions`
+2. 开启「开发者模式」
+3. 点击「加载已解压的扩展程序」
+4. 选择 `packages/extension/dist`
+
+### 3. 配置 MCP 客户端
+
+在你的 MCP 客户端（Claude Code、Cursor 等）中添加：
+
+```json
+{
+  "mcpServers": {
+    "browser-bridge": {
+      "command": "node",
+      "args": ["<项目路径>/packages/mcp-server/dist/index.js"],
+      "env": {
+        "BROWSER_BRIDGE_PORT": "17321"
+      }
+    }
+  }
+}
 ```
 
-MCP 代理会自动拉起常驻 daemon。daemon 默认使用两个本地端口：
+### 4. 开始使用
 
-- `127.0.0.1:17320`：给 MCP 代理调用的 HTTP API。
-- `127.0.0.1:17321`：给 Chrome 插件连接的 WebSocket。
+AI 代理首次调用时会自动启动 daemon。在 Chrome 插件弹窗中确认连接状态为「已连接」，然后：
 
-执行本地 MCP 冒烟测试：
-
-```sh
-pnpm smoke
+```
+Agent: 用 browser_use 激活浏览器工具
+Agent: 用 browser_open_url 打开目标页面
+Agent: 用 browser_capture_page 智能获取页面内容
+Agent: 用 browser_evaluate 读取 window.__vm__ 数据
+Agent: 用 browser_cdp 获取 Performance 指标
+Agent: 分析并输出结果
 ```
 
-## 加载 Chrome 插件
+## 安全机制
 
-1. 执行 `pnpm build`。
-2. 打开 `chrome://extensions`。
-3. 开启开发者模式。
-4. 点击“加载已解压的扩展程序”。
-5. 选择 `packages/extension/dist`。
+| 层级 | 机制 |
+|---|---|
+| **域名控制** | 白名单 / 黑名单配置 |
+| **高风险确认** | 删除、支付、提交等操作弹出页面内确认浮层 |
+| **密码保护** | 密码字段值永不返回 |
+| **审计日志** | 每次操作记录到本地日志 |
+| **截图开关** | 可禁用截图功能 |
+| **PDF 开关** | 可禁用 PDF 导出 |
+| **URL 限制** | `chrome://`、`about:` 等页面自动拒绝 |
 
-插件加载后，启动 MCP 服务，并打开插件弹窗确认连接状态。
+## 架构
 
-插件弹窗里可以填写桥接地址。默认连接 daemon 的 WebSocket：
-
-```text
-ws://127.0.0.1:17321
+```
+┌─────────────────┐     stdio      ┌──────────────────┐   WebSocket   ┌─────────────────┐
+│   AI Agent      │ ──────────────→│   MCP Server     │──────────────→│  Chrome 插件     │
+│ (Claude Code)   │                │  + Daemon        │               │  (Manifest V3)  │
+│                 │←────────────── │                  │←──────────────│                 │
+└─────────────────┘   JSON 响应    └──────────────────┘   Bridge响应  └─────────────────┘
+                                                                           │
+                                                                           ▼
+                                                                    ┌─────────────┐
+                                                                    │  真实浏览器  │
+                                                                    │  (你的 Chrome)│
+                                                                    └─────────────┘
 ```
 
-当 AI Agent 第一次调用 MCP 工具时，MCP 代理会自动启动 daemon。daemon 日志会打印需要填写的桥接地址。把该地址保存到插件中后，插件会自动重连；之后同一个地址会持久化保存，不需要每次重新配置。
+- **MCP Server** — 标准 stdio MCP 协议，所有 AI 客户端兼容
+- **Daemon** — 常驻进程，管理 WebSocket 桥接和 HTTP API
+- **Chrome Extension** — Manifest V3，offscreen 页维持长连接
 
-插件会用 Chrome offscreen 隐藏页维持 WebSocket 连接，避免 Manifest V3 background service worker 休眠导致连接断开。
+## 进阶用法
 
-也可以手动启动 daemon：
+### 页面性能分析
 
-```sh
-pnpm --filter @browser-bridge/mcp-server daemon
+```bash
+# 1. 获取核心 Web Vitals
+browser_evaluate({ expression: "..." })  # Navigation Timing + FCP
+
+# 2. CDP 深度指标
+browser_cdp({ method: "Performance.getMetrics" })
+
+# 3. 网络请求抓包
+browser_cdp_session({ enable: ["Network"], durationMs: 3000 })
+
+# 4. CPU Profiling
+browser_cdp_session({ enable: ["Profiler"], durationMs: 5000 })
 ```
 
-## MCP 接入
+### 自动化测试
 
-支持 JSON 配置的 MCP 客户端可以直接使用 [mcp.json](/Users/didi/Desktop/my-project/browser-bridge-1/mcp.json)。Codex、Claude、Gemini CLI 的配置说明见 [docs/mcp-setup.md](/Users/didi/Desktop/my-project/browser-bridge-1/docs/mcp-setup.md)。
+```bash
+browser_run_steps({
+  screenshotOnError: true,
+  steps: [
+    { action: "open", url: "https://app.example.com/login" },
+    { action: "fillForm", fields: [
+      { placeholder: "Email", value: "test@example.com" },
+      { placeholder: "Password", value: "test123" }
+    ]},
+    { action: "click", text: "Sign In" },
+    { action: "assertText", contains: "Dashboard" },
+    { action: "screenshot" }
+  ]
+})
+```
 
-## 安全
+## 开发
 
-第一层安全机制支持在插件弹窗中配置域名允许列表、拒绝列表、截图开关和高风险点击确认。高风险确认会显示页面内浮层，最近操作会写入审计日志。详情见 [docs/security.md](/Users/didi/Desktop/my-project/browser-bridge-1/docs/security.md)。
+```bash
+pnpm install          # 安装依赖
+pnpm build            # 构建所有包
+pnpm typecheck        # 类型检查
+pnpm smoke            # MCP 冒烟测试
+pnpm dev:server       # 启动开发 MCP 服务
+```
+
+## 兼容
+
+| 客户端 | 状态 |
+|---|---|
+| Claude Code | ✅ 已验证 |
+| Cursor | ✅ 支持 |
+| Codex | ✅ 支持 |
+| Gemini CLI | ✅ 支持 |
+| 任何 MCP 客户端 | ✅ 标准协议 |
+
+## License
+
+MIT
