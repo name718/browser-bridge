@@ -234,6 +234,23 @@ export type EvaluateParams = {
   returnByValue?: boolean;
 };
 
+export type CdpParams = {
+  tabId?: number;
+  method: string;
+  params?: Record<string, unknown>;
+};
+
+export type CdpSessionParams = {
+  tabId?: number;
+  enable: string[];
+  durationMs?: number;
+};
+
+export type CdpEvent = {
+  method: string;
+  params: Record<string, unknown>;
+};
+
 export type BrowserStepAction =
   | "open"
   | "activateTab"

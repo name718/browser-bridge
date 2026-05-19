@@ -29,7 +29,9 @@ export type BridgeTool =
   | "browser_pdf"
   | "browser_save_pdf"
   | "browser_capture_page"
-  | "browser_evaluate";
+  | "browser_evaluate"
+  | "browser_cdp"
+  | "browser_cdp_session";
 
 export type BridgeRequest = {
   id: string;

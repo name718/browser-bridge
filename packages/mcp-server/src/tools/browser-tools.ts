@@ -612,6 +612,44 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
       }
     },
     {
+      name: "browser_cdp",
+      description: "在浏览器端发送一次性 CDP (Chrome DevTools Protocol) 命令并返回结果。可用于获取 Performance 指标、DOM 树、网络详情等深度数据。method 格式为 'Domain.method'，如 'Performance.getMetrics'、'DOM.getDocument'、'Runtime.evaluate'。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        method: { type: "string" },
+        params: { type: "object" }
+      }, ["method"]),
+      handler: async (args) => {
+        const parsed = optionalTabId.extend({
+          method: z.string().min(1),
+          params: z.record(z.unknown()).optional()
+        }).parse(args ?? {});
+        return bridge.call("browser_cdp", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_cdp_session",
+      description: "开启 CDP 域监听，收集指定时间内的所有事件。用于抓包网络请求、收集性能事件、记录 HeapProfiler 数据等。enable 传入 CDP 域名数组（如 ['Network', 'Performance']），durationMs 为监听时长（默认 3000ms）。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        enable: {
+          type: "array",
+          items: { type: "string" }
+        },
+        durationMs: { type: "number" }
+      }, ["enable"]),
+      handler: async (args) => {
+        const parsed = optionalTabId.extend({
+          enable: z.array(z.string().min(1)).min(1),
+          durationMs: z.number().int().positive().optional()
+        }).parse(args ?? {});
+        return bridge.call("browser_cdp_session", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: (parsed.durationMs ?? 3000) + 5000
+        });
+      }
+    },
+    {
       name: "browser_click",
       description: "通过 elementId、选择器或可见文本点击页面元素。",
       inputSchema: schema({

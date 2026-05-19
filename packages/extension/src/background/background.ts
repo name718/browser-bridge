@@ -111,6 +111,10 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return capturePdf(request);
     case "browser_evaluate":
       return evaluateScript(request);
+    case "browser_cdp":
+      return executeCdp(request);
+    case "browser_cdp_session":
+      return executeCdpSession(request);
     case "browser_screenshot":
     case "browser_click":
     case "browser_find_and_click":
@@ -582,6 +586,134 @@ async function evaluateScript(request: BridgeRequest): Promise<Record<string, un
       errorCode: error instanceof Error ? error.message.split(":", 1)[0] : "INTERNAL_ERROR"
     });
     throw error;
+  }
+}
+
+async function executeCdp(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const method = typeof params.method === "string" ? params.method : "";
+  if (!method.includes(".")) {
+    throw new Error("INVALID_PARAMS: method 必须是 'Domain.method' 格式");
+  }
+
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) {
+    throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  await assertUrlAllowed(tab.url);
+
+  if (!tab.url || /^(chrome|chrome-extension|about|edge|brave):/.test(tab.url)) {
+    throw new Error("UNSUPPORTED_PAGE: 当前页面不支持 CDP 操作");
+  }
+
+  const debuggee = { tabId };
+
+  try {
+    chrome.debugger.attach(debuggee, "1.3");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("Another debugger") || message.includes("already attached")) {
+      throw new Error("DEBUGGER_BUSY: 目标标签页已有 DevTools 打开，请关闭后重试");
+    }
+    throw new Error(`INTERNAL_ERROR: 附加调试器失败: ${message}`);
+  }
+
+  try {
+    const cdpParams = isRecord(params.params) ? params.params : undefined;
+    const result = await sendDebuggerCommand(tabId, method, cdpParams);
+    await appendAuditLog({ tool: "browser_cdp", url: tab.url, ok: true });
+    return { tabId, url: tab.url, title: tab.title, method, result };
+  } catch (error) {
+    await appendAuditLog({
+      tool: "browser_cdp",
+      url: tab.url,
+      ok: false,
+      errorCode: error instanceof Error ? error.message.split(":", 1)[0] : "INTERNAL_ERROR"
+    });
+    throw error;
+  } finally {
+    try { chrome.debugger.detach(debuggee); } catch { /* ignore */ }
+  }
+}
+
+async function executeCdpSession(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const enableDomains = Array.isArray(params.enable) ? params.enable.filter((d): d is string => typeof d === "string") : [];
+  if (enableDomains.length === 0) {
+    throw new Error("INVALID_PARAMS: enable 参数必填，至少一个 CDP 域名");
+  }
+
+  const durationMs = typeof params.durationMs === "number" ? Math.max(params.durationMs, 100) : 3000;
+
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) {
+    throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  await assertUrlAllowed(tab.url);
+
+  if (!tab.url || /^(chrome|chrome-extension|about|edge|brave):/.test(tab.url)) {
+    throw new Error("UNSUPPORTED_PAGE: 当前页面不支持 CDP 操作");
+  }
+
+  const debuggee = { tabId };
+
+  try {
+    chrome.debugger.attach(debuggee, "1.3");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("Another debugger") || message.includes("already attached")) {
+      throw new Error("DEBUGGER_BUSY: 目标标签页已有 DevTools 打开，请关闭后重试");
+    }
+    throw new Error(`INTERNAL_ERROR: 附加调试器失败: ${message}`);
+  }
+
+  const events: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const listener = (source: chrome.debugger.Debuggee, method: string, eventParams?: Record<string, unknown>) => {
+    if (source.tabId === tabId) {
+      events.push({ method, params: eventParams ?? {} });
+    }
+  };
+
+  chrome.debugger.onEvent.addListener(listener);
+
+  try {
+    for (const domain of enableDomains) {
+      try {
+        await sendDebuggerCommand(tabId, `${domain}.enable`);
+      } catch {
+        // some domains may not support .enable, ignore
+      }
+    }
+
+    await delay(durationMs);
+
+    await appendAuditLog({ tool: "browser_cdp_session", url: tab.url, ok: true });
+
+    return {
+      tabId,
+      url: tab.url,
+      title: tab.title,
+      durationMs,
+      eventCount: events.length,
+      events
+    };
+  } catch (error) {
+    await appendAuditLog({
+      tool: "browser_cdp_session",
+      url: tab.url,
+      ok: false,
+      errorCode: error instanceof Error ? error.message.split(":", 1)[0] : "INTERNAL_ERROR"
+    });
+    throw error;
+  } finally {
+    chrome.debugger.onEvent.removeListener(listener);
+    try { chrome.debugger.detach(debuggee); } catch { /* ignore */ }
   }
 }
 
