@@ -138,6 +138,35 @@ const screenshotSchema = optionalTabId.extend({
   quality: z.number().int().min(0).max(100).optional()
 });
 
+const pdfSchema = optionalTabId.extend({
+  landscape: z.boolean().optional(),
+  printBackground: z.boolean().optional(),
+  scale: z.number().min(0.1).max(2).optional(),
+  paperWidth: z.number().positive().optional(),
+  paperHeight: z.number().positive().optional(),
+  marginTop: z.number().min(0).optional(),
+  marginBottom: z.number().min(0).optional(),
+  marginLeft: z.number().min(0).optional(),
+  marginRight: z.number().min(0).optional(),
+  pageRanges: z.string().optional(),
+  preferCSSPageSize: z.boolean().optional(),
+  returnFormat: z.enum(["resource", "text"]).optional()
+});
+
+const savePdfSchema = pdfSchema.extend({
+  path: z.string().optional(),
+  filename: z.string().optional()
+});
+
+const capturePageSchema = optionalTabId.extend({
+  preferredFormat: z.array(z.enum(["pdf", "screenshot", "text"])).optional(),
+  pdf: pdfSchema.partial().optional(),
+  screenshot: screenshotSchema.partial().optional(),
+  savePath: z.string().optional(),
+  saveFilename: z.string().optional(),
+  returnFormat: z.enum(["resource", "text"]).optional()
+});
+
 const saveScreenshotSchema = screenshotSchema.extend({
   path: z.string().optional(),
   filename: z.string().optional()
@@ -181,6 +210,7 @@ const runStepSchema = stepTargetSchema.extend({
     "getText",
     "snapshot",
     "screenshot",
+    "pdf",
     "sleep"
   ]),
   description: z.string().optional(),
@@ -199,7 +229,18 @@ const runStepSchema = stepTargetSchema.extend({
   visibleOnly: z.boolean().optional(),
   viewportOnly: z.boolean().optional(),
   format: z.enum(["png", "jpeg"]).optional(),
-  quality: z.number().int().min(0).max(100).optional()
+  quality: z.number().int().min(0).max(100).optional(),
+  landscape: z.boolean().optional(),
+  printBackground: z.boolean().optional(),
+  scale: z.number().min(0.1).max(2).optional(),
+  paperWidth: z.number().positive().optional(),
+  paperHeight: z.number().positive().optional(),
+  marginTop: z.number().min(0).optional(),
+  marginBottom: z.number().min(0).optional(),
+  marginLeft: z.number().min(0).optional(),
+  marginRight: z.number().min(0).optional(),
+  pageRanges: z.string().optional(),
+  preferCSSPageSize: z.boolean().optional()
 });
 
 const runStepsSchema = optionalTabId.extend({
@@ -473,6 +514,104 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
       }
     },
     {
+      name: "browser_pdf",
+      description: "将当前标签页或指定标签页导出为 PDF（类似 Cmd+P），返回 base64 编码的 PDF 数据。比截图更结构化，比 DOM 解析更省 token。returnFormat='resource'(默认) 返回 MCP resource 类型，returnFormat='text' 返回纯文本 base64。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        landscape: { type: "boolean" },
+        printBackground: { type: "boolean" },
+        scale: { type: "number" },
+        paperWidth: { type: "number" },
+        paperHeight: { type: "number" },
+        marginTop: { type: "number" },
+        marginBottom: { type: "number" },
+        marginLeft: { type: "number" },
+        marginRight: { type: "number" },
+        pageRanges: { type: "string" },
+        preferCSSPageSize: { type: "boolean" },
+        returnFormat: { type: "string", enum: ["resource", "text"] }
+      }),
+      handler: async (args) => {
+        const parsed = pdfSchema.parse(args ?? {});
+        const result = await bridge.call<Record<string, unknown>>("browser_pdf", parsed, { tabId: parsed.tabId });
+        if (parsed.returnFormat) result._returnFormat = parsed.returnFormat;
+        return result;
+      }
+    },
+    {
+      name: "browser_save_pdf",
+      description: "将当前标签页或指定标签页导出为 PDF 并保存到本地文件。默认保存到桌面，只返回文件路径和元数据，避免把大 PDF base64 塞进模型上下文。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        landscape: { type: "boolean" },
+        printBackground: { type: "boolean" },
+        scale: { type: "number" },
+        paperWidth: { type: "number" },
+        paperHeight: { type: "number" },
+        marginTop: { type: "number" },
+        marginBottom: { type: "number" },
+        marginLeft: { type: "number" },
+        marginRight: { type: "number" },
+        pageRanges: { type: "string" },
+        preferCSSPageSize: { type: "boolean" },
+        path: { type: "string" },
+        filename: { type: "string" }
+      }),
+      handler: async (args) => {
+        const parsed = savePdfSchema.parse(args ?? {});
+        const result = await bridge.call<Record<string, unknown>>("browser_pdf", {
+          tabId: parsed.tabId,
+          landscape: parsed.landscape,
+          printBackground: parsed.printBackground,
+          scale: parsed.scale,
+          paperWidth: parsed.paperWidth,
+          paperHeight: parsed.paperHeight,
+          marginTop: parsed.marginTop,
+          marginBottom: parsed.marginBottom,
+          marginLeft: parsed.marginLeft,
+          marginRight: parsed.marginRight,
+          pageRanges: parsed.pageRanges,
+          preferCSSPageSize: parsed.preferCSSPageSize
+        }, { tabId: parsed.tabId });
+        return savePdfResult(result, {
+          path: parsed.path,
+          filename: parsed.filename
+        });
+      }
+    },
+    {
+      name: "browser_capture_page",
+      description: "智能页面捕获工具。按优先级尝试 PDF → 截图 → DOM 文本，自动降级。AI Agent 读取页面内容的首选工具。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        preferredFormat: {
+          type: "array",
+          items: { type: "string", enum: ["pdf", "screenshot", "text"] }
+        },
+        pdf: { type: "object" },
+        screenshot: { type: "object" },
+        savePath: { type: "string" },
+        saveFilename: { type: "string" },
+        returnFormat: { type: "string", enum: ["resource", "text"] }
+      }),
+      handler: async (args) => {
+        const parsed = capturePageSchema.parse(args ?? {});
+        return capturePage(bridge, parsed);
+      }
+    },
+    {
+      name: "browser_evaluate",
+      description: "在宿主页面的 window 上下文中执行自定义 JavaScript 表达式并返回结果。可用于读取 window.__vm__、检查全局变量、调用页面方法等。表达式在页面 MAIN world 中执行，拥有完整访问权限。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        expression: { type: "string" }
+      }, ["expression"]),
+      handler: async (args) => {
+        const parsed = optionalTabId.extend({ expression: z.string().min(1) }).parse(args ?? {});
+        return bridge.call("browser_evaluate", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
       name: "browser_click",
       description: "通过 elementId、选择器或可见文本点击页面元素。",
       inputSchema: schema({
@@ -584,7 +723,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_run_steps",
-      description: "按顺序执行结构化浏览器操作步骤。支持 open、click、hover、type、clear、scroll、waitFor、pressKey、assertText、getText、snapshot、screenshot、sleep 等动作。",
+      description: "按顺序执行结构化浏览器操作步骤。支持 open、click、hover、type、clear、scroll、waitFor、pressKey、assertText、getText、snapshot、screenshot、pdf、sleep 等动作。",
       inputSchema: schema({
         tabId: { type: "number" },
         stopOnError: { type: "boolean" },
@@ -632,6 +771,17 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
               viewportOnly: { type: "boolean" },
               format: { type: "string", enum: ["png", "jpeg"] },
               quality: { type: "number" },
+              landscape: { type: "boolean" },
+              printBackground: { type: "boolean" },
+              scale: { type: "number" },
+              paperWidth: { type: "number" },
+              paperHeight: { type: "number" },
+              marginTop: { type: "number" },
+              marginBottom: { type: "number" },
+              marginLeft: { type: "number" },
+              marginRight: { type: "number" },
+              pageRanges: { type: "string" },
+              preferCSSPageSize: { type: "boolean" },
               ...stepTargetProperties()
             },
             required: ["action"],
@@ -722,4 +872,106 @@ function sanitizeFilename(value: string): string {
 
 function timestamp(): string {
   return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+async function savePdfResult(
+  result: Record<string, unknown>,
+  options: { path?: string; filename?: string }
+): Promise<Record<string, unknown>> {
+  const data = typeof result.data === "string" ? result.data : undefined;
+  if (!data) {
+    throw new Error("INTERNAL_ERROR: PDF 结果缺少 data");
+  }
+
+  const target = resolve(options.path ?? defaultPdfPath(options.filename));
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(target, Buffer.from(data, "base64"));
+
+  return {
+    saved: true,
+    path: target,
+    tabId: result.tabId,
+    url: result.url,
+    title: result.title,
+    mimeType: "application/pdf",
+    bytes: Buffer.byteLength(data, "base64")
+  };
+}
+
+function defaultPdfPath(filename: string | undefined): string {
+  const safeName = sanitizeFilename(filename ?? `browser-bridge-pdf-${timestamp()}.pdf`);
+  const name = safeName.endsWith(".pdf") ? safeName : `${safeName}.pdf`;
+  return join(homedir(), "Desktop", name);
+}
+
+async function capturePage(
+  bridge: BrowserToolBridge,
+  params: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const preferredFormat = Array.isArray(params.preferredFormat)
+    ? params.preferredFormat
+    : ["pdf", "screenshot", "text"];
+
+  const tabId = typeof params.tabId === "number" ? params.tabId : undefined;
+
+  for (const format of preferredFormat) {
+    try {
+      if (format === "pdf") {
+        const pdfParams = isRecord(params.pdf) ? params.pdf : {};
+        const result = await bridge.call<Record<string, unknown>>("browser_pdf", {
+          ...pdfParams,
+          tabId: tabId ?? pdfParams.tabId
+        }, { tabId });
+
+        const returnFormat = typeof params.returnFormat === "string" ? params.returnFormat : undefined;
+        if (returnFormat) result._returnFormat = returnFormat;
+
+        if (params.savePath || params.saveFilename) {
+          const saved = await savePdfResult(result, {
+            path: typeof params.savePath === "string" ? params.savePath : undefined,
+            filename: typeof params.saveFilename === "string" ? params.saveFilename : undefined
+          });
+          return { format: "pdf", ...saved };
+        }
+        return { format: "pdf", ...result };
+      }
+
+      if (format === "screenshot") {
+        const ssParams = isRecord(params.screenshot) ? params.screenshot : {};
+        const result = await bridge.call<Record<string, unknown>>("browser_screenshot", {
+          ...ssParams,
+          tabId: tabId ?? ssParams.tabId
+        }, { tabId });
+
+        if (params.savePath || params.saveFilename) {
+          const saved = await saveScreenshotResult(result, {
+            path: typeof params.savePath === "string" ? params.savePath : undefined,
+            filename: typeof params.saveFilename === "string" ? params.saveFilename : undefined
+          });
+          return { format: "screenshot", ...saved };
+        }
+        return { format: "screenshot", ...result };
+      }
+
+      if (format === "text") {
+        const result = await bridge.call<Record<string, unknown>>("browser_get_page_text", {
+          tabId
+        }, { tabId });
+        return { format: "text", ...result };
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (format === preferredFormat[preferredFormat.length - 1]) {
+        throw error;
+      }
+      // continue to next format
+      void message;
+    }
+  }
+
+  throw new Error("INTERNAL_ERROR: 所有捕获格式均失败");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

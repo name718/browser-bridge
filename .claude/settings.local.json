@@ -1,16 +1,42 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm run *)",
-      "mcp__browser-bridge__browser_run_steps",
-      "mcp__browser-bridge__browser_get_page_text",
-      "mcp__browser-bridge__browser_get_page_snapshot",
-      "mcp__browser-bridge__browser_click",
+      "Bash(source ~/.nvm/nvm.sh && *)",
+      "Bash(pnpm --filter *)",
+      "Bash(pnpm build *)",
+      "Bash(pnpm smoke *)",
+      "mcp__browser-bridge__browser_use",
+      "mcp__browser-bridge__browser_status",
+      "mcp__browser-bridge__browser_list_tabs",
       "mcp__browser-bridge__browser_get_active_tab",
       "mcp__browser-bridge__browser_open_url",
+      "mcp__browser-bridge__browser_activate_tab",
+      "mcp__browser-bridge__browser_get_page_text",
+      "mcp__browser-bridge__browser_get_page_snapshot",
+      "mcp__browser-bridge__browser_get_interactives",
+      "mcp__browser-bridge__browser_get_links",
+      "mcp__browser-bridge__browser_get_selected_text",
+      "mcp__browser-bridge__browser_get_audit_log",
+      "mcp__browser-bridge__browser_find",
+      "mcp__browser-bridge__browser_act",
+      "mcp__browser-bridge__browser_click",
+      "mcp__browser-bridge__browser_find_and_click",
+      "mcp__browser-bridge__browser_find_and_type",
+      "mcp__browser-bridge__browser_type",
+      "mcp__browser-bridge__browser_fill_form",
+      "mcp__browser-bridge__browser_clear",
+      "mcp__browser-bridge__browser_hover",
+      "mcp__browser-bridge__browser_press_key",
       "mcp__browser-bridge__browser_scroll",
+      "mcp__browser-bridge__browser_wait_for",
+      "mcp__browser-bridge__browser_assert_text",
       "mcp__browser-bridge__browser_screenshot",
-      "Bash(python3 -c \"import json,sys; data=json.load\\(sys.stdin\\); elements=data[0]['text'].split\\('\\\\\"elements\\\\\": '\\)[1]; print\\(elements[:5000]\\)\")"
+      "mcp__browser-bridge__browser_save_screenshot",
+      "mcp__browser-bridge__browser_run_steps",
+      "mcp__browser-bridge__browser_pdf",
+      "mcp__browser-bridge__browser_save_pdf",
+      "mcp__browser-bridge__browser_capture_page",
+      "mcp__browser-bridge__browser_evaluate"
     ]
   }
 }

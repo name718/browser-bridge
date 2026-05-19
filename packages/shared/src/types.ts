@@ -194,6 +194,46 @@ export type ScreenshotParams = {
   quality?: number;
 };
 
+export type PdfParams = {
+  tabId?: number;
+  landscape?: boolean;
+  printBackground?: boolean;
+  scale?: number;
+  paperWidth?: number;
+  paperHeight?: number;
+  marginTop?: number;
+  marginBottom?: number;
+  marginLeft?: number;
+  marginRight?: number;
+  pageRanges?: string;
+  preferCSSPageSize?: boolean;
+};
+
+export type BrowserPdf = {
+  tabId: number;
+  url?: string;
+  title?: string;
+  mimeType: "application/pdf";
+  data: string;
+};
+
+export type CapturePageFormat = "pdf" | "screenshot" | "text";
+
+export type CapturePageParams = {
+  tabId?: number;
+  preferredFormat?: CapturePageFormat[];
+  pdf?: PdfParams;
+  screenshot?: ScreenshotParams;
+  savePath?: string;
+  saveFilename?: string;
+};
+
+export type EvaluateParams = {
+  tabId?: number;
+  expression: string;
+  returnByValue?: boolean;
+};
+
 export type BrowserStepAction =
   | "open"
   | "activateTab"
@@ -209,6 +249,7 @@ export type BrowserStepAction =
   | "getText"
   | "snapshot"
   | "screenshot"
+  | "pdf"
   | "sleep";
 
 export type BrowserStepTarget = {
@@ -242,6 +283,17 @@ export type BrowserStep = BrowserStepTarget & {
   viewportOnly?: boolean;
   format?: "png" | "jpeg";
   quality?: number;
+  landscape?: boolean;
+  printBackground?: boolean;
+  scale?: number;
+  paperWidth?: number;
+  paperHeight?: number;
+  marginTop?: number;
+  marginBottom?: number;
+  marginLeft?: number;
+  marginRight?: number;
+  pageRanges?: string;
+  preferCSSPageSize?: boolean;
 };
 
 export type BrowserRunStepsParams = {

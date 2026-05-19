@@ -5,6 +5,7 @@ export type SecurityConfig = {
   denylist: string[];
   blockHighRiskActions: boolean;
   screenshotEnabled: boolean;
+  pdfEnabled: boolean;
 };
 
 export type RiskCheck = {
@@ -16,7 +17,8 @@ const DEFAULT_SECURITY_CONFIG: SecurityConfig = {
   allowlist: ["http://*", "https://*"],
   denylist: [],
   blockHighRiskActions: true,
-  screenshotEnabled: true
+  screenshotEnabled: true,
+  pdfEnabled: true
 };
 
 const HIGH_RISK_TEXT_PATTERNS = [
@@ -48,7 +50,8 @@ export async function getSecurityConfig(): Promise<SecurityConfig> {
     "allowlist",
     "denylist",
     "blockHighRiskActions",
-    "screenshotEnabled"
+    "screenshotEnabled",
+    "pdfEnabled"
   ]);
 
   return {
@@ -61,7 +64,11 @@ export async function getSecurityConfig(): Promise<SecurityConfig> {
     screenshotEnabled:
       typeof stored.screenshotEnabled === "boolean"
         ? stored.screenshotEnabled
-        : DEFAULT_SECURITY_CONFIG.screenshotEnabled
+        : DEFAULT_SECURITY_CONFIG.screenshotEnabled,
+    pdfEnabled:
+      typeof stored.pdfEnabled === "boolean"
+        ? stored.pdfEnabled
+        : DEFAULT_SECURITY_CONFIG.pdfEnabled
   };
 }
 
@@ -90,6 +97,10 @@ export async function assertActionAllowed(request: BridgeRequest): Promise<void>
 
   if (request.tool === "browser_screenshot" && !config.screenshotEnabled) {
     throw new Error("PERMISSION_DENIED: 浏览器桥接安全配置已禁用截图");
+  }
+
+  if (request.tool === "browser_pdf" && !config.pdfEnabled) {
+    throw new Error("PERMISSION_DENIED: 浏览器桥接安全配置已禁用 PDF 导出");
   }
 
   if (!config.blockHighRiskActions || !isClickTool(request.tool)) {

@@ -107,6 +107,10 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return getAuditLog(typeof request.params?.limit === "number" ? request.params.limit : 20);
     case "browser_run_steps":
       return runSteps(request);
+    case "browser_pdf":
+      return capturePdf(request);
+    case "browser_evaluate":
+      return evaluateScript(request);
     case "browser_screenshot":
     case "browser_click":
     case "browser_find_and_click":
@@ -245,6 +249,26 @@ async function runStep(step: BrowserStep, currentTabId?: number): Promise<unknow
         format: step.format,
         quality: step.quality
       }));
+    case "pdf":
+      return capturePdf({
+        id: crypto.randomUUID(),
+        tool: "browser_pdf",
+        tabId: step.tabId ?? currentTabId,
+        params: {
+          tabId: step.tabId ?? currentTabId,
+          landscape: step.landscape,
+          printBackground: step.printBackground,
+          scale: step.scale,
+          paperWidth: step.paperWidth,
+          paperHeight: step.paperHeight,
+          marginTop: step.marginTop,
+          marginBottom: step.marginBottom,
+          marginLeft: step.marginLeft,
+          marginRight: step.marginRight,
+          pageRanges: step.pageRanges,
+          preferCSSPageSize: step.preferCSSPageSize
+        }
+      });
     case "sleep":
       await delay(step.delayMs ?? step.timeoutMs ?? 500);
       return { slept: true };
@@ -403,6 +427,164 @@ async function captureScreenshot(
   };
 }
 
+async function capturePdf(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) {
+    throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  await assertUrlAllowed(tab.url);
+
+  if (!tab.url || /^(chrome|chrome-extension|about|edge|brave):/.test(tab.url)) {
+    throw new Error("UNSUPPORTED_PAGE: 当前页面不支持导出 PDF");
+  }
+
+  const debuggee = { tabId };
+
+  try {
+    chrome.debugger.attach(debuggee, "1.3");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("Another debugger") || message.includes("already attached")) {
+      throw new Error("DEBUGGER_BUSY: 目标标签页已有 DevTools 打开，请关闭后重试");
+    }
+    throw new Error(`INTERNAL_ERROR: 附加调试器失败: ${message}`);
+  }
+
+  try {
+    const printOptions: Record<string, unknown> = {
+      printBackground: params.printBackground !== false,
+      preferCSSPageSize: params.preferCSSPageSize === true
+    };
+    if (params.landscape === true) printOptions.landscape = true;
+    if (typeof params.scale === "number") printOptions.scale = params.scale;
+    if (typeof params.paperWidth === "number") printOptions.paperWidth = params.paperWidth;
+    if (typeof params.paperHeight === "number") printOptions.paperHeight = params.paperHeight;
+    if (typeof params.marginTop === "number") printOptions.marginTop = params.marginTop;
+    if (typeof params.marginBottom === "number") printOptions.marginBottom = params.marginBottom;
+    if (typeof params.marginLeft === "number") printOptions.marginLeft = params.marginLeft;
+    if (typeof params.marginRight === "number") printOptions.marginRight = params.marginRight;
+    if (typeof params.pageRanges === "string" && params.pageRanges) printOptions.pageRanges = params.pageRanges;
+
+    const result = await sendDebuggerCommand(tabId, "Page.printToPDF", printOptions);
+    const data = (result as Record<string, unknown>)?.data;
+
+    if (typeof data !== "string") {
+      throw new Error("INTERNAL_ERROR: PDF 生成返回数据无效");
+    }
+
+    await appendAuditLog({ tool: "browser_pdf", url: tab.url, ok: true });
+
+    return {
+      tabId,
+      url: tab.url,
+      title: tab.title,
+      mimeType: "application/pdf",
+      data
+    };
+  } catch (error) {
+    await appendAuditLog({
+      tool: "browser_pdf",
+      url: tab.url,
+      ok: false,
+      errorCode: error instanceof Error ? error.message.split(":", 1)[0] : "INTERNAL_ERROR"
+    });
+    throw error;
+  } finally {
+    try {
+      chrome.debugger.detach(debuggee);
+    } catch {
+      // ignore detach errors
+    }
+  }
+}
+
+function sendDebuggerCommand(
+  tabId: number,
+  method: string,
+  params?: Record<string, unknown>
+): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    chrome.debugger.sendCommand({ tabId }, method, params, (result) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(`INTERNAL_ERROR: ${chrome.runtime.lastError.message}`));
+      } else {
+        resolve(result);
+      }
+    });
+  });
+}
+
+async function evaluateScript(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const expression = typeof params.expression === "string" ? params.expression : "";
+  if (!expression.trim()) {
+    throw new Error("INVALID_PARAMS: expression 参数必填");
+  }
+
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) {
+    throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  await assertUrlAllowed(tab.url);
+
+  if (!tab.url || /^(chrome|chrome-extension|about|edge|brave):/.test(tab.url)) {
+    throw new Error("UNSUPPORTED_PAGE: 当前页面不支持执行脚本");
+  }
+
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: (expr: string) => {
+        try {
+          // eslint-disable-next-line no-eval
+          const result = eval(expr);
+          if (result === undefined) return { value: null, type: "undefined" };
+          if (result === null) return { value: null, type: "null" };
+          if (typeof result === "function") return { value: result.toString(), type: "function" };
+          if (typeof result === "object" || typeof result === "string" || typeof result === "number" || typeof result === "boolean") {
+            try {
+              return { value: JSON.parse(JSON.stringify(result)), type: typeof result };
+            } catch {
+              return { value: String(result), type: typeof result };
+            }
+          }
+          return { value: String(result), type: typeof result };
+        } catch (error) {
+          return { error: error instanceof Error ? error.message : String(error), type: "error" };
+        }
+      },
+      args: [expression]
+    });
+
+    const result = results?.[0]?.result;
+    await appendAuditLog({ tool: "browser_evaluate", url: tab.url, ok: !result?.error });
+
+    return {
+      tabId,
+      url: tab.url,
+      title: tab.title,
+      expression,
+      result
+    };
+  } catch (error) {
+    await appendAuditLog({
+      tool: "browser_evaluate",
+      url: tab.url,
+      ok: false,
+      errorCode: error instanceof Error ? error.message.split(":", 1)[0] : "INTERNAL_ERROR"
+    });
+    throw error;
+  }
+}
+
 async function ensureContentScript(tabId: number): Promise<void> {
   try {
     await chrome.tabs.sendMessage(tabId, { type: "browser_bridge_ping" });
@@ -443,6 +625,7 @@ function parseStepAction(value: unknown): BrowserStepAction {
     "getText",
     "snapshot",
     "screenshot",
+    "pdf",
     "sleep"
   ];
   if (typeof value === "string" && allowed.includes(value as BrowserStepAction)) {
@@ -513,6 +696,15 @@ function sanitizeStepData(action: BrowserStepAction, data: unknown): unknown {
       title: data.title,
       mimeType: data.mimeType,
       dataUrlLength: typeof data.dataUrl === "string" ? data.dataUrl.length : undefined
+    };
+  }
+  if (action === "pdf" && isRecord(data)) {
+    return {
+      tabId: data.tabId,
+      url: data.url,
+      title: data.title,
+      mimeType: data.mimeType,
+      dataLength: typeof data.data === "string" ? data.data.length : undefined
     };
   }
   return data;

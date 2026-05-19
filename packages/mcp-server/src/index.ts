@@ -96,6 +96,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (name === "browser_screenshot") {
       return formatScreenshotResult(result);
     }
+    if (name === "browser_pdf") {
+      return formatPdfResult(result);
+    }
+    if (name === "browser_capture_page" && isRecord(result) && result.format === "pdf" && typeof result.data === "string") {
+      return formatPdfResult(result);
+    }
     return {
       content: [
         {
@@ -164,6 +170,64 @@ function formatScreenshotResult(result: unknown): {
         type: "image",
         data,
         mimeType
+      }
+    ]
+  };
+}
+
+function formatPdfResult(result: unknown): {
+  content: Array<
+    | { type: "text"; text: string }
+    | { type: "resource"; resource: { uri: string; mimeType: string; blob: string } }
+  >;
+} {
+  if (!isRecord(result) || typeof result.data !== "string") {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }
+      ]
+    };
+  }
+
+  const metadata = {
+    tabId: result.tabId,
+    url: result.url,
+    title: result.title,
+    mimeType: result.mimeType ?? "application/pdf"
+  };
+
+  const returnFormat = result._returnFormat === "text" ? "text" : "resource";
+
+  if (returnFormat === "text") {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            ...metadata,
+            data: `data:application/pdf;base64,${result.data}`
+          }, null, 2)
+        }
+      ]
+    };
+  }
+
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(metadata, null, 2)
+      },
+      {
+        type: "resource",
+        resource: {
+          uri: `data:application/pdf;base64,${result.data}`,
+          mimeType: "application/pdf",
+          blob: result.data
+        }
       }
     ]
   };

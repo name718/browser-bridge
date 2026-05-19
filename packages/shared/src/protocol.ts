@@ -25,7 +25,11 @@ export type BridgeTool =
   | "browser_clear"
   | "browser_scroll"
   | "browser_wait_for"
-  | "browser_run_steps";
+  | "browser_run_steps"
+  | "browser_pdf"
+  | "browser_save_pdf"
+  | "browser_capture_page"
+  | "browser_evaluate";
 
 export type BridgeRequest = {
   id: string;
@@ -63,7 +67,8 @@ export type BridgeErrorCode =
   | "USER_REJECTED"
   | "UNSUPPORTED_PAGE"
   | "INVALID_PARAMS"
-  | "INTERNAL_ERROR";
+  | "INTERNAL_ERROR"
+  | "DEBUGGER_BUSY";
 
 export type ExtensionHello = {
   type: "extension_hello";
