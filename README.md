@@ -92,6 +92,18 @@ browser_cdp_session({ enable: ["Network"], durationMs: 3000 })
 browser_cdp_session({ enable: ["Profiler"], durationMs: 5000 })
 ```
 
+### 与 Computer Use 配合
+
+Browser Bridge 面向普通网页：优先用 DOM、文本、交互元素和 CDP 做低 token 的结构化操作。遇到 Chrome 外壳、`chrome://` 页面、扩展管理页、系统弹窗、文件选择器，或网页控件只能靠屏幕识别时，Agent 应切换到 Computer Use 兜底。
+
+推荐调度规则：
+
+- 普通网页读取、点击、输入、断言、性能分析：用 `browser_*` 工具。
+- 可视区域截图和给 Agent 看图：用 `browser_screenshot`。
+- 需要落盘保存图片/PDF：用 `browser_save_screenshot` / `browser_save_pdf`。
+- 扩展 reload、浏览器权限弹窗、系统 UI、非网页 App：用 Computer Use。
+- `browser_find` 找不到但屏幕可见的目标：改用 Computer Use 点 UI。
+
 ## 工具一览
 
 共 **36 个 MCP 工具**，分为 10 大类：

@@ -18,6 +18,29 @@ pnpm smoke
 - `packages/mcp-server` — MCP stdio 服务 + WebSocket daemon
 - `packages/extension` — Chrome Manifest V3 插件
 
+## Agent 调度：Browser Bridge 与 Computer Use
+
+**默认优先使用 Browser Bridge 操作普通网页。** Browser Bridge 能读取 DOM、文本、链接、交互元素、CDP 和网络数据，token 成本低，适合网页内的结构化读取、点击、输入、断言、截图和性能分析。
+
+**当目标是浏览器外壳或系统 UI 时，切换到 Computer Use。** Browser Bridge 不适合操作 `chrome://` 页面、Chrome 扩展管理页、浏览器权限弹窗、文件选择器、系统弹窗或非网页 App。此类任务应使用 Computer Use 通过屏幕/无障碍树点击、输入、滚动或拖拽。
+
+**网页内操作的推荐顺序：**
+
+1. 读页面内容：优先 `browser_get_interactives`、`browser_get_page_text`、`browser_capture_page`。
+2. 点网页元素：优先 `browser_act`、`browser_find_and_click`、`browser_run_steps`。
+3. 调试和性能分析：优先 `browser_evaluate`、`browser_cdp`、`browser_cdp_session`、`browser_network_analysis`。
+4. 视觉确认：优先 `browser_screenshot`；需要文件时才用 `browser_save_screenshot`。
+
+**切换到 Computer Use 的典型条件：**
+
+- 当前 URL 是 `chrome://`、`edge://`、`about:` 或扩展管理页。
+- 目标控件在屏幕上可见，但 `browser_find` / `browser_click` 找不到。
+- 页面是 canvas、强 Shadow DOM、复杂虚拟列表或无可靠 DOM 语义。
+- 出现浏览器权限弹窗、系统文件选择器、下载确认、扩展 reload 等浏览器外壳操作。
+- Browser Bridge 断连，需要检查或重新加载 Chrome 扩展。
+
+**失败兜底规则：** 如果 Browser Bridge 返回 `ELEMENT_NOT_FOUND`、`UNSUPPORTED_PAGE`、`TAB_NOT_FOUND`、`DEBUGGER_BUSY` 或扩展未连接，先判断是否属于浏览器外壳/系统 UI；如果是，改用 Computer Use。不要在 Browser Bridge 内重复实现通用视觉识别和坐标点击能力。
+
 ## 性能分析标准流程
 
 **核心原则：先用 CDP，不用注入 observer。CDP 从开启时刻就开始收集，不存在"来晚了"的问题。**
