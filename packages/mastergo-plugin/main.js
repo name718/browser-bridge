@@ -285,7 +285,7 @@ function debugLog(tag, payload) {
   }
 }
 
-// ─── 文字样式（通过 CSS 解析 + 文本样式匹配） ───
+// ─── 文字样式（优先 textStyles 分段样式，CSS 仅兜底） ───
 
 // 缓存文本样式列表（只读取一次）
 let _cachedTextStyles = null
@@ -305,12 +305,55 @@ async function extractTextStyle(node) {
   let fontFamily = ''
   let fontStyle = ''
   let fontSize = null
+  let fontWeight = null
   let lineHeight = null
   let letterSpacing = null
   let textDecoration = 'NONE'
   let textCase = 'ORIGINAL'
 
-  // 策略1：通过 getWebStyleCodeById 获取 CSS，解析字体信息
+  const textRuns = extractTextRuns(node)
+  const primaryTextStyle = textRuns[0] && textRuns[0].textStyle
+
+  // 策略1：优先读取 TEXT 节点的分段 textStyles，这是 MasterGo 暴露的结构化文本样式。
+  if (primaryTextStyle) {
+    const fontName = primaryTextStyle.fontName || primaryTextStyle.localizedFontName
+    if (fontName && typeof fontName === 'object') {
+      fontFamily = fontName.family || ''
+      fontStyle = fontName.style || ''
+    } else if (typeof fontName === 'string') {
+      fontFamily = fontName
+    }
+
+    if (typeof primaryTextStyle.fontSize === 'number') fontSize = primaryTextStyle.fontSize
+    if (typeof primaryTextStyle.fontWeight === 'number') fontWeight = primaryTextStyle.fontWeight
+    else if (typeof primaryTextStyle.fontWeight === 'string') fontWeight = fontStyleToWeight(primaryTextStyle.fontWeight)
+
+    lineHeight = normalizeTextMetric(primaryTextStyle.lineHeight) || normalizeTextMetric(primaryTextStyle.lineHeightByPx)
+    letterSpacing = normalizeTextMetric(primaryTextStyle.letterSpacing)
+    if (primaryTextStyle.textDecoration) textDecoration = String(primaryTextStyle.textDecoration).toUpperCase()
+    if (primaryTextStyle.textCase) textCase = String(primaryTextStyle.textCase).toUpperCase()
+  }
+
+  // 策略2：兼容部分运行时直接挂在 node 上的文本字段。
+  const nodeFontName = readProp(node, 'fontName')
+  if (!fontFamily && nodeFontName && typeof nodeFontName === 'object') {
+    fontFamily = nodeFontName.family || ''
+    fontStyle = nodeFontName.style || ''
+  } else if (!fontFamily && typeof nodeFontName === 'string') {
+    fontFamily = nodeFontName
+  }
+
+  const nodeFontSize = readProp(node, 'fontSize')
+  if (fontSize == null && typeof nodeFontSize === 'number') fontSize = nodeFontSize
+
+  const nodeFontWeight = readProp(node, 'fontWeight')
+  if (fontWeight == null && typeof nodeFontWeight === 'number') fontWeight = nodeFontWeight
+  else if (fontWeight == null && typeof nodeFontWeight === 'string') fontWeight = fontStyleToWeight(nodeFontWeight)
+
+  if (lineHeight == null) lineHeight = normalizeTextMetric(readProp(node, 'lineHeight'))
+  if (letterSpacing == null) letterSpacing = normalizeTextMetric(readProp(node, 'letterSpacing'))
+
+  // 策略3：通过 getWebStyleCodeById 获取 CSS，只补齐结构化字段没有提供的值。
   try {
     const codeResult = await mg.getWebStyleCodeById(node.id)
     if (codeResult && codeResult.data) {
@@ -320,31 +363,38 @@ async function extractTextStyle(node) {
 
       // 解析 font-family
       const ffMatch = cssText.match(/font-family\s*:\s*['"]?([^;'"]+)/i)
-      if (ffMatch) fontFamily = ffMatch[1].trim().replace(/['"]/g, '')
+      if (!fontFamily && ffMatch) fontFamily = ffMatch[1].trim().replace(/['"]/g, '')
 
       // 解析 font-size
       const fsMatch = cssText.match(/font-size\s*:\s*([\d.]+)px/i)
-      if (fsMatch) fontSize = parseFloat(fsMatch[1])
+      if (fontSize == null && fsMatch) fontSize = parseFloat(fsMatch[1])
 
       // 解析 font-weight
-      const fwMatch = cssText.match(/font-weight\s*:\s*(\w+)/i)
-      if (fwMatch) fontStyle = fwMatch[1].trim()
+      const fwMatch = cssText.match(/font-weight\s*:\s*([\w-]+)/i)
+      if (fwMatch) {
+        const cssWeight = fwMatch[1].trim()
+        if (!fontStyle) fontStyle = cssWeight
+        if (fontWeight == null) {
+          const parsedWeight = parseInt(cssWeight, 10)
+          fontWeight = Number.isNaN(parsedWeight) ? fontStyleToWeight(cssWeight) : parsedWeight
+        }
+      }
 
       // 解析 line-height
       const lhMatch = cssText.match(/line-height\s*:\s*([\d.]+)(px|em|rem)?/i)
-      if (lhMatch) lineHeight = parseFloat(lhMatch[1])
+      if (lineHeight == null && lhMatch) lineHeight = parseFloat(lhMatch[1])
 
       // 解析 letter-spacing
       const lsMatch = cssText.match(/letter-spacing\s*:\s*([\d.-]+)px/i)
-      if (lsMatch) letterSpacing = parseFloat(lsMatch[1])
+      if (letterSpacing == null && lsMatch) letterSpacing = parseFloat(lsMatch[1])
 
       // 解析 text-decoration
-      const tdMatch = cssText.match(/text-decoration\s*:\s*(\w+)/i)
-      if (tdMatch) textDecoration = tdMatch[1].toUpperCase()
+      const tdMatch = cssText.match(/text-decoration\s*:\s*([\w-]+)/i)
+      if (textDecoration === 'NONE' && tdMatch) textDecoration = tdMatch[1].toUpperCase()
 
       // 解析 text-transform
-      const ttMatch = cssText.match(/text-transform\s*:\s*(\w+)/i)
-      if (ttMatch) {
+      const ttMatch = cssText.match(/text-transform\s*:\s*([\w-]+)/i)
+      if (textCase === 'ORIGINAL' && ttMatch) {
         const tc = ttMatch[1].toLowerCase()
         if (tc === 'uppercase') textCase = 'UPPER'
         else if (tc === 'lowercase') textCase = 'LOWER'
@@ -355,7 +405,7 @@ async function extractTextStyle(node) {
   } catch (e) {
   }
 
-  // 策略2：如果 CSS 解析没拿到 fontFamily，通过 getLocalTextStyles 匹配
+  // 策略4：如果分段样式、节点字段和 CSS 都没拿到 fontFamily，通过 getLocalTextStyles 匹配。
   if (!fontFamily) {
     const textStyles = getTextStyles()
     for (const ts of textStyles) {
@@ -371,7 +421,7 @@ async function extractTextStyle(node) {
     }
   }
 
-  const fontWeight = fontStyleToWeight(fontStyle)
+  if (fontWeight == null) fontWeight = fontStyleToWeight(fontStyle)
 
   return {
     fontFamily,
@@ -384,7 +434,35 @@ async function extractTextStyle(node) {
     textAlignVertical: node.textAlignVertical || 'TOP',
     textDecoration,
     textCase,
+    textRuns,
   }
+}
+
+function extractTextRuns(node) {
+  const textStyles = readProp(node, 'textStyles') || []
+  const characters = node.characters || ''
+  return textStyles.map(run => {
+    const start = typeof run.start === 'number' ? run.start : 0
+    const end = typeof run.end === 'number' ? run.end : start
+    return {
+      start,
+      end,
+      text: characters.slice(start, end),
+      textStyleId: run.textStyleId || '',
+      fillStyleId: run.fillStyleId || '',
+      fills: clone(run.fills) || [],
+      textStyle: clone(run.textStyle) || null,
+      textStyleDetail: clone(run.textStyleDetail) || null,
+    }
+  })
+}
+
+function normalizeTextMetric(value) {
+  if (typeof value === 'number') return value
+  if (!value || typeof value !== 'object') return null
+  if (typeof value.value === 'number') return value.value
+  if (typeof value.pixels === 'number') return value.pixels
+  return null
 }
 
 // 将 fontStyle（如 "Bold"）转为 CSS fontWeight 数值
