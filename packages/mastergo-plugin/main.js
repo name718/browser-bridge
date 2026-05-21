@@ -27,6 +27,8 @@ function slugifyName(name, fallback) {
 
 const DEBUG_EXPORT = false
 const PNG_EXPORT_SCALE = 2
+const EXPORTER_VERSION = '2.1.0'
+const LAST_EXPORT_STORAGE_KEY = 'design-json-export:last-export'
 
 function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -42,6 +44,115 @@ function postProgress(stage, current, total, message) {
       message: message || '',
     })
   } catch { }
+}
+
+async function storageGet(key) {
+  try {
+    if (!mg.clientStorage || typeof mg.clientStorage.getAsync !== 'function') return null
+    const value = await mg.clientStorage.getAsync(key)
+    return value === undefined ? null : value
+  } catch (e) {
+    debugLog('ClientStorageGetFailed', { key, message: e && e.message })
+    return null
+  }
+}
+
+async function storageSet(key, value) {
+  try {
+    if (!mg.clientStorage || typeof mg.clientStorage.setAsync !== 'function') return false
+    await mg.clientStorage.setAsync(key, value)
+    return true
+  } catch (e) {
+    debugLog('ClientStorageSetFailed', { key, message: e && e.message })
+    return false
+  }
+}
+
+function summarizeNodes(nodes) {
+  const typeCounts = {}
+  let total = 0
+  function walk(items) {
+    for (const item of items || []) {
+      total++
+      const type = item && item.type ? item.type : 'UNKNOWN'
+      typeCounts[type] = (typeCounts[type] || 0) + 1
+      if (item && item.children && item.children.length) walk(item.children)
+    }
+  }
+  walk(nodes)
+  return {
+    topLevelCount: (nodes || []).length,
+    totalCount: total,
+    typeCounts,
+  }
+}
+
+function summarizeSelection(selection) {
+  return (selection || []).map(node => ({
+    id: node.id || '',
+    name: node.name || '',
+    type: node.type || '',
+    hasChildren: !!(node.children && node.children.length),
+    childCount: node.children ? node.children.length : 0,
+    bounds: normalizeBox(readProp(node, 'absoluteBoundingBox')) || normalizeBox(readProp(node, 'absoluteRenderBounds')),
+  }))
+}
+
+async function buildRuntimeInfo(ctx) {
+  const { command, doc, page, nodes, mode, startedAt, selection } = ctx
+  const previous = await storageGet(LAST_EXPORT_STORAGE_KEY)
+  return {
+    exporterVersion: EXPORTER_VERSION,
+    apiVersion: typeof mg.apiVersion === 'string' ? mg.apiVersion : '',
+    documentId: mg.documentId || '',
+    command,
+    mode,
+    startedAt,
+    themeColor: mg.themeColor || '',
+    capabilities: {
+      hasClientStorage: !!(mg.clientStorage && typeof mg.clientStorage.getAsync === 'function' && typeof mg.clientStorage.setAsync === 'function'),
+      hasGetWebStyleCodeById: typeof mg.getWebStyleCodeById === 'function',
+      hasGetNodeById: typeof mg.getNodeById === 'function',
+    },
+    document: {
+      id: mg.documentId || '',
+      name: doc.name || 'untitled',
+    },
+    page: {
+      id: page.id || '',
+      name: page.name || 'untitled',
+      width: page.width != null ? round2(page.width) : null,
+      height: page.height != null ? round2(page.height) : null,
+    },
+    selection: summarizeSelection(selection),
+    nodes: summarizeNodes(nodes),
+    previousExport: previous ? {
+      exporterVersion: previous.exporterVersion || '',
+      apiVersion: previous.apiVersion || '',
+      command: previous.command || '',
+      mode: previous.mode || '',
+      pageId: previous.pageId || '',
+      topLevelCount: previous.topLevelCount || 0,
+      totalCount: previous.totalCount || 0,
+      exportedAt: previous.exportedAt || '',
+    } : null,
+  }
+}
+
+async function rememberExport(runtimeInfo, stats) {
+  await storageSet(LAST_EXPORT_STORAGE_KEY, {
+    exporterVersion: runtimeInfo.exporterVersion,
+    apiVersion: runtimeInfo.apiVersion,
+    documentId: runtimeInfo.documentId,
+    command: runtimeInfo.command,
+    mode: runtimeInfo.mode,
+    pageId: runtimeInfo.page.id,
+    pageName: runtimeInfo.page.name,
+    topLevelCount: runtimeInfo.nodes.topLevelCount,
+    totalCount: runtimeInfo.nodes.totalCount,
+    jsonSize: stats && stats.jsonSize,
+    exportedAt: new Date().toISOString(),
+  })
 }
 
 function countNodeTree(nodes) {
@@ -479,7 +590,7 @@ async function exportPngAssets(nodes) {
 }
 
 async function exportZipStreaming(ctx) {
-  const { doc, page, nodes, mode } = ctx
+  const { doc, page, nodes, mode, runtimeInfo } = ctx
   const progress = {
     current: 0,
     total: countNodeTree(nodes),
@@ -591,8 +702,15 @@ async function exportZipStreaming(ctx) {
   }
 
   postProgress('json-stringify', 0, 0, '正在生成 JSON')
+  const stats = {
+    nodeCount: progress.total,
+    topLevelNodeCount: nodes.length,
+    textCount: null,
+    jsonSize: 0,
+  }
   const head = JSON.stringify({
     schemaVersion: 2,
+    runtime: runtimeInfo,
     fileName: doc.name || 'untitled',
     pageId: page.id || '',
     pageName: page.name || 'untitled',
@@ -611,29 +729,21 @@ async function exportZipStreaming(ctx) {
   const prefix = head.replace(/\n}$/, ',\n  "nodes": [\n')
   const suffix = '\n  ]\n}'
   const jsonSize = prefix.length + nodeJsonSize + suffix.length
+  stats.jsonSize = jsonSize
+  await rememberExport(runtimeInfo, stats)
 
   mg.ui.postMessage({
     type: 'zipJsonMeta',
     fileName: 'design.json',
     prefix,
     suffix,
-    stats: {
-      nodeCount: progress.total,
-      topLevelNodeCount: nodes.length,
-      textCount: null,
-      jsonSize,
-    },
+    stats,
   })
 
   mg.ui.postMessage({
     type: 'zipStreamDone',
     mode,
-    stats: {
-      nodeCount: progress.total,
-      topLevelNodeCount: nodes.length,
-      textCount: null,
-      jsonSize,
-    },
+    stats,
   })
 }
 
@@ -910,9 +1020,10 @@ async function exportDesign() {
     const includeZipAssets = command === 'exportPageZip' || command === 'exportSelectionZip'
     let nodes = []
     let mode = ''
+    let selection = []
 
     if (command === 'exportSelection' || command === 'exportSelectionZip') {
-      const selection = page.selection
+      selection = page.selection || []
       if (!selection || selection.length === 0) {
         mg.closePlugin('请先选中要导出的图层')
         return
@@ -926,9 +1037,19 @@ async function exportDesign() {
 
     postProgress('start', 0, nodes.length, '准备导出 ' + mode)
     console.log('[Export] 提取中，节点数:', nodes.length)
+    const startedAt = new Date().toISOString()
+    const runtimeInfo = await buildRuntimeInfo({
+      command,
+      doc,
+      page,
+      nodes,
+      mode,
+      startedAt,
+      selection,
+    })
 
     if (includeZipAssets) {
-      await exportZipStreaming({ doc, page, nodes, mode })
+      await exportZipStreaming({ doc, page, nodes, mode, runtimeInfo })
       return
     }
 
@@ -965,6 +1086,7 @@ async function exportDesign() {
 
     const designData = {
       schemaVersion: 2,
+      runtime: runtimeInfo,
       fileName: doc.name || 'untitled',
       pageId: page.id || '',
       pageName: page.name || 'untitled',
@@ -974,7 +1096,7 @@ async function exportDesign() {
       },
       contentBounds: deriveContentBounds(extractedNodes),
       exportMode: mode,
-      exportedAt: new Date().toISOString(),
+      exportedAt: startedAt,
       nodeCount: extractedNodes.length,
       nodes: extractedNodes,
     }
@@ -1007,18 +1129,21 @@ async function exportDesign() {
       pngAssetCount: pngAssets.length,
     })
 
+    const stats = {
+      nodeCount: progress.total,
+      topLevelNodeCount: extractedNodes.length,
+      textCount: null,
+      jsonSize: 0,
+    }
     const json = JSON.stringify(designData, null, 2)
+    stats.jsonSize = json.length
+    await rememberExport(runtimeInfo, stats)
 
     mg.ui.postMessage({
       type: 'sendData',
       text: json,
       mode,
-      stats: {
-        nodeCount: progress.total,
-        topLevelNodeCount: extractedNodes.length,
-        textCount: null,
-        jsonSize: json.length,
-      },
+      stats,
       zipName: includeZipAssets ? slugifyName(designData.fileName + '_' + designData.pageName, 'mastergo_export') + '.zip' : '',
       zipPayload: includeZipAssets ? {
         jsonFileName: 'design.json',
