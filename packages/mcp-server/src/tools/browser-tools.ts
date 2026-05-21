@@ -135,7 +135,9 @@ const getInteractivesSchema = optionalTabId.extend({
 
 const screenshotSchema = optionalTabId.extend({
   format: z.enum(["png", "jpeg"]).optional(),
-  quality: z.number().int().min(0).max(100).optional()
+  quality: z.number().int().min(0).max(100).optional(),
+  mode: z.enum(["visible", "cdp"]).optional(),
+  scale: z.number().min(0.1).max(4).optional()
 });
 
 const pdfSchema = optionalTabId.extend({
@@ -479,11 +481,13 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_screenshot",
-      description: "截取当前标签页或指定标签页的可视区域。",
+      description: "截取当前标签页或指定标签页，并直接返回 MCP image content。默认截取可视区域；需要更清晰截图时传 mode='cdp'，可配合 scale。",
       inputSchema: schema({
         tabId: { type: "number" },
         format: { type: "string", enum: ["png", "jpeg"] },
-        quality: { type: "number" }
+        quality: { type: "number" },
+        mode: { type: "string", enum: ["visible", "cdp"] },
+        scale: { type: "number" }
       }),
       handler: async (args) => {
         const parsed = screenshotSchema.parse(args ?? {});
@@ -492,11 +496,13 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_save_screenshot",
-      description: "截取当前标签页或指定标签页的可视区域，并由本地 MCP 服务保存为图片文件。默认保存到桌面，只返回文件路径和元数据，避免把大图 base64 塞进模型上下文。",
+      description: "截取当前标签页或指定标签页，并由本地 MCP 服务保存为图片文件。仅在需要落盘或避免大图进入模型上下文时使用；直接给 Agent 看图请用 browser_screenshot。",
       inputSchema: schema({
         tabId: { type: "number" },
         format: { type: "string", enum: ["png", "jpeg"] },
         quality: { type: "number" },
+        mode: { type: "string", enum: ["visible", "cdp"] },
+        scale: { type: "number" },
         path: { type: "string" },
         filename: { type: "string" }
       }),
@@ -505,7 +511,9 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
         const result = await bridge.call<Record<string, unknown>>("browser_screenshot", {
           tabId: parsed.tabId,
           format: parsed.format,
-          quality: parsed.quality
+          quality: parsed.quality,
+          mode: parsed.mode,
+          scale: parsed.scale
         }, { tabId: parsed.tabId });
         return saveScreenshotResult(result, {
           path: parsed.path,

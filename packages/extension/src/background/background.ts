@@ -415,6 +415,10 @@ async function captureScreenshot(
   const params = isRecord(request.params) ? request.params : {};
   const requestedFormat = params.format === "jpeg" ? "jpeg" : "png";
   const quality = typeof params.quality === "number" ? params.quality : undefined;
+  if (params.mode === "cdp" || typeof params.scale === "number") {
+    return captureCdpScreenshot(tab, request);
+  }
+
   await chrome.tabs.update(tab.id, { active: true });
   if (tab.windowId) {
     await chrome.windows.update(tab.windowId, { focused: true });
@@ -433,6 +437,102 @@ async function captureScreenshot(
     mimeType: requestedFormat === "jpeg" ? "image/jpeg" : "image/png",
     dataUrl
   };
+}
+
+async function captureCdpScreenshot(
+  tab: chrome.tabs.Tab,
+  request: BridgeRequest
+): Promise<Record<string, unknown>> {
+  if (!tab.id) {
+    throw new Error("TAB_NOT_FOUND: 标签页没有 ID");
+  }
+
+  if (!tab.url || /^(chrome|chrome-extension|about|edge|brave):/.test(tab.url)) {
+    throw new Error("UNSUPPORTED_PAGE: 当前页面不支持高保真截图");
+  }
+
+  const params = isRecord(request.params) ? request.params : {};
+  const requestedFormat = params.format === "jpeg" ? "jpeg" : "png";
+  const quality = typeof params.quality === "number" ? params.quality : undefined;
+  const scale = typeof params.scale === "number" ? Math.min(Math.max(params.scale, 0.1), 4) : undefined;
+  const debuggee = { tabId: tab.id };
+
+  await chrome.tabs.update(tab.id, { active: true });
+  if (tab.windowId) {
+    await chrome.windows.update(tab.windowId, { focused: true });
+  }
+
+  try {
+    chrome.debugger.attach(debuggee, "1.3");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("Another debugger") || message.includes("already attached")) {
+      throw new Error("DEBUGGER_BUSY: 目标标签页已有 DevTools 打开，请关闭后重试");
+    }
+    throw new Error(`INTERNAL_ERROR: 附加调试器失败: ${message}`);
+  }
+
+  try {
+    const captureParams: Record<string, unknown> = {
+      format: requestedFormat,
+      fromSurface: true,
+      captureBeyondViewport: false
+    };
+    if (requestedFormat === "jpeg" && typeof quality === "number") {
+      captureParams.quality = quality;
+    }
+
+    if (scale) {
+      const metrics = await sendDebuggerCommand(tab.id, "Page.getLayoutMetrics");
+      const cssVisualViewport = isRecord(metrics) && isRecord(metrics.cssVisualViewport)
+        ? metrics.cssVisualViewport
+        : undefined;
+      const width = getPositiveNumber(cssVisualViewport?.clientWidth);
+      const height = getPositiveNumber(cssVisualViewport?.clientHeight);
+
+      if (width && height) {
+        captureParams.clip = {
+          x: 0,
+          y: 0,
+          width,
+          height,
+          scale: scale ?? 1
+        };
+      }
+    }
+
+    const result = await sendDebuggerCommand(tab.id, "Page.captureScreenshot", captureParams);
+    const data = isRecord(result) ? result.data : undefined;
+    if (typeof data !== "string") {
+      throw new Error("INTERNAL_ERROR: 截图返回数据无效");
+    }
+
+    await appendAuditLog({ tool: request.tool, url: tab.url, ok: true });
+
+    return {
+      tabId: tab.id,
+      url: tab.url,
+      title: tab.title,
+      mimeType: requestedFormat === "jpeg" ? "image/jpeg" : "image/png",
+      dataUrl: `data:${requestedFormat === "jpeg" ? "image/jpeg" : "image/png"};base64,${data}`,
+      mode: "cdp",
+      scale: scale ?? 1
+    };
+  } catch (error) {
+    await appendAuditLog({
+      tool: request.tool,
+      url: tab.url,
+      ok: false,
+      errorCode: error instanceof Error ? error.message.split(":", 1)[0] : "INTERNAL_ERROR"
+    });
+    throw error;
+  } finally {
+    try {
+      chrome.debugger.detach(debuggee);
+    } catch {
+      // ignore detach errors
+    }
+  }
 }
 
 async function capturePdf(request: BridgeRequest): Promise<Record<string, unknown>> {
@@ -1117,6 +1217,10 @@ function normalizeError(error: unknown): { code: string; message: string } {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function getPositiveNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 function stringParam(params: Record<string, unknown>, key: string): string | undefined {

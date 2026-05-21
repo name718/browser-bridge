@@ -177,7 +177,7 @@ browser_cdp_session({ enable: ["Profiler"], durationMs: 5000 })
 
 > **你**：帮我截个图看看现在页面长什么样
 >
-> **Agent**：`browser_screenshot` 截取当前可视区域 → 返回截图
+> **Agent**：`browser_screenshot` 截取当前可视区域 → 直接返回截图；需要更清晰时传 `mode: "cdp", scale: 2`
 
 ### Bug 复现
 
@@ -211,9 +211,9 @@ browser_cdp_session({ enable: ["Profiler"], durationMs: 5000 })
 
 ### 截图保存
 
-> **你**：帮我把这个页面截图保存到桌面
+> **你**：帮我把这个页面截图保存成文件
 >
-> **Agent**：`browser_save_screenshot` 截图并保存为 PNG/JPG 文件，返回文件路径
+> **Agent**：`browser_save_screenshot` 截图并保存为 PNG/JPG 文件，返回文件路径。直接看图时使用 `browser_screenshot`
 
 ### 导出 PDF
 

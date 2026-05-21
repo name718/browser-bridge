@@ -192,6 +192,8 @@ export type ScreenshotParams = {
   tabId?: number;
   format?: "png" | "jpeg";
   quality?: number;
+  mode?: "visible" | "cdp";
+  scale?: number;
 };
 
 export type PdfParams = {
