@@ -98,8 +98,35 @@ function summarizeSelection(selection) {
   }))
 }
 
+function analyzeSelection(selection) {
+  const items = summarizeSelection(selection)
+  const warnings = []
+  if (items.length === 1) {
+    const item = items[0]
+    if (!item.hasChildren && ['RECTANGLE', 'ELLIPSE', 'VECTOR', 'LINE', 'POLYGON', 'STAR'].includes(item.type)) {
+      warnings.push({
+        code: 'single-leaf-visual-selection',
+        message: '当前只选中了一个无子节点的视觉图层，导出结果可能只包含背景或装饰图形。',
+        nodeId: item.id,
+        nodeName: item.name,
+        nodeType: item.type,
+      })
+    }
+  }
+  return { count: items.length, items, warnings }
+}
+
+function postSelectionSummary(selectionSummary) {
+  try {
+    mg.ui.postMessage({
+      type: 'selectionSummary',
+      summary: selectionSummary,
+    })
+  } catch { }
+}
+
 async function buildRuntimeInfo(ctx) {
-  const { command, doc, page, nodes, mode, startedAt, selection } = ctx
+  const { command, doc, page, nodes, mode, startedAt, selection, selectionSummary, diagnostics } = ctx
   const previous = await storageGet(LAST_EXPORT_STORAGE_KEY)
   return {
     exporterVersion: EXPORTER_VERSION,
@@ -113,6 +140,7 @@ async function buildRuntimeInfo(ctx) {
       hasClientStorage: !!(mg.clientStorage && typeof mg.clientStorage.getAsync === 'function' && typeof mg.clientStorage.setAsync === 'function'),
       hasGetWebStyleCodeById: typeof mg.getWebStyleCodeById === 'function',
       hasGetNodeById: typeof mg.getNodeById === 'function',
+      hasGetImageByHref: typeof mg.getImageByHref === 'function',
     },
     document: {
       id: mg.documentId || '',
@@ -124,8 +152,9 @@ async function buildRuntimeInfo(ctx) {
       width: page.width != null ? round2(page.width) : null,
       height: page.height != null ? round2(page.height) : null,
     },
-    selection: summarizeSelection(selection),
+    selection: selectionSummary || analyzeSelection(selection),
     nodes: summarizeNodes(nodes),
+    diagnostics,
     previousExport: previous ? {
       exporterVersion: previous.exporterVersion || '',
       apiVersion: previous.apiVersion || '',
@@ -274,6 +303,19 @@ function extractRawSnapshot(node) {
     if (value !== null) raw[key] = clone(value)
   }
   return raw
+}
+
+function createDiagnostics() {
+  return {
+    warnings: [],
+    imageFillFailures: [],
+    imageFillAssets: [],
+  }
+}
+
+function addDiagnosticWarning(diagnostics, warning) {
+  if (!diagnostics || !warning) return
+  diagnostics.warnings.push(warning)
 }
 
 function debugLog(tag, payload) {
@@ -519,9 +561,9 @@ function parseLayoutCSS(cssText) {
   if (layoutMatch) {
     result.isAutoLayout = true
   }
-  const dirMatch = cssText.match(/flex-direction\s*:\s*(\w+)/i)
+  const dirMatch = cssText.match(/flex-direction\s*:\s*([\w-]+)/i)
   if (dirMatch) {
-    result.layoutMode = dirMatch[1].toUpperCase() // COLUMN / ROW
+    result.layoutMode = cssFlexDirectionToLayoutMode(dirMatch[1])
   }
   const wrapMatch = cssText.match(/flex-wrap\s*:\s*([\w-]+)/i)
   if (wrapMatch) {
@@ -532,34 +574,61 @@ function parseLayoutCSS(cssText) {
     result.itemSpacing = parseFloat(gapMatch[1])
   }
   // justify-content → primaryAxisAlignItems
-  const jcMatch = cssText.match(/justify-content\s*:\s*(\w+)/i)
+  const jcMatch = cssText.match(/justify-content\s*:\s*([\w-]+)/i)
   if (jcMatch) {
-    const m = { 'flex-start': 'MIN', 'center': 'CENTER', 'flex-end': 'MAX', 'space-between': 'SPACE_BETWEEN' }
-    result.primaryAxisAlignItems = m[jcMatch[1]] || 'MIN'
+    result.primaryAxisAlignItems = cssAxisAlignToMasterGo(jcMatch[1], 'MIN')
   }
   // align-items → counterAxisAlignItems
-  const aiMatch = cssText.match(/align-items\s*:\s*(\w+)/i)
+  const aiMatch = cssText.match(/align-items\s*:\s*([\w-]+)/i)
   if (aiMatch) {
-    const m = { 'flex-start': 'MIN', 'center': 'CENTER', 'flex-end': 'MAX', 'stretch': 'STRETCH', 'baseline': 'BASELINE' }
-    result.counterAxisAlignItems = m[aiMatch[1]] || 'MIN'
+    result.counterAxisAlignItems = cssAxisAlignToMasterGo(aiMatch[1], 'MIN')
   }
   return result
 }
 
+function cssFlexDirectionToLayoutMode(value) {
+  const normalized = String(value || '').toLowerCase()
+  if (normalized === 'column' || normalized === 'column-reverse') return 'VERTICAL'
+  if (normalized === 'row' || normalized === 'row-reverse') return 'HORIZONTAL'
+  return normalized.toUpperCase()
+}
+
+function cssAxisAlignToMasterGo(value, fallback) {
+  const normalized = String(value || '').toLowerCase()
+  const map = {
+    start: 'MIN',
+    'flex-start': 'MIN',
+    center: 'CENTER',
+    end: 'MAX',
+    'flex-end': 'MAX',
+    'space-between': 'SPACE_BETWEEN',
+    'space-around': 'SPACE_AROUND',
+    'space-evenly': 'SPACE_EVENLY',
+    stretch: 'STRETCH',
+    baseline: 'BASELINE',
+  }
+  return map[normalized] || fallback
+}
+
 function extractAutoLayout(node, cssText) {
-  const pl = node.paddingLeft
-  const pr = node.paddingRight
-  const pt = node.paddingTop
-  const pb = node.paddingBottom
-  const sp = node.itemSpacing
+  const pl = readProp(node, 'paddingLeft')
+  const pr = readProp(node, 'paddingRight')
+  const pt = readProp(node, 'paddingTop')
+  const pb = readProp(node, 'paddingBottom')
+  const sp = readProp(node, 'itemSpacing')
+  const nodeLayoutMode = readProp(node, 'layoutMode')
+  const nodeLayoutWrap = readProp(node, 'layoutWrap')
+  const nodePrimaryAxisAlignItems = readProp(node, 'primaryAxisAlignItems')
+  const nodeCounterAxisAlignItems = readProp(node, 'counterAxisAlignItems')
 
   // 从 CSS 解析布局信息
   const cssLayout = cssText ? parseLayoutCSS(cssText) : {}
 
-  // 只要有 padding/spacing 或 CSS 中有 display:flex 就导出
+  // 只要有节点布局字段、padding/spacing 或 CSS 中有 display:flex 就导出
+  const hasNodeLayout = nodeLayoutMode && nodeLayoutMode !== 'NONE'
   const hasPadding = pl != null || pr != null || pt != null || pb != null
   const hasSpacing = sp != null
-  if (!hasPadding && !hasSpacing && !cssLayout.isAutoLayout) return null
+  if (!hasNodeLayout && !hasPadding && !hasSpacing && !cssLayout.isAutoLayout) return null
 
   const layout = {
     paddingLeft: pl || 0,
@@ -569,18 +638,62 @@ function extractAutoLayout(node, cssText) {
     itemSpacing: sp != null ? sp : (cssLayout.itemSpacing || 0),
   }
 
-  // 优先用 CSS 解析的值，其次尝试代理属性
-  layout.layoutMode = cssLayout.layoutMode || 'NONE'
-  if (layout.layoutMode === 'NONE') {
-    try { layout.layoutMode = node.layoutMode || 'NONE' } catch { }
-  }
-  layout.layoutWrap = cssLayout.layoutWrap || 'NO_WRAP'
-  layout.primaryAxisAlignItems = cssLayout.primaryAxisAlignItems || 'MIN'
-  layout.counterAxisAlignItems = cssLayout.counterAxisAlignItems || 'MIN'
+  layout.layoutMode = nodeLayoutMode || cssLayout.layoutMode || 'NONE'
+  layout.layoutWrap = nodeLayoutWrap || cssLayout.layoutWrap || 'NO_WRAP'
+  layout.primaryAxisAlignItems = nodePrimaryAxisAlignItems || cssLayout.primaryAxisAlignItems || 'MIN'
+  layout.counterAxisAlignItems = nodeCounterAxisAlignItems || cssLayout.counterAxisAlignItems || 'MIN'
   try { layout.primaryAxisSizingMode = node.primaryAxisSizingMode || 'AUTO' } catch { }
   try { layout.counterAxisSizingMode = node.counterAxisSizingMode || 'AUTO' } catch { }
 
   return layout
+}
+
+function extractTypeDetails(node, data) {
+  const base = {
+    kind: node.type || 'UNKNOWN',
+  }
+  if (node.type === 'TEXT') {
+    return Object.assign(base, {
+      characterCount: data.characters ? data.characters.length : 0,
+      runCount: data.textStyle && data.textStyle.textRuns ? data.textStyle.textRuns.length : 0,
+      textAutoResize: data.textAutoResize || null,
+      primaryFontFamily: data.textStyle ? data.textStyle.fontFamily : '',
+      primaryFontSize: data.textStyle ? data.textStyle.fontSize : null,
+    })
+  }
+  if (node.type === 'FRAME') {
+    return Object.assign(base, {
+      childCount: node.children ? node.children.length : 0,
+      clipsContent: !!data.clipsContent,
+      hasAutoLayout: !!data.autoLayout,
+      hasLayoutGrids: !!(data.layoutGrids && data.layoutGrids.length),
+    })
+  }
+  if (node.type === 'INSTANCE') {
+    return Object.assign(base, {
+      childCount: node.children ? node.children.length : 0,
+      mainComponentId: data.mainComponentId || '',
+      mainComponentName: data.mainComponentName || '',
+      componentProperties: data.componentProperties || null,
+      variantProperties: data.variantProperties || null,
+    })
+  }
+  if (node.type === 'COMPONENT' || node.type === 'COMPONENT_SET') {
+    return Object.assign(base, {
+      childCount: node.children ? node.children.length : 0,
+      componentProperties: data.componentProperties || null,
+      variantProperties: data.variantProperties || null,
+    })
+  }
+  if (node.type === 'RECTANGLE') {
+    return Object.assign(base, {
+      fillCount: data.fills ? data.fills.length : 0,
+      hasImageFill: !!(data.fills && data.fills.some(fill => fill.type === 'IMAGE')),
+      cornerRadius: data.cornerRadius == null ? null : data.cornerRadius,
+      strokeWeight: data.strokeWeight || 0,
+    })
+  }
+  return base
 }
 
 // ─── 圆角 ───
@@ -640,6 +753,48 @@ async function exportPngForNode(node) {
   }
 }
 
+async function inspectImageFill(fill, node, diagnostics) {
+  const imageRef = fill.imageRef || fill.imageHash || ''
+  const meta = {
+    nodeId: node.id || '',
+    nodeName: node.name || '',
+    imageRef,
+    status: 'skipped',
+  }
+  if (!imageRef) {
+    meta.reason = 'missing-image-ref'
+    diagnostics.imageFillFailures.push(meta)
+    return meta
+  }
+  if (typeof mg.getImageByHref !== 'function') {
+    meta.reason = 'getImageByHref-unavailable'
+    diagnostics.imageFillFailures.push(meta)
+    return meta
+  }
+  try {
+    const image = await mg.getImageByHref(imageRef)
+    meta.status = image ? 'available' : 'missing'
+    if (image) {
+      meta.hasGetBytesAsync = typeof image.getBytesAsync === 'function'
+      meta.hasGetSizeAsync = typeof image.getSizeAsync === 'function'
+      try {
+        if (meta.hasGetSizeAsync) meta.size = await image.getSizeAsync()
+      } catch (e) {
+        meta.sizeError = e && e.message
+      }
+      diagnostics.imageFillAssets.push(meta)
+    } else {
+      meta.reason = 'image-not-found'
+      diagnostics.imageFillFailures.push(meta)
+    }
+  } catch (e) {
+    meta.status = 'failed'
+    meta.reason = e && e.message ? e.message : 'unknown-error'
+    diagnostics.imageFillFailures.push(meta)
+  }
+  return meta
+}
+
 async function exportPngAssets(nodes) {
   const assets = []
   for (let i = 0; i < nodes.length; i++) {
@@ -668,7 +823,7 @@ async function exportPngAssets(nodes) {
 }
 
 async function exportZipStreaming(ctx) {
-  const { doc, page, nodes, mode, runtimeInfo } = ctx
+  const { doc, page, nodes, mode, runtimeInfo, diagnostics } = ctx
   const progress = {
     current: 0,
     total: countNodeTree(nodes),
@@ -750,6 +905,7 @@ async function exportZipStreaming(ctx) {
       pathIds: [page.id || ''],
       pathNames: [page.name || ''],
       progress,
+      diagnostics,
     })
     await wait(0)
   }
@@ -789,6 +945,7 @@ async function exportZipStreaming(ctx) {
   const head = JSON.stringify({
     schemaVersion: 2,
     runtime: runtimeInfo,
+    diagnostics,
     fileName: doc.name || 'untitled',
     pageId: page.id || '',
     pageName: page.name || 'untitled',
@@ -800,6 +957,14 @@ async function exportZipStreaming(ctx) {
     exportMode: mode,
     exportedAt: startedAt,
     nodeCount: nodes.length,
+    designModel: {
+      nodeCount: progress.total,
+      contentBounds,
+      nodesRef: 'nodes',
+    },
+    renderAssets: {
+      png: assetsMeta,
+    },
     assets: {
       png: assetsMeta,
     },
@@ -839,6 +1004,7 @@ async function extractNode(node, options = {}) {
     pathNames = [],
     progress = null,
     shallow = false,
+    diagnostics = null,
   } = options
 
   try {
@@ -900,7 +1066,8 @@ async function extractNode(node, options = {}) {
     // 填充
     const fills = node.fills
     if (fills && fills.length > 0) {
-      data.fills = fills.map(fill => {
+      data.fills = []
+      for (const fill of fills) {
         const f = { type: fill.type || 'SOLID', visible: fill.visible !== false }
         if (f.type === 'SOLID') {
           f.color = clone(fill.color)
@@ -908,13 +1075,15 @@ async function extractNode(node, options = {}) {
         } else if (f.type === 'IMAGE') {
           f.scaleMode = fill.scaleMode || 'FILL'
           f.imageHash = fill.imageRef || null
+          f.imageRef = fill.imageRef || null
+          if (diagnostics) f.imageAsset = await inspectImageFill(fill, node, diagnostics)
           imageNodes.add(node.id)
         } else if (f.type && f.type.startsWith('GRADIENT_')) {
           f.gradientStops = clone(fill.gradientStops)
           f.gradientTransform = clone(fill.gradientTransform)
         }
-        return f
-      })
+        data.fills.push(f)
+      }
     }
 
     // 圆角
@@ -1000,6 +1169,8 @@ async function extractNode(node, options = {}) {
     const variantProperties = cloneProp(node, 'variantProperties')
     if (variantProperties) data.variantProperties = variantProperties
 
+    data.typeDetails = extractTypeDetails(node, data)
+
     data.raw = raw
 
     debugLog('Node', {
@@ -1044,6 +1215,7 @@ async function extractNode(node, options = {}) {
           pathIds: currentPathIds,
           pathNames: currentPathNames,
           progress,
+          diagnostics,
         }))
       }
     }
@@ -1099,6 +1271,7 @@ async function exportDesign() {
     let nodes = []
     let mode = ''
     let selection = []
+    const diagnostics = createDiagnostics()
 
     if (command === 'exportSelection' || command === 'exportSelectionZip') {
       selection = page.selection || []
@@ -1116,6 +1289,9 @@ async function exportDesign() {
     postProgress('start', 0, nodes.length, '准备导出 ' + mode)
     console.log('[Export] 提取中，节点数:', nodes.length)
     const startedAt = new Date().toISOString()
+    const selectionSummary = analyzeSelection(selection)
+    for (const warning of selectionSummary.warnings) addDiagnosticWarning(diagnostics, warning)
+    postSelectionSummary(selectionSummary)
     const runtimeInfo = await buildRuntimeInfo({
       command,
       doc,
@@ -1124,10 +1300,12 @@ async function exportDesign() {
       mode,
       startedAt,
       selection,
+      selectionSummary,
+      diagnostics,
     })
 
     if (includeZipAssets) {
-      await exportZipStreaming({ doc, page, nodes, mode, runtimeInfo })
+      await exportZipStreaming({ doc, page, nodes, mode, runtimeInfo, diagnostics })
       return
     }
 
@@ -1149,6 +1327,7 @@ async function exportDesign() {
         pathIds: [page.id || ''],
         pathNames: [page.name || ''],
         progress,
+        diagnostics,
       }))
     }
 
@@ -1165,6 +1344,7 @@ async function exportDesign() {
     const designData = {
       schemaVersion: 2,
       runtime: runtimeInfo,
+      diagnostics,
       fileName: doc.name || 'untitled',
       pageId: page.id || '',
       pageName: page.name || 'untitled',
@@ -1176,6 +1356,21 @@ async function exportDesign() {
       exportMode: mode,
       exportedAt: startedAt,
       nodeCount: extractedNodes.length,
+      designModel: {
+        nodeCount: progress.total,
+        contentBounds: deriveContentBounds(extractedNodes),
+        nodesRef: 'nodes',
+      },
+      renderAssets: {
+        png: pngAssets.map(asset => ({
+          nodeId: asset.nodeId,
+          nodeName: asset.nodeName,
+          fileName: asset.fileName,
+          mimeType: asset.mimeType,
+          byteLength: asset.byteLength,
+          scale: asset.scale,
+        })),
+      },
       nodes: extractedNodes,
     }
 

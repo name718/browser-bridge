@@ -153,6 +153,7 @@
     <div class="stat-item">大小 <span class="stat-value" id="stat-size">0 KB</span></div>
   </div>
   <div class="status show loading" id="status">正在初始化导出...</div>
+  <div class="hint" id="selection-summary" style="display:none"></div>
   <div class="progress show" id="progress">
     <div class="progress-track">
       <div class="progress-bar" id="progress-bar" style="width:18%"></div>
@@ -174,6 +175,7 @@
     var btnClose = document.getElementById('btn-close');
     var statsEl = document.getElementById('stats');
     var hintEl = document.getElementById('hint');
+    var selectionSummaryEl = document.getElementById('selection-summary');
     var progressEl = document.getElementById('progress');
     var progressBarEl = document.getElementById('progress-bar');
     var progressTextEl = document.getElementById('progress-text');
@@ -202,6 +204,21 @@
       progressTextEl.textContent = payload.message || '正在导出...';
       showStatus('loading', payload.message || '正在导出...');
       setLoading(true);
+    }
+
+    function showSelectionSummary(summary) {
+      if (!summary || !summary.items) return;
+      var text = '选区 ' + summary.count + ' 个';
+      if (summary.items.length) {
+        text += '：' + summary.items.map(function (item) {
+          return item.name + ' / ' + item.type + (item.hasChildren ? ' / 子节点 ' + item.childCount : '');
+        }).join('，');
+      }
+      if (summary.warnings && summary.warnings.length) {
+        text += '。提示：' + summary.warnings.map(function (item) { return item.message; }).join('；');
+      }
+      selectionSummaryEl.textContent = text;
+      selectionSummaryEl.style.display = 'block';
     }
 
     function countNodes(nodes) {
@@ -392,6 +409,11 @@
 
       if (message.type === 'progress') {
         updateProgress(message);
+        return;
+      }
+
+      if (message.type === 'selectionSummary') {
+        showSelectionSummary(message.summary);
         return;
       }
 
