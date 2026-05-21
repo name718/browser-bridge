@@ -26,9 +26,41 @@ function slugifyName(name, fallback) {
 }
 
 const DEBUG_EXPORT = false
-const PNG_EXPORT_SCALE = 2
+const DEFAULT_PNG_EXPORT_SCALE = 2
+const MIN_PNG_EXPORT_SCALE = 1
+const MAX_PNG_EXPORT_SCALE = 4
 const EXPORTER_VERSION = '2.1.0'
 const LAST_EXPORT_STORAGE_KEY = 'design-json-export:last-export'
+
+function normalizeExportConfig(config) {
+  const rawScale = config && config.pngScale != null ? Number(config.pngScale) : DEFAULT_PNG_EXPORT_SCALE
+  const pngScale = Math.max(MIN_PNG_EXPORT_SCALE, Math.min(MAX_PNG_EXPORT_SCALE, Number.isFinite(rawScale) ? rawScale : DEFAULT_PNG_EXPORT_SCALE))
+  return {
+    pngScale,
+  }
+}
+
+function commandInfo(command, doc, page) {
+  const selection = page && page.selection ? page.selection : []
+  const isSelection = command === 'exportSelection' || command === 'exportSelectionZip'
+  const includeZipAssets = command === 'exportPageZip' || command === 'exportSelectionZip'
+  const includeImages = command === 'exportPageWithImages'
+  const nodes = isSelection ? selection : (page && page.children ? page.children : [])
+  return {
+    command,
+    documentName: doc && doc.name ? doc.name : 'untitled',
+    pageName: page && page.name ? page.name : 'untitled',
+    pageSize: {
+      width: page && page.width != null ? round2(page.width) : null,
+      height: page && page.height != null ? round2(page.height) : null,
+    },
+    exportTarget: isSelection ? 'selection' : 'page',
+    exportType: includeZipAssets ? 'JSON+PNG Zip' : (includeImages ? 'JSON（含内嵌图片）' : 'JSON'),
+    topLevelCount: nodes.length,
+    totalCount: countNodeTree(nodes),
+    selection: analyzeSelection(selection),
+  }
+}
 
 function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -126,7 +158,7 @@ function postSelectionSummary(selectionSummary) {
 }
 
 async function buildRuntimeInfo(ctx) {
-  const { command, doc, page, nodes, mode, startedAt, selection, selectionSummary, diagnostics } = ctx
+  const { command, doc, page, nodes, mode, startedAt, selection, selectionSummary, diagnostics, exportConfig } = ctx
   const previous = await storageGet(LAST_EXPORT_STORAGE_KEY)
   return {
     exporterVersion: EXPORTER_VERSION,
@@ -155,6 +187,7 @@ async function buildRuntimeInfo(ctx) {
     selection: selectionSummary || analyzeSelection(selection),
     nodes: summarizeNodes(nodes),
     diagnostics,
+    exportConfig,
     previousExport: previous ? {
       exporterVersion: previous.exporterVersion || '',
       apiVersion: previous.apiVersion || '',
@@ -730,11 +763,12 @@ async function extractImageForNode(node) {
   }
 }
 
-async function exportPngForNode(node) {
+async function exportPngForNode(node, scale) {
   try {
+    const pngScale = normalizeExportConfig({ pngScale: scale }).pngScale
     const settings = {
       format: 'PNG',
-      constraint: { type: 'SCALE', value: PNG_EXPORT_SCALE },
+      constraint: { type: 'SCALE', value: pngScale },
       useAbsoluteBounds: true,
       useRenderBounds: true,
     }
@@ -795,13 +829,14 @@ async function inspectImageFill(fill, node, diagnostics) {
   return meta
 }
 
-async function exportPngAssets(nodes) {
+async function exportPngAssets(nodes, exportConfig) {
+  const pngScale = normalizeExportConfig(exportConfig).pngScale
   const assets = []
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i]
     postProgress('png', i + 1, nodes.length, '正在导出 PNG ' + (i + 1) + '/' + nodes.length)
     if (i % 2 === 0) await wait(0)
-    const image = await exportPngForNode(node)
+    const image = await exportPngForNode(node, pngScale)
     if (!image) continue
     const safeName = slugifyName(node.name, 'node_' + (i + 1))
     assets.push({
@@ -810,7 +845,7 @@ async function exportPngAssets(nodes) {
       fileName: 'png/' + String(i + 1).padStart(2, '0') + '_' + safeName + '.png',
       mimeType: 'image/png',
       byteLength: image.byteLength,
-      scale: PNG_EXPORT_SCALE,
+      scale: pngScale,
       bytes: image.bytes,
     })
   }
@@ -823,7 +858,8 @@ async function exportPngAssets(nodes) {
 }
 
 async function exportZipStreaming(ctx) {
-  const { doc, page, nodes, mode, runtimeInfo, diagnostics } = ctx
+  const { doc, page, nodes, mode, runtimeInfo, diagnostics, exportConfig } = ctx
+  const pngScale = normalizeExportConfig(exportConfig).pngScale
   const progress = {
     current: 0,
     total: countNodeTree(nodes),
@@ -914,7 +950,7 @@ async function exportZipStreaming(ctx) {
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i]
     postProgress('png', i + 1, nodes.length, '正在导出 PNG ' + (i + 1) + '/' + nodes.length)
-    const image = await exportPngForNode(node)
+    const image = await exportPngForNode(node, pngScale)
     if (!image) continue
 
     const safeName = slugifyName(node.name, 'node_' + (i + 1))
@@ -924,7 +960,7 @@ async function exportZipStreaming(ctx) {
       fileName: 'png/' + String(i + 1).padStart(2, '0') + '_' + safeName + '.png',
       mimeType: 'image/png',
       byteLength: image.byteLength,
-      scale: PNG_EXPORT_SCALE,
+      scale: pngScale,
     }
     assetsMeta.push(asset)
     mg.ui.postMessage({
@@ -1251,8 +1287,9 @@ async function exportImages(imageNodes) {
 
 // ─── 入口 ───
 
-async function exportDesign() {
+async function exportDesign(config) {
   try {
+    const exportConfig = normalizeExportConfig(config)
     const command = mg.command || 'exportPage'
     const doc = mg.document
     if (!doc) {
@@ -1302,10 +1339,11 @@ async function exportDesign() {
       selection,
       selectionSummary,
       diagnostics,
+      exportConfig,
     })
 
     if (includeZipAssets) {
-      await exportZipStreaming({ doc, page, nodes, mode, runtimeInfo, diagnostics })
+      await exportZipStreaming({ doc, page, nodes, mode, runtimeInfo, diagnostics, exportConfig })
       return
     }
 
@@ -1338,7 +1376,7 @@ async function exportDesign() {
       images = await exportImages(options.imageNodes)
     }
 
-    const pngAssets = includeZipAssets ? await exportPngAssets(nodes) : []
+    const pngAssets = includeZipAssets ? await exportPngAssets(nodes, exportConfig) : []
     postProgress('json-stringify', 0, 0, '正在生成 JSON')
 
     const designData = {
@@ -1434,15 +1472,30 @@ async function exportDesign() {
 
 function run() {
   console.log('[Export] === Design JSON Export ===')
-  mg.showUI(__html__, { visible: true, width: 460, height: 430 })
-  postProgress('start', 0, 0, '正在初始化导出...')
+  mg.showUI(__html__, { visible: true, width: 500, height: 520 })
   let started = false
-  function startExportOnce() {
+  function postExportInfo() {
+    try {
+      const doc = mg.document
+      const page = doc && doc.currentPage
+      if (!doc || !page) return
+      mg.ui.postMessage({
+        type: 'exportInfo',
+        info: commandInfo(mg.command || 'exportPage', doc, page),
+        config: normalizeExportConfig({}),
+      })
+    } catch (e) {
+      try {
+        mg.ui.postMessage({ type: 'error', message: '读取导出信息失败: ' + e.message })
+      } catch { }
+    }
+  }
+  function startExportOnce(config) {
     if (started) return
     started = true
     postProgress('start', 0, 0, '正在启动导出...')
     setTimeout(function () {
-      exportDesign()
+      exportDesign(config)
     }, 80)
   }
 
@@ -1452,10 +1505,13 @@ function run() {
       return
     }
     if (msg.type === 'uiReady') {
-      startExportOnce()
+      postExportInfo()
+      return
+    }
+    if (msg.type === 'startExport') {
+      startExportOnce(msg.config || {})
     }
   }
-  setTimeout(startExportOnce, 500)
 }
 
 run()

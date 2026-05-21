@@ -55,6 +55,77 @@
     .status.success { background: #f0f9eb; color: #34a853; }
     .status.error { background: #fef0f0; color: #d93025; }
     .status.loading { background: #f5f8ff; color: #245bdb; }
+    .info-panel {
+      border: 1px solid #dee0e3;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+      background: #fafbfc;
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: 82px minmax(0, 1fr);
+      row-gap: 8px;
+      column-gap: 10px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .info-label {
+      color: #8f959e;
+      white-space: nowrap;
+    }
+    .info-value {
+      color: #1f2329;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .config-panel {
+      border: 1px solid #dee0e3;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .config-title {
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+    .scale-options {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+    }
+    .scale-option {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 34px;
+      border: 1px solid #dee0e3;
+      border-radius: 6px;
+      color: #1f2329;
+      cursor: pointer;
+      font-size: 12px;
+      user-select: none;
+      transition: all 0.2s;
+    }
+    .scale-option input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .scale-option.active {
+      border-color: #3370ff;
+      background: #f5f8ff;
+      color: #245bdb;
+      font-weight: 600;
+    }
+    .config-hint {
+      color: #8f959e;
+      font-size: 11px;
+      line-height: 1.5;
+      margin-top: 8px;
+    }
     .progress {
       display: none;
       margin-bottom: 12px;
@@ -135,6 +206,9 @@
       display: none;
     }
     .btn-zip:hover { background: #008f5d; }
+    .btn-export {
+      min-width: 108px;
+    }
     .hint {
       color: #8f959e;
       font-size: 11px;
@@ -152,16 +226,41 @@
     <div class="stat-item">文本 <span class="stat-value" id="stat-texts">0</span></div>
     <div class="stat-item">大小 <span class="stat-value" id="stat-size">0 KB</span></div>
   </div>
-  <div class="status show loading" id="status">正在初始化导出...</div>
+  <div class="status show loading" id="status">正在读取导出信息...</div>
+  <div class="info-panel" id="info-panel">
+    <div class="info-grid">
+      <div class="info-label">文档</div>
+      <div class="info-value" id="info-doc">-</div>
+      <div class="info-label">页面</div>
+      <div class="info-value" id="info-page">-</div>
+      <div class="info-label">导出内容</div>
+      <div class="info-value" id="info-target">-</div>
+      <div class="info-label">节点数量</div>
+      <div class="info-value" id="info-nodes">-</div>
+      <div class="info-label">画布尺寸</div>
+      <div class="info-value" id="info-size">-</div>
+    </div>
+  </div>
+  <div class="config-panel" id="config-panel">
+    <div class="config-title">图片导出质量</div>
+    <div class="scale-options" id="scale-options">
+      <label class="scale-option"><input type="radio" name="png-scale" value="1">1 倍图</label>
+      <label class="scale-option active"><input type="radio" name="png-scale" value="2" checked>2 倍图</label>
+      <label class="scale-option"><input type="radio" name="png-scale" value="3">3 倍图</label>
+      <label class="scale-option"><input type="radio" name="png-scale" value="4">4 倍图</label>
+    </div>
+    <div class="config-hint">倍数越高 PNG 越清晰，ZIP 体积和导出耗时也会增加。</div>
+  </div>
   <div class="hint" id="selection-summary" style="display:none"></div>
-  <div class="progress show" id="progress">
+  <div class="progress" id="progress">
     <div class="progress-track">
       <div class="progress-bar" id="progress-bar" style="width:18%"></div>
     </div>
     <div class="progress-text" id="progress-text">正在打开导出面板...</div>
   </div>
-  <textarea id="json-output" readonly placeholder="导出数据将显示在这里..."></textarea>
+  <textarea id="json-output" readonly placeholder="点击“开始导出”后，导出数据将显示在这里..."></textarea>
   <div class="btn-row">
+    <button class="btn-primary btn-export" id="btn-start-export">开始导出</button>
     <button class="btn-primary" id="btn-copy">复制到剪贴板</button>
     <button class="btn-zip" id="btn-download-zip">下载 ZIP</button>
     <button class="btn-secondary" id="btn-close">关闭</button>
@@ -171,6 +270,7 @@
     var statusEl = document.getElementById('status');
     var textarea = document.getElementById('json-output');
     var btnCopy = document.getElementById('btn-copy');
+    var btnStartExport = document.getElementById('btn-start-export');
     var btnDownloadZip = document.getElementById('btn-download-zip');
     var btnClose = document.getElementById('btn-close');
     var statsEl = document.getElementById('stats');
@@ -179,10 +279,15 @@
     var progressEl = document.getElementById('progress');
     var progressBarEl = document.getElementById('progress-bar');
     var progressTextEl = document.getElementById('progress-text');
+    var infoPanelEl = document.getElementById('info-panel');
+    var configPanelEl = document.getElementById('config-panel');
+    var scaleOptionsEl = document.getElementById('scale-options');
     var currentZipPayload = null;
     var currentZipName = 'mastergo_export.zip';
     var MAX_PREVIEW_CHARS = 250000;
     var streamZipPayload = null;
+    var exportStarted = false;
+    var selectedPngScale = 2;
 
     function showStatus(type, text) {
       statusEl.className = 'status show ' + type;
@@ -192,8 +297,57 @@
     function setLoading(isLoading) {
       document.body.className = isLoading ? 'is-loading' : '';
       progressEl.className = isLoading ? 'progress show' : 'progress';
+      btnStartExport.disabled = isLoading || exportStarted;
       btnCopy.disabled = isLoading;
       btnDownloadZip.disabled = isLoading;
+    }
+
+    function setReady() {
+      exportStarted = false;
+      document.body.className = '';
+      progressEl.className = 'progress';
+      btnStartExport.disabled = false;
+      btnCopy.disabled = true;
+      btnDownloadZip.disabled = true;
+      btnDownloadZip.style.display = 'none';
+      showStatus('loading', '确认信息和图片质量后点击“开始导出”');
+    }
+
+    function formatSize(size) {
+      if (!size || size.width == null || size.height == null) return '-';
+      return size.width + ' x ' + size.height;
+    }
+
+    function updateScaleOptions() {
+      var labels = scaleOptionsEl.querySelectorAll('.scale-option');
+      for (var i = 0; i < labels.length; i++) {
+        var input = labels[i].querySelector('input');
+        var active = Number(input.value) === selectedPngScale;
+        labels[i].className = active ? 'scale-option active' : 'scale-option';
+        input.checked = active;
+      }
+    }
+
+    function showExportInfo(info, config) {
+      if (!info) return;
+      selectedPngScale = config && config.pngScale ? Number(config.pngScale) : selectedPngScale;
+      updateScaleOptions();
+      document.getElementById('info-doc').textContent = info.documentName || '-';
+      document.getElementById('info-page').textContent = info.pageName || '-';
+      document.getElementById('info-target').textContent = (info.exportTarget === 'selection' ? '选中图层' : '当前页面') + ' / ' + (info.exportType || 'JSON+PNG Zip');
+      document.getElementById('info-nodes').textContent = (info.topLevelCount || 0) + ' 个顶层，约 ' + (info.totalCount || 0) + ' 个总节点';
+      document.getElementById('info-size').textContent = formatSize(info.pageSize);
+      if (info.exportTarget === 'selection' && !info.topLevelCount) {
+        btnStartExport.disabled = true;
+        showStatus('error', '当前命令需要先选中要导出的图层');
+      } else {
+        setReady();
+      }
+      if (info.exportTarget === 'selection') {
+        showSelectionSummary(info.selection);
+      } else {
+        selectionSummaryEl.style.display = 'none';
+      }
     }
 
     function updateProgress(payload) {
@@ -399,13 +553,19 @@
       setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
     }
 
-    setLoading(true);
+    btnCopy.disabled = true;
+    btnDownloadZip.disabled = true;
     window.parent.postMessage({ type: 'uiReady' }, '*');
     window.parent.postMessage({ pluginMessage: { type: 'uiReady' } }, '*');
 
     window.onmessage = function (event) {
       var message = event.data && event.data.pluginMessage ? event.data.pluginMessage : event.data;
       if (!message) return;
+
+      if (message.type === 'exportInfo') {
+        showExportInfo(message.info, message.config);
+        return;
+      }
 
       if (message.type === 'progress') {
         updateProgress(message);
@@ -487,6 +647,9 @@
           ? 'JSON 数据过大，UI 不再完整预览以避免内存占用。\n\n请点击“下载 ZIP”，在压缩包内查看完整 design.json。'
           : json;
         setLoading(false);
+        infoPanelEl.style.display = 'none';
+        configPanelEl.style.display = 'none';
+        btnStartExport.style.display = 'none';
         progressBarEl.style.width = '100%';
         progressTextEl.textContent = '导出完成';
         currentZipPayload = message.zipPayload || null;
@@ -523,6 +686,39 @@
         showStatus('success', currentZipPayload ? '导出完成，点击下方按钮下载 ZIP' : '导出完成，点击下方按钮复制');
       }
     };
+
+    scaleOptionsEl.addEventListener('click', function (event) {
+      var target = event.target;
+      var label = target.closest ? target.closest('.scale-option') : null;
+      if (!label) return;
+      var input = label.querySelector('input');
+      selectedPngScale = Number(input.value) || 2;
+      updateScaleOptions();
+    });
+
+    btnStartExport.addEventListener('click', function () {
+      if (exportStarted) return;
+      exportStarted = true;
+      currentZipPayload = null;
+      streamZipPayload = null;
+      btnDownloadZip.style.display = 'none';
+      textarea.value = '';
+      infoPanelEl.style.display = 'none';
+      configPanelEl.style.display = 'none';
+      btnStartExport.style.display = 'none';
+      showStatus('loading', '正在启动导出...');
+      setLoading(true);
+      window.parent.postMessage({
+        type: 'startExport',
+        config: { pngScale: selectedPngScale }
+      }, '*');
+      window.parent.postMessage({
+        pluginMessage: {
+          type: 'startExport',
+          config: { pngScale: selectedPngScale }
+        }
+      }, '*');
+    });
 
     btnCopy.addEventListener('click', function () {
       textarea.select();
