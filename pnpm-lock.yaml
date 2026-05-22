@@ -31,8 +31,8 @@ importers:
   packages/mcp-server:
     dependencies:
       '@majuntao-1/browser-bridge-shared':
-        specifier: workspace:^
-        version: link:../shared
+        specifier: ^0.1.0
+        version: 0.1.0
       '@modelcontextprotocol/sdk':
         specifier: ^1.13.0
         version: 1.29.0(zod@3.25.76)
@@ -353,6 +353,9 @@ packages:
     engines: {node: '>=18.14.1'}
     peerDependencies:
       hono: ^4
+
+  '@majuntao-1/browser-bridge-shared@0.1.0':
+    resolution: {integrity: sha512-S781DQeJXE30JqhYO0kHgHJ6DO6EAHfvS6O4K9Uj1LZiFgqy25ryuvhVw1PiXvMtURuOKqfDsvGA8XID3xFzBA==}
 
   '@modelcontextprotocol/sdk@1.29.0':
     resolution: {integrity: sha512-zo37mZA9hJWpULgkRpowewez1y6ML5GsXJPY8FI0tBBCd77HEvza4jDqRKOXgHNn867PVGCyTdzqpz0izu5ZjQ==}
@@ -1127,6 +1130,8 @@ snapshots:
   '@hono/node-server@1.19.14(hono@4.12.18)':
     dependencies:
       hono: 4.12.18
+
+  '@majuntao-1/browser-bridge-shared@0.1.0': {}
 
   '@modelcontextprotocol/sdk@1.29.0(zod@3.25.76)':
     dependencies:
