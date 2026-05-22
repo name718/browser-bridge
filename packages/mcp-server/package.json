@@ -1,21 +1,31 @@
 {
-  "name": "@browser-bridge/mcp-server",
+  "name": "@majuntao-1/browser-bridge-mcp-server",
   "version": "0.1.0",
   "type": "module",
+  "description": "MCP server and local daemon for Browser Bridge.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
     "browser-bridge-mcp": "dist/index.js",
     "browser-bridge-daemon": "dist/daemon.js"
   },
+  "files": [
+    "dist",
+    "scripts",
+    "README.md",
+    "package.json"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/index.ts",
     "dev:daemon": "tsx src/daemon.ts",
     "daemon": "node dist/daemon.js",
+    "prepack": "pnpm build",
     "smoke": "node scripts/smoke-test.mjs"
   },
   "dependencies": {
-    "@browser-bridge/shared": "workspace:*",
+    "@majuntao-1/browser-bridge-shared": "workspace:^",
     "@modelcontextprotocol/sdk": "^1.13.0",
     "ws": "^8.17.0",
     "zod": "^3.23.8"
@@ -23,5 +33,9 @@
   "devDependencies": {
     "@types/ws": "^8.5.10",
     "tsx": "^4.15.7"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

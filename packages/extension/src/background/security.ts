@@ -1,4 +1,4 @@
-import { type BridgeRequest } from "@browser-bridge/shared";
+import { type BridgeRequest } from "@majuntao-1/browser-bridge-shared";
 
 export type SecurityConfig = {
   allowlist: string[];

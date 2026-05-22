@@ -7,7 +7,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@browser-bridge/shared": "workspace:*"
+    "@majuntao-1/browser-bridge-shared": "workspace:*"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.268",

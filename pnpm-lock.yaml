@@ -17,7 +17,7 @@ importers:
 
   packages/extension:
     dependencies:
-      '@browser-bridge/shared':
+      '@majuntao-1/browser-bridge-shared':
         specifier: workspace:*
         version: link:../shared
     devDependencies:
@@ -30,8 +30,8 @@ importers:
 
   packages/mcp-server:
     dependencies:
-      '@browser-bridge/shared':
-        specifier: workspace:*
+      '@majuntao-1/browser-bridge-shared':
+        specifier: workspace:^
         version: link:../shared
       '@modelcontextprotocol/sdk':
         specifier: ^1.13.0

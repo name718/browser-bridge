@@ -1,7 +1,8 @@
 {
-  "name": "@browser-bridge/shared",
+  "name": "@majuntao-1/browser-bridge-shared",
   "version": "0.1.0",
   "type": "module",
+  "description": "Shared protocol types for Browser Bridge.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -10,9 +11,18 @@
       "import": "./dist/index.js"
     }
   },
+  "files": [
+    "dist",
+    "README.md",
+    "package.json"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepack": "pnpm build",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }
-

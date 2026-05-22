@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type BridgeRequest, type BrowserStatus } from "@browser-bridge/shared";
+import { type BridgeRequest, type BrowserStatus } from "@majuntao-1/browser-bridge-shared";
 import { Logger } from "../logger/logger.js";
 
 type DaemonStatus = BrowserStatus & {

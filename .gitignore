@@ -9,4 +9,5 @@ coverage/
 .turbo/
 .vite/
 *.tsbuildinfo
-
+!release/
+!release/*.zip

@@ -5,7 +5,7 @@ import {
   type BridgeResponse,
   type BrowserStatus,
   PROTOCOL_VERSION
-} from "@browser-bridge/shared";
+} from "@majuntao-1/browser-bridge-shared";
 import { Logger } from "../logger/logger.js";
 
 type PendingRequest = {

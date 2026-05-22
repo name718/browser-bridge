@@ -2,7 +2,7 @@ import { z } from "zod";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { type BridgeRequest, type BrowserStatus } from "@browser-bridge/shared";
+import { type BridgeRequest, type BrowserStatus } from "@majuntao-1/browser-bridge-shared";
 
 export type BrowserToolBridge = {
   getStatus: () => BrowserStatus | Promise<BrowserStatus>;

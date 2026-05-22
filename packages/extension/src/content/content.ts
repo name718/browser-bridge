@@ -5,7 +5,7 @@ import {
   type BrowserFindResult,
   type BridgeRequest,
   type PageSnapshot
-} from "@browser-bridge/shared";
+} from "@majuntao-1/browser-bridge-shared";
 
 const ELEMENT_ATTR = "data-browser-bridge-id";
 const ACTIONABLE_SELECTOR = [

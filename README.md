@@ -241,21 +241,17 @@ Browser Bridge 面向普通网页：优先用 DOM、文本、交互元素和 CDP
 
 ## 快速开始
 
-### 1. 安装依赖
+### 1. 安装 Chrome 插件
 
-```bash
-pnpm install
-pnpm build
-```
+当前版本暂未上架 Chrome Web Store。请从仓库的 `release/browser-bridge-extension-0.1.1.zip` 解压后手动加载：
 
-### 2. 加载 Chrome 插件
-
-1. 打开 `chrome://extensions`
+1. 解压 `release/browser-bridge-extension-0.1.1.zip`
+2. 打开 `chrome://extensions`
 2. 开启「开发者模式」
 3. 点击「加载已解压的扩展程序」
-4. 选择 `packages/extension/dist`
+4. 选择解压后的插件目录
 
-### 3. 配置 MCP 客户端
+### 2. 配置 MCP 客户端
 
 在你的 MCP 客户端（Claude Code、Cursor 等）中添加：
 
@@ -263,8 +259,13 @@ pnpm build
 {
   "mcpServers": {
     "browser-bridge": {
-      "command": "node",
-      "args": ["<项目路径>/packages/mcp-server/dist/index.js"],
+      "command": "npx",
+      "args": [
+        "-y",
+        "-p",
+        "@majuntao-1/browser-bridge-mcp-server",
+        "browser-bridge-mcp"
+      ],
       "env": {
         "BROWSER_BRIDGE_PORT": "17321"
       }
@@ -273,9 +274,41 @@ pnpm build
 }
 ```
 
+如果你的环境禁止 `npx` 联网，也可以先全局安装：
+
+```bash
+npm install -g @majuntao-1/browser-bridge-mcp-server --registry=https://registry.npmjs.org/
+```
+
+然后把 MCP 命令改为：
+
+```json
+{
+  "mcpServers": {
+    "browser-bridge": {
+      "command": "browser-bridge-mcp",
+      "args": [],
+      "env": {
+        "BROWSER_BRIDGE_PORT": "17321"
+      }
+    }
+  }
+}
+```
+
+### 3. 连接插件
+
+MCP 代理首次调用时会自动启动本地 daemon。打开 Chrome 工具栏里的“浏览器桥接”插件，确认桥接地址为：
+
+```text
+ws://127.0.0.1:17321
+```
+
+点击“保存并重连”，状态显示「已连接」后即可使用。
+
 ### 4. 开始使用
 
-AI 代理首次调用时会自动启动 daemon。在 Chrome 插件弹窗中确认连接状态为「已连接」，然后：
+在支持 MCP 的 AI 客户端中调用：
 
 ```
 Agent: 用 browser_use 激活浏览器工具

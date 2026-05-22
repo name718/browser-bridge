@@ -2,7 +2,7 @@ import {
   type BridgeErrorCode,
   type BridgeRequest,
   type BridgeResponse
-} from "@browser-bridge/shared";
+} from "@majuntao-1/browser-bridge-shared";
 import {
   DEFAULT_BRIDGE_URL,
   EXTENSION_VERSION,
