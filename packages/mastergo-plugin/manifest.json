@@ -1,5 +1,6 @@
 {
   "name": "Design JSON Export",
+  "api": "1.0.0",
   "apiVersion": "1.0.0",
   "main": "main.js",
   "ui": "ui.html",

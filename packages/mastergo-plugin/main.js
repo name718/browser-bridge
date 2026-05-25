@@ -165,6 +165,18 @@ function postSelectionSummary(selectionSummary) {
   } catch { }
 }
 
+function getRuntimeCapabilities() {
+  return {
+    mastergoMode: mg.mode || '',
+    hasClientStorage: !!(mg.clientStorage && typeof mg.clientStorage.getAsync === 'function' && typeof mg.clientStorage.setAsync === 'function'),
+    hasGetWebStyleCodeById: typeof mg.getWebStyleCodeById === 'function',
+    hasGetNodeById: typeof mg.getNodeById === 'function',
+    hasGetImageByHref: typeof mg.getImageByHref === 'function',
+    hasCodegen: !!mg.codegen,
+    hasSnippetgen: !!mg.snippetgen,
+  }
+}
+
 async function buildRuntimeInfo(ctx) {
   const { command, doc, page, nodes, mode, startedAt, selection, selectionSummary, diagnostics, exportConfig } = ctx
   const previous = await storageGet(LAST_EXPORT_STORAGE_KEY)
@@ -174,14 +186,10 @@ async function buildRuntimeInfo(ctx) {
     documentId: mg.documentId || '',
     command,
     mode,
+    mastergoMode: mg.mode || '',
     startedAt,
     themeColor: mg.themeColor || '',
-    capabilities: {
-      hasClientStorage: !!(mg.clientStorage && typeof mg.clientStorage.getAsync === 'function' && typeof mg.clientStorage.setAsync === 'function'),
-      hasGetWebStyleCodeById: typeof mg.getWebStyleCodeById === 'function',
-      hasGetNodeById: typeof mg.getNodeById === 'function',
-      hasGetImageByHref: typeof mg.getImageByHref === 'function',
-    },
+    capabilities: getRuntimeCapabilities(),
     document: {
       id: mg.documentId || '',
       name: doc.name || 'untitled',
@@ -1697,6 +1705,7 @@ async function exportDesign(config) {
 
 function run() {
   console.log('[Export] === Design JSON Export ===')
+  console.log('[Export] Runtime capabilities:', getRuntimeCapabilities())
   const command = mg.command || 'exportPage'
   mg.showUI(__html__, { visible: true, width: 500, height: 520 })
   let started = false
