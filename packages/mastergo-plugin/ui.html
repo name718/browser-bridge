@@ -157,20 +157,6 @@
       from { background-position: 0 0; }
       to { background-position: 160px 0; }
     }
-    textarea {
-      width: 100%;
-      height: 160px;
-      padding: 8px;
-      border: 1px solid #dee0e3;
-      border-radius: 6px;
-      font-family: "SF Mono", Menlo, Consolas, monospace;
-      font-size: 11px;
-      color: #1f2329;
-      resize: vertical;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-    textarea:focus { border-color: #3370ff; }
     .btn-row {
       margin-top: 10px;
       display: flex;
@@ -258,18 +244,14 @@
     </div>
     <div class="progress-text" id="progress-text">正在打开导出面板...</div>
   </div>
-  <textarea id="json-output" readonly placeholder="点击“开始导出”后，导出数据将显示在这里..."></textarea>
   <div class="btn-row">
     <button class="btn-primary btn-export" id="btn-start-export">开始导出</button>
-    <button class="btn-primary" id="btn-copy">复制到剪贴板</button>
     <button class="btn-zip" id="btn-download-zip">下载 ZIP</button>
     <button class="btn-secondary" id="btn-close">关闭</button>
   </div>
-  <div class="hint" id="hint">复制 JSON 数据，可用于代码生成、设计规范提取等场景</div>
+  <div class="hint" id="hint">导出数据可用于代码生成、设计规范提取等场景</div>
   <script>
     var statusEl = document.getElementById('status');
-    var textarea = document.getElementById('json-output');
-    var btnCopy = document.getElementById('btn-copy');
     var btnStartExport = document.getElementById('btn-start-export');
     var btnDownloadZip = document.getElementById('btn-download-zip');
     var btnClose = document.getElementById('btn-close');
@@ -284,7 +266,6 @@
     var scaleOptionsEl = document.getElementById('scale-options');
     var currentZipPayload = null;
     var currentZipName = 'mastergo_export.zip';
-    var MAX_PREVIEW_CHARS = 250000;
     var streamZipPayload = null;
     var exportStarted = false;
     var selectedPngScale = 2;
@@ -298,7 +279,6 @@
       document.body.className = isLoading ? 'is-loading' : '';
       progressEl.className = isLoading ? 'progress show' : 'progress';
       btnStartExport.disabled = isLoading || exportStarted;
-      btnCopy.disabled = isLoading;
       btnDownloadZip.disabled = isLoading;
     }
 
@@ -307,7 +287,6 @@
       document.body.className = '';
       progressEl.className = 'progress';
       btnStartExport.disabled = false;
-      btnCopy.disabled = true;
       btnDownloadZip.disabled = true;
       btnDownloadZip.style.display = 'none';
       showStatus('loading', '确认信息和图片质量后点击“开始导出”');
@@ -526,10 +505,21 @@
       if (!jsonParts && payload.jsonNodeParts) {
         jsonParts = [payload.jsonPrefix || ''].concat(payload.jsonNodeParts, [payload.jsonSuffix || '']);
       }
-      var files = [{
+      var files = [];
+      if (payload.jsonFiles && payload.jsonFiles.length) {
+        for (var jf = 0; jf < payload.jsonFiles.length; jf++) {
+          var jsonFile = payload.jsonFiles[jf];
+          var splitJsonParts = [jsonFile.prefix || ''].concat(jsonFile.parts || [], [jsonFile.suffix || '']);
+          files.push({
+            name: jsonFile.fileName || ('json/' + String(jf + 1).padStart(2, '0') + '.json'),
+            bytes: new Blob(splitJsonParts, { type: 'application/json' })
+          });
+        }
+      }
+      files.push({
         name: payload.jsonFileName || 'design.json',
         bytes: jsonParts ? new Blob(jsonParts, { type: 'application/json' }) : utf8Bytes(payload.json || '{}')
-      }];
+      });
       if (payload.bindingJson) {
         files.push({
           name: payload.bindingFileName || 'binding.json',
@@ -559,7 +549,6 @@
       setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
     }
 
-    btnCopy.disabled = true;
     btnDownloadZip.disabled = true;
     window.parent.postMessage({ type: 'uiReady' }, '*');
     window.parent.postMessage({ pluginMessage: { type: 'uiReady' } }, '*');
@@ -595,16 +584,55 @@
           jsonPrefix: '',
           jsonNodeParts: [],
           jsonSuffix: '',
+          jsonFiles: [],
+          jsonFilesByName: {},
           assets: [],
           bindingJson: null,
           bindingFileName: 'binding.json',
         };
         currentZipPayload = null;
         currentZipName = message.zipName || 'mastergo_export.zip';
-        textarea.value = '正在流式导出 ZIP...\n\nJSON 数据较大时不会在 UI 中完整预览，请在下载后的 ZIP 内查看完整 design.json。';
+        showStatus('loading', '正在流式导出 ZIP，请在下载后的 ZIP 内查看 manifest.json 和 json/ 目录。');
         if (message.mode) {
           document.getElementById('mode-label').textContent = '- ' + message.mode;
         }
+        return;
+      }
+
+      if (message.type === 'zipJsonFilePart') {
+        if (!streamZipPayload) return;
+        var partFileName = message.fileName || 'design.json';
+        var partFile = streamZipPayload.jsonFilesByName[partFileName];
+        if (!partFile) {
+          partFile = {
+            fileName: partFileName,
+            prefix: '',
+            parts: [],
+            suffix: ''
+          };
+          streamZipPayload.jsonFilesByName[partFileName] = partFile;
+          streamZipPayload.jsonFiles.push(partFile);
+        }
+        partFile.parts.push(message.part || '');
+        return;
+      }
+
+      if (message.type === 'zipJsonFileMeta') {
+        if (!streamZipPayload) return;
+        var metaFileName = message.fileName || 'design.json';
+        var metaFile = streamZipPayload.jsonFilesByName[metaFileName];
+        if (!metaFile) {
+          metaFile = {
+            fileName: metaFileName,
+            prefix: '',
+            parts: [],
+            suffix: ''
+          };
+          streamZipPayload.jsonFilesByName[metaFileName] = metaFile;
+          streamZipPayload.jsonFiles.push(metaFile);
+        }
+        metaFile.prefix = message.prefix || '';
+        metaFile.suffix = message.suffix || '';
         return;
       }
 
@@ -648,18 +676,14 @@
         progressTextEl.textContent = '导出完成';
         btnDownloadZip.style.display = currentZipPayload ? 'inline-block' : 'none';
         hintEl.textContent = currentZipPayload && currentZipPayload.bindingJson
-          ? 'ZIP 包含 design.json + binding.json + png 目录'
-          : 'ZIP 包含完整 design.json 和 png 目录；大 JSON 请在 ZIP 中查看。';
+          ? 'ZIP 包含 manifest.json + json/ 分片 + binding.json + png 目录'
+          : 'ZIP 包含 manifest.json、每个顶层图层一个 json/ 分片，以及 png 目录。';
         showStatus('success', '导出完成，点击下方按钮下载 ZIP');
         return;
       }
 
       if (message.type === 'sendData') {
         var json = message.text;
-        var isLargeJson = json.length > MAX_PREVIEW_CHARS;
-        textarea.value = isLargeJson
-          ? 'JSON 数据过大，UI 不再完整预览以避免内存占用。\n\n请点击“下载 ZIP”，在压缩包内查看完整 design.json。'
-          : json;
         setLoading(false);
         infoPanelEl.style.display = 'none';
         configPanelEl.style.display = 'none';
@@ -674,7 +698,7 @@
         btnDownloadZip.style.display = currentZipPayload ? 'inline-block' : 'none';
         hintEl.textContent = currentZipPayload
           ? 'ZIP 包含 design.json 和 png 目录，JSON 内 assets.png 会对应 PNG 文件路径'
-          : '复制 JSON 数据，可用于代码生成、设计规范提取等场景';
+          : '导出数据可用于代码生成、设计规范提取等场景';
 
         if (message.mode) {
           document.getElementById('mode-label').textContent = '- ' + message.mode;
@@ -697,7 +721,7 @@
           } catch {}
         }
 
-        showStatus('success', currentZipPayload ? '导出完成，点击下方按钮下载 ZIP' : '导出完成，点击下方按钮复制');
+        showStatus('success', currentZipPayload ? '导出完成，点击下方按钮下载 ZIP' : '导出完成');
       }
     };
 
@@ -716,7 +740,6 @@
       currentZipPayload = null;
       streamZipPayload = null;
       btnDownloadZip.style.display = 'none';
-      textarea.value = '';
       infoPanelEl.style.display = 'none';
       configPanelEl.style.display = 'none';
       btnStartExport.style.display = 'none';
@@ -732,21 +755,6 @@
           config: { pngScale: selectedPngScale }
         }
       }, '*');
-    });
-
-    btnCopy.addEventListener('click', function () {
-      textarea.select();
-      try {
-        document.execCommand('copy');
-        btnCopy.textContent = '已复制!';
-        btnCopy.style.background = '#34a853';
-        setTimeout(function () {
-          btnCopy.textContent = '复制到剪贴板';
-          btnCopy.style.background = '';
-        }, 1500);
-      } catch (e) {
-        showStatus('error', '复制失败，请手动全选复制');
-      }
     });
 
     btnDownloadZip.addEventListener('click', async function () {

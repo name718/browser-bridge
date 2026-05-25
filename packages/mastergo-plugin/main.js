@@ -872,48 +872,60 @@ async function exportZipStreaming(ctx) {
     type: 'zipStreamStart',
     zipName,
     mode,
-    jsonFileName: 'design.json',
+    jsonFileName: 'manifest.json',
   })
 
   const assetsMeta = []
-  let nodeJsonSize = 0
-  let nodeJsonBuffer = ''
+  const nodeJsonFiles = []
   let contentBounds = null
 
-  function emitNodeJson(part) {
-    nodeJsonSize += part.length
-    nodeJsonBuffer += part
-    if (nodeJsonBuffer.length >= 65536) {
-      mg.ui.postMessage({
-        type: 'zipJsonPart',
-        part: nodeJsonBuffer,
-      })
-      nodeJsonBuffer = ''
+  function createNodeJsonState(fileName) {
+    return {
+      fileName,
+      size: 0,
+      buffer: '',
+      contentBounds: null,
     }
   }
 
-  function flushNodeJson() {
-    if (!nodeJsonBuffer) return
-    mg.ui.postMessage({
-      type: 'zipJsonPart',
-      part: nodeJsonBuffer,
-    })
-    nodeJsonBuffer = ''
+  function emitNodeJson(state, part) {
+    state.size += part.length
+    state.buffer += part
+    if (state.buffer.length >= 65536) {
+      mg.ui.postMessage({
+        type: 'zipJsonFilePart',
+        fileName: state.fileName,
+        part: state.buffer,
+      })
+      state.buffer = ''
+    }
   }
 
-  async function streamNodeJson(node, options) {
+  function flushNodeJson(state) {
+    if (!state.buffer) return
+    mg.ui.postMessage({
+      type: 'zipJsonFilePart',
+      fileName: state.fileName,
+      part: state.buffer,
+    })
+    state.buffer = ''
+  }
+
+  async function streamNodeJson(node, options, state) {
     const data = await extractNode(node, Object.assign({}, options, { shallow: true }))
-    contentBounds = mergeBounds(contentBounds, data.absoluteBoundingBox || data.absoluteRenderBounds)
+    const bounds = data.absoluteBoundingBox || data.absoluteRenderBounds
+    contentBounds = mergeBounds(contentBounds, bounds)
+    state.contentBounds = mergeBounds(state.contentBounds, bounds)
     const children = node.children || []
     let json = JSON.stringify(data)
     if (!children.length) {
-      emitNodeJson(json)
+      emitNodeJson(state, json)
       return
     }
 
-    emitNodeJson(json.slice(0, -1) + ',"children":[')
+    emitNodeJson(state, json.slice(0, -1) + ',"children":[')
     for (let i = 0; i < children.length; i++) {
-      if (i > 0) emitNodeJson(',')
+      if (i > 0) emitNodeJson(state, ',')
       await streamNodeJson(children[i], {
         includeImages: false,
         imageNodes: new Set(),
@@ -924,14 +936,16 @@ async function exportZipStreaming(ctx) {
         pathIds: data.pathIds,
         pathNames: data.pathNames,
         progress,
-      })
+      }, state)
     }
-    emitNodeJson(']}')
+    emitNodeJson(state, ']}')
   }
 
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i]
-    if (i > 0) emitNodeJson(',\n')
+    const safeName = slugifyName(node.name, 'node_' + (i + 1))
+    const fileName = 'json/' + String(i + 1).padStart(2, '0') + '_' + safeName + '.json'
+    const state = createNodeJsonState(fileName)
     await streamNodeJson(node, {
       includeImages: false,
       imageNodes: new Set(),
@@ -943,10 +957,18 @@ async function exportZipStreaming(ctx) {
       pathNames: [page.name || ''],
       progress,
       diagnostics,
+    }, state)
+    flushNodeJson(state)
+    nodeJsonFiles.push({
+      fileName,
+      nodeId: node.id || '',
+      nodeName: node.name || '',
+      nodeCount: countNodeTree([node]),
+      contentBounds: state.contentBounds,
+      nodeJsonSize: state.size,
     })
     await wait(0)
   }
-  flushNodeJson()
 
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i]
@@ -979,7 +1001,7 @@ async function exportZipStreaming(ctx) {
     textCount: null,
     jsonSize: 0,
   }
-  const head = JSON.stringify({
+  const manifest = {
     schemaVersion: 2,
     runtime: runtimeInfo,
     diagnostics,
@@ -997,7 +1019,14 @@ async function exportZipStreaming(ctx) {
     designModel: {
       nodeCount: progress.total,
       contentBounds,
-      nodesRef: 'nodes',
+      nodesRef: 'json/*.json',
+      files: nodeJsonFiles.map(file => ({
+        fileName: file.fileName,
+        nodeId: file.nodeId,
+        nodeName: file.nodeName,
+        nodeCount: file.nodeCount,
+        contentBounds: file.contentBounds,
+      })),
     },
     renderAssets: {
       png: assetsMeta,
@@ -1005,18 +1034,44 @@ async function exportZipStreaming(ctx) {
     assets: {
       png: assetsMeta,
     },
-  }, null, 2)
-  const prefix = head.replace(/\n}$/, ',\n  "nodes": [\n')
+  }
+  const manifestJson = JSON.stringify(manifest, null, 2)
   const suffix = '\n  ]\n}'
-  const jsonSize = prefix.length + nodeJsonSize + suffix.length
+  let splitJsonSize = manifestJson.length
+  for (const file of nodeJsonFiles) {
+    const prefix = JSON.stringify(Object.assign({}, manifest, {
+      nodeCount: file.nodeCount,
+      contentBounds: file.contentBounds,
+      designModel: Object.assign({}, manifest.designModel, {
+        nodeCount: file.nodeCount,
+        contentBounds: file.contentBounds,
+        nodesRef: 'nodes',
+        sourceFile: file.fileName,
+      }),
+      splitSource: {
+        manifestFileName: 'manifest.json',
+        fileName: file.fileName,
+        nodeId: file.nodeId,
+        nodeName: file.nodeName,
+      },
+    }), null, 2).replace(/\n}$/, ',\n  "nodes": [\n')
+    splitJsonSize += prefix.length + file.nodeJsonSize + suffix.length
+    mg.ui.postMessage({
+      type: 'zipJsonFileMeta',
+      fileName: file.fileName,
+      prefix,
+      suffix,
+    })
+  }
+  const jsonSize = splitJsonSize
   stats.jsonSize = jsonSize
   await rememberExport(runtimeInfo, stats)
 
   mg.ui.postMessage({
     type: 'zipJsonMeta',
-    fileName: 'design.json',
-    prefix,
-    suffix,
+    fileName: 'manifest.json',
+    prefix: manifestJson,
+    suffix: '',
     stats,
   })
 
