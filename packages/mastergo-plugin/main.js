@@ -26,7 +26,7 @@ function slugifyName(name, fallback) {
 }
 
 const DEBUG_EXPORT = false
-const DEFAULT_PNG_EXPORT_SCALE = 2
+const DEFAULT_PNG_EXPORT_SCALE = 1
 const MIN_PNG_EXPORT_SCALE = 1
 const MAX_PNG_EXPORT_SCALE = 4
 const EXPORTER_VERSION = '2.1.0'
