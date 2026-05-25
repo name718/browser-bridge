@@ -530,6 +530,12 @@
         name: payload.jsonFileName || 'design.json',
         bytes: jsonParts ? new Blob(jsonParts, { type: 'application/json' }) : utf8Bytes(payload.json || '{}')
       }];
+      if (payload.bindingJson) {
+        files.push({
+          name: payload.bindingFileName || 'binding.json',
+          bytes: utf8Bytes(payload.bindingJson)
+        });
+      }
       var assets = payload.assets || [];
       for (var i = 0; i < assets.length; i++) {
         var bytes = assetToBytes(assets[i]);
@@ -589,7 +595,9 @@
           jsonPrefix: '',
           jsonNodeParts: [],
           jsonSuffix: '',
-          assets: []
+          assets: [],
+          bindingJson: null,
+          bindingFileName: 'binding.json',
         };
         currentZipPayload = null;
         currentZipName = message.zipName || 'mastergo_export.zip';
@@ -630,12 +638,18 @@
 
       if (message.type === 'zipStreamDone') {
         currentZipPayload = streamZipPayload;
+        if (currentZipPayload && message.bindingJson) {
+          currentZipPayload.bindingJson = message.bindingJson;
+          currentZipPayload.bindingFileName = message.bindingFileName || 'binding.json';
+        }
         streamZipPayload = null;
         setLoading(false);
         progressBarEl.style.width = '100%';
         progressTextEl.textContent = '导出完成';
         btnDownloadZip.style.display = currentZipPayload ? 'inline-block' : 'none';
-        hintEl.textContent = 'ZIP 包含完整 design.json 和 png 目录；大 JSON 请在 ZIP 中查看。';
+        hintEl.textContent = currentZipPayload && currentZipPayload.bindingJson
+          ? 'ZIP 包含 design.json + binding.json + png 目录'
+          : 'ZIP 包含完整 design.json 和 png 目录；大 JSON 请在 ZIP 中查看。';
         showStatus('success', '导出完成，点击下方按钮下载 ZIP');
         return;
       }

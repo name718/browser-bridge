@@ -42,8 +42,9 @@ function normalizeExportConfig(config) {
 
 function commandInfo(command, doc, page) {
   const selection = page && page.selection ? page.selection : []
-  const isSelection = command === 'exportSelection' || command === 'exportSelectionZip'
+  const isSelection = command === 'exportSelection' || command === 'exportSelectionZip' || command === 'exportSelectionBindingZip'
   const includeZipAssets = command === 'exportPageZip' || command === 'exportSelectionZip'
+  const isBindingZip = command === 'exportPageBindingZip' || command === 'exportSelectionBindingZip'
   const includeImages = command === 'exportPageWithImages'
   const nodes = isSelection ? selection : (page && page.children ? page.children : [])
   return {
@@ -55,7 +56,7 @@ function commandInfo(command, doc, page) {
       height: page && page.height != null ? round2(page.height) : null,
     },
     exportTarget: isSelection ? 'selection' : 'page',
-    exportType: includeZipAssets ? 'JSON+PNG Zip' : (includeImages ? 'JSON（含内嵌图片）' : 'JSON'),
+    exportType: isBindingZip ? '绑定（JSON+PNG）' : (includeZipAssets ? 'JSON+PNG Zip' : (includeImages ? 'JSON（含内嵌图片）' : 'JSON')),
     topLevelCount: nodes.length,
     totalCount: countNodeTree(nodes),
     selection: analyzeSelection(selection),
@@ -1019,10 +1020,30 @@ async function exportZipStreaming(ctx) {
     stats,
   })
 
+  // 生成 binding.json（仅顶层图层）
+  const pageName = page.name || ''
+  const bindingData = nodes.map(node => extractBindingNode(node, pageName))
+  const bindingJson = JSON.stringify({
+    schemaVersion: 1,
+    exportedAt: new Date().toISOString(),
+    documentId: mg.documentId || '',
+    documentName: doc.name || 'untitled',
+    pageId: page.id || '',
+    pageName,
+    pageSize: {
+      width: page.width != null ? round2(page.width) : null,
+      height: page.height != null ? round2(page.height) : null,
+    },
+    nodeCount: nodes.length,
+    nodes: bindingData,
+  }, null, 2)
+
   mg.ui.postMessage({
     type: 'zipStreamDone',
     mode,
     stats,
+    bindingJson,
+    bindingFileName: 'binding.json',
   })
 }
 
@@ -1263,6 +1284,29 @@ async function extractNode(node, options = {}) {
   }
 }
 
+// ─── 图层绑定信息提取 ───
+
+// node ID 转安全文件名（如 "1:234" → "1_234"）
+function nodeIdToFileName(nodeId) {
+  return String(nodeId || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_')
+}
+
+function extractBindingNode(node, pageName) {
+  const name = node.name || ''
+  const id = node.id || ''
+  const nodePath = (pageName ? pageName + ' / ' : '') + name
+
+  return {
+    id,
+    name,
+    type: node.type || 'UNKNOWN',
+    nodePath,
+    bounds: normalizeBox(readProp(node, 'absoluteBoundingBox')),
+    pngFile: 'png/' + nodeIdToFileName(id) + '_' + slugifyName(name, 'node') + '.png',
+    childCount: node.children ? node.children.length : 0,
+  }
+}
+
 // ─── 批量导出图片 ───
 
 async function exportImages(imageNodes) {
@@ -1305,10 +1349,99 @@ async function exportDesign(config) {
 
     const includeImages = command === 'exportPageWithImages'
     const includeZipAssets = command === 'exportPageZip' || command === 'exportSelectionZip'
+    const isBindingZip = command === 'exportPageBindingZip' || command === 'exportSelectionBindingZip'
     let nodes = []
     let mode = ''
     let selection = []
     const diagnostics = createDiagnostics()
+
+    if (isBindingZip) {
+      const isSelection = command === 'exportSelectionBindingZip'
+      selection = isSelection ? (page.selection || []) : []
+      if (isSelection && (!selection || selection.length === 0)) {
+        mg.closePlugin('请先选中要导出的图层')
+        return
+      }
+      const bindingNodes = isSelection ? selection : (page.children || [])
+      mode = isSelection
+        ? '选中图层绑定（JSON+PNG，' + bindingNodes.length + ' 个）'
+        : '当前页面绑定（JSON+PNG）'
+      postProgress('start', 0, bindingNodes.length, '准备导出绑定 ' + mode)
+      const pngScale = normalizeExportConfig(exportConfig).pngScale
+
+      mg.ui.postMessage({
+        type: 'zipStreamStart',
+        zipName: slugifyName((doc.name || 'untitled') + '_' + (page.name || 'untitled') + '_binding', 'binding') + '.zip',
+        mode: 'binding',
+        jsonFileName: 'binding.json',
+      })
+
+      // 导出 PNG（文件名用 node ID 以便和 MCP JSON 关联）
+      const assetsMeta = []
+      for (let i = 0; i < bindingNodes.length; i++) {
+        const node = bindingNodes[i]
+        postProgress('png', i + 1, bindingNodes.length, '正在导出 PNG ' + (i + 1) + '/' + bindingNodes.length)
+        const image = await exportPngForNode(node, pngScale)
+        if (!image) continue
+        const safeName = slugifyName(node.name, 'node')
+        const pngFileName = 'png/' + nodeIdToFileName(node.id) + '_' + safeName + '.png'
+        const asset = {
+          nodeId: node.id || '',
+          nodeName: node.name || '',
+          fileName: pngFileName,
+          mimeType: 'image/png',
+          byteLength: image.byteLength,
+          scale: pngScale,
+        }
+        assetsMeta.push(asset)
+        mg.ui.postMessage({
+          type: 'zipAsset',
+          asset,
+          bytes: image.bytes,
+        })
+        await wait(0)
+      }
+
+      // 生成 binding.json（仅顶层图层）
+      const pageName = page.name || ''
+      const bindingData = bindingNodes.map(node => extractBindingNode(node, pageName))
+      const bindingJson = JSON.stringify({
+        schemaVersion: 1,
+        exportedAt: new Date().toISOString(),
+        documentId: mg.documentId || '',
+        documentName: doc.name || 'untitled',
+        pageId: page.id || '',
+        pageName,
+        pageSize: {
+          width: page.width != null ? round2(page.width) : null,
+          height: page.height != null ? round2(page.height) : null,
+        },
+        nodeCount: bindingNodes.length,
+        nodes: bindingData,
+      }, null, 2)
+
+      const stats = {
+        nodeCount: bindingNodes.length,
+        topLevelNodeCount: bindingNodes.length,
+        jsonSize: bindingJson.length,
+      }
+
+      postProgress('json-stringify', 0, 0, '正在生成绑定 JSON')
+      mg.ui.postMessage({
+        type: 'zipJsonMeta',
+        fileName: 'binding.json',
+        prefix: bindingJson,
+        suffix: '',
+        stats,
+      })
+
+      mg.ui.postMessage({
+        type: 'zipStreamDone',
+        mode,
+        stats,
+      })
+      return
+    }
 
     if (command === 'exportSelection' || command === 'exportSelectionZip') {
       selection = page.selection || []
@@ -1472,6 +1605,7 @@ async function exportDesign(config) {
 
 function run() {
   console.log('[Export] === Design JSON Export ===')
+  const command = mg.command || 'exportPage'
   mg.showUI(__html__, { visible: true, width: 500, height: 520 })
   let started = false
   function postExportInfo() {
@@ -1481,7 +1615,7 @@ function run() {
       if (!doc || !page) return
       mg.ui.postMessage({
         type: 'exportInfo',
-        info: commandInfo(mg.command || 'exportPage', doc, page),
+        info: commandInfo(command, doc, page),
         config: normalizeExportConfig({}),
       })
     } catch (e) {

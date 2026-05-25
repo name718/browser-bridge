@@ -5,12 +5,20 @@
   "ui": "ui.html",
   "menu": [
     {
-      "name": "导出当前页面（JSON+PNG Zip）",
+      "name": "离线 DSL + 设计稿图片(当前页面)",
       "command": "exportPageZip"
     },
     {
-      "name": "导出选中图层（JSON+PNG Zip）",
+      "name": "离线 DSL + 设计稿图片(选中图层)",
       "command": "exportSelectionZip"
+    },
+    {
+      "name": "MCP 参数 + 设计稿图片（当前页面）",
+      "command": "exportPageBindingZip"
+    },
+    {
+      "name": "MCP 参数 + 设计稿图片（选中图层）",
+      "command": "exportSelectionBindingZip"
     }
   ],
   "id": 193273353174723
