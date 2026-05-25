@@ -441,7 +441,7 @@
           var jsonFile = payload.jsonFiles[jf];
           var splitJsonParts = [jsonFile.prefix || ''].concat(jsonFile.parts || [], [jsonFile.suffix || '']);
           files.push({
-            name: jsonFile.fileName || ('json/' + String(jf + 1).padStart(2, '0') + '.json'),
+            name: jsonFile.fileName || ('dsl/' + String(jf + 1).padStart(2, '0') + '.json'),
             bytes: new Blob(splitJsonParts, { type: 'application/json' })
           });
         }
@@ -519,10 +519,11 @@
           assets: [],
           bindingJson: null,
           bindingFileName: 'binding.json',
+          mode: message.mode || '',
         };
         currentZipPayload = null;
         currentZipName = message.zipName || 'mastergo_export.zip';
-        showStatus('loading', '正在流式导出 ZIP，请在下载后的 ZIP 内查看 manifest.json 和 json/ 目录。');
+        showStatus('loading', '正在流式导出 ZIP，请在下载后的 ZIP 内查看 ' + streamZipPayload.jsonFileName + ' 和 dsl/ 目录。');
         if (message.mode) {
           document.getElementById('mode-label').textContent = '- ' + message.mode;
         }
@@ -605,9 +606,11 @@
         progressBarEl.style.width = '100%';
         progressTextEl.textContent = '导出完成';
         btnDownloadZip.style.display = currentZipPayload ? 'inline-block' : 'none';
-        hintEl.textContent = currentZipPayload && currentZipPayload.bindingJson
-          ? 'ZIP 包含 manifest.json + json/ 分片 + binding.json + png 目录'
-          : 'ZIP 包含 manifest.json、每个顶层图层一个 json/ 分片，以及 png 目录。';
+        hintEl.textContent = currentZipPayload && currentZipPayload.mode === 'binding'
+          ? 'ZIP 包含 binding.json、每个顶层图层一个 dsl/ 分片，以及 picture/ 目录。'
+          : (currentZipPayload && currentZipPayload.bindingJson
+            ? 'ZIP 包含 manifest.json + dsl/ 分片 + binding.json + picture/ 目录'
+            : 'ZIP 包含 manifest.json、每个顶层图层一个 dsl/ 分片，以及 picture/ 目录。');
         showStatus('success', '导出完成，点击下方按钮下载 ZIP');
         return;
       }

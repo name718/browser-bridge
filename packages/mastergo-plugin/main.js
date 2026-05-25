@@ -31,6 +31,13 @@ const MIN_PNG_EXPORT_SCALE = 1
 const MAX_PNG_EXPORT_SCALE = 4
 const EXPORTER_VERSION = '2.1.0'
 const LAST_EXPORT_STORAGE_KEY = 'design-json-export:last-export'
+const DSL_EXPORT_DIR = 'dsl'
+const PICTURE_EXPORT_DIR = 'picture'
+
+function createTopLevelAssetFileName(dir, index, node, ext) {
+  const safeName = slugifyName(node && node.name, 'node_' + (index + 1))
+  return dir + '/' + String(index + 1).padStart(2, '0') + '_' + safeName + ext
+}
 
 function normalizeExportConfig(config) {
   const rawScale = config && config.pngScale != null ? Number(config.pngScale) : DEFAULT_PNG_EXPORT_SCALE
@@ -839,11 +846,10 @@ async function exportPngAssets(nodes, exportConfig) {
     if (i % 2 === 0) await wait(0)
     const image = await exportPngForNode(node, pngScale)
     if (!image) continue
-    const safeName = slugifyName(node.name, 'node_' + (i + 1))
     assets.push({
       nodeId: node.id || '',
       nodeName: node.name || '',
-      fileName: 'png/' + String(i + 1).padStart(2, '0') + '_' + safeName + '.png',
+      fileName: createTopLevelAssetFileName(PICTURE_EXPORT_DIR, i, node, '.png'),
       mimeType: 'image/png',
       byteLength: image.byteLength,
       scale: pngScale,
@@ -943,8 +949,7 @@ async function exportZipStreaming(ctx) {
 
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i]
-    const safeName = slugifyName(node.name, 'node_' + (i + 1))
-    const fileName = 'json/' + String(i + 1).padStart(2, '0') + '_' + safeName + '.json'
+    const fileName = createTopLevelAssetFileName(DSL_EXPORT_DIR, i, node, '.json')
     const state = createNodeJsonState(fileName)
     await streamNodeJson(node, {
       includeImages: false,
@@ -976,11 +981,10 @@ async function exportZipStreaming(ctx) {
     const image = await exportPngForNode(node, pngScale)
     if (!image) continue
 
-    const safeName = slugifyName(node.name, 'node_' + (i + 1))
     const asset = {
       nodeId: node.id || '',
       nodeName: node.name || '',
-      fileName: 'png/' + String(i + 1).padStart(2, '0') + '_' + safeName + '.png',
+      fileName: createTopLevelAssetFileName(PICTURE_EXPORT_DIR, i, node, '.png'),
       mimeType: 'image/png',
       byteLength: image.byteLength,
       scale: pngScale,
@@ -1019,7 +1023,7 @@ async function exportZipStreaming(ctx) {
     designModel: {
       nodeCount: progress.total,
       contentBounds,
-      nodesRef: 'json/*.json',
+      nodesRef: DSL_EXPORT_DIR + '/*.json',
       files: nodeJsonFiles.map(file => ({
         fileName: file.fileName,
         nodeId: file.nodeId,
@@ -1075,23 +1079,15 @@ async function exportZipStreaming(ctx) {
     stats,
   })
 
-  // 生成 binding.json（仅顶层图层）
-  const pageName = page.name || ''
-  const bindingData = nodes.map(node => extractBindingNode(node, pageName))
-  const bindingJson = JSON.stringify({
-    schemaVersion: 1,
-    exportedAt: new Date().toISOString(),
-    documentId: mg.documentId || '',
-    documentName: doc.name || 'untitled',
-    pageId: page.id || '',
-    pageName,
-    pageSize: {
-      width: page.width != null ? round2(page.width) : null,
-      height: page.height != null ? round2(page.height) : null,
-    },
-    nodeCount: nodes.length,
-    nodes: bindingData,
-  }, null, 2)
+  // 生成 binding.json：仅保留 MCP 消费所需的文件索引。
+  const bindingJson = JSON.stringify(buildBindingIndex({
+    fileId: mg.documentId || '',
+    exportedAt: startedAt,
+    pageName: page.name || 'untitled',
+    nodes,
+    assets: assetsMeta,
+    dslFiles: nodeJsonFiles,
+  }), null, 2)
 
   mg.ui.postMessage({
     type: 'zipStreamDone',
@@ -1341,24 +1337,35 @@ async function extractNode(node, options = {}) {
 
 // ─── 图层绑定信息提取 ───
 
-// node ID 转安全文件名（如 "1:234" → "1_234"）
-function nodeIdToFileName(nodeId) {
-  return String(nodeId || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_')
+function keyByNodeId(items) {
+  const map = {}
+  for (const item of items || []) {
+    if (item && item.nodeId) map[item.nodeId] = item
+  }
+  return map
 }
 
-function extractBindingNode(node, pageName) {
-  const name = node.name || ''
-  const id = node.id || ''
-  const nodePath = (pageName ? pageName + ' / ' : '') + name
-
+function buildBindingIndex(options) {
+  const nodes = options.nodes || []
+  const pageName = options.pageName || 'untitled'
+  const assetsByNodeId = keyByNodeId(options.assets)
+  const dslByNodeId = keyByNodeId(options.dslFiles)
+  const pageItems = nodes.map((node, index) => {
+    const id = node.id || ''
+    const imageAsset = assetsByNodeId[id]
+    const dslFile = dslByNodeId[id]
+    return {
+      name: node.name || '',
+      image: imageAsset ? imageAsset.fileName : createTopLevelAssetFileName(PICTURE_EXPORT_DIR, index, node, '.png'),
+      dsl: dslFile ? dslFile.fileName : createTopLevelAssetFileName(DSL_EXPORT_DIR, index, node, '.json'),
+    }
+  })
   return {
-    id,
-    name,
-    type: node.type || 'UNKNOWN',
-    nodePath,
-    bounds: normalizeBox(readProp(node, 'absoluteBoundingBox')),
-    pngFile: 'png/' + nodeIdToFileName(id) + '_' + slugifyName(name, 'node') + '.png',
-    childCount: node.children ? node.children.length : 0,
+    file_id: options.fileId || '',
+    exported_at: options.exportedAt || new Date().toISOString(),
+    pages: {
+      [pageName]: pageItems,
+    },
   }
 }
 
@@ -1423,6 +1430,7 @@ async function exportDesign(config) {
         : '当前页面绑定（JSON+PNG）'
       postProgress('start', 0, bindingNodes.length, '准备导出绑定 ' + mode)
       const pngScale = normalizeExportConfig(exportConfig).pngScale
+      const startedAt = new Date().toISOString()
 
       mg.ui.postMessage({
         type: 'zipStreamStart',
@@ -1438,8 +1446,7 @@ async function exportDesign(config) {
         postProgress('png', i + 1, bindingNodes.length, '正在导出 PNG ' + (i + 1) + '/' + bindingNodes.length)
         const image = await exportPngForNode(node, pngScale)
         if (!image) continue
-        const safeName = slugifyName(node.name, 'node')
-        const pngFileName = 'png/' + nodeIdToFileName(node.id) + '_' + safeName + '.png'
+        const pngFileName = createTopLevelAssetFileName(PICTURE_EXPORT_DIR, i, node, '.png')
         const asset = {
           nodeId: node.id || '',
           nodeName: node.name || '',
@@ -1457,23 +1464,53 @@ async function exportDesign(config) {
         await wait(0)
       }
 
-      // 生成 binding.json（仅顶层图层）
-      const pageName = page.name || ''
-      const bindingData = bindingNodes.map(node => extractBindingNode(node, pageName))
-      const bindingJson = JSON.stringify({
-        schemaVersion: 1,
-        exportedAt: new Date().toISOString(),
-        documentId: mg.documentId || '',
-        documentName: doc.name || 'untitled',
-        pageId: page.id || '',
-        pageName,
-        pageSize: {
-          width: page.width != null ? round2(page.width) : null,
-          height: page.height != null ? round2(page.height) : null,
-        },
-        nodeCount: bindingNodes.length,
-        nodes: bindingData,
-      }, null, 2)
+      const dslFiles = []
+      const progress = {
+        current: 0,
+        total: countNodeTree(bindingNodes),
+      }
+      for (let i = 0; i < bindingNodes.length; i++) {
+        const node = bindingNodes[i]
+        postProgress('dsl', i + 1, bindingNodes.length, '正在导出 DSL ' + (i + 1) + '/' + bindingNodes.length)
+        const fileName = createTopLevelAssetFileName(DSL_EXPORT_DIR, i, node, '.json')
+        const data = await extractNode(node, {
+          includeImages: false,
+          imageNodes: new Set(),
+          parentId: page.id || null,
+          depth: 0,
+          index: i,
+          siblingCount: bindingNodes.length,
+          pathIds: [page.id || ''],
+          pathNames: [page.name || ''],
+          progress,
+          diagnostics,
+        })
+        const json = JSON.stringify(data, null, 2)
+        dslFiles.push({
+          fileName,
+          nodeId: node.id || '',
+          nodeName: node.name || '',
+          nodeCount: countNodeTree([node]),
+          nodeJsonSize: json.length,
+        })
+        mg.ui.postMessage({
+          type: 'zipJsonFileMeta',
+          fileName,
+          prefix: json,
+          suffix: '',
+        })
+        await wait(0)
+      }
+
+      // 生成 binding.json：仅保留 MCP 消费所需的文件索引。
+      const bindingJson = JSON.stringify(buildBindingIndex({
+        fileId: mg.documentId || '',
+        exportedAt: startedAt,
+        pageName: page.name || 'untitled',
+        nodes: bindingNodes,
+        assets: assetsMeta,
+        dslFiles,
+      }), null, 2)
 
       const stats = {
         nodeCount: bindingNodes.length,
