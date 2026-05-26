@@ -3,6 +3,7 @@
   "version": "0.1.2",
   "type": "module",
   "description": "Shared protocol types for Browser Bridge.",
+  "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

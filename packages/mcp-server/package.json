@@ -3,6 +3,7 @@
   "version": "0.1.4",
   "type": "module",
   "description": "MCP server and local daemon for Browser Bridge.",
+  "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
