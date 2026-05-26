@@ -99,6 +99,7 @@ browser_use
 
 - `browser_status`：检查连接状态
 - `browser_open_url`：打开网页
+- `browser_get_page_model`：读取低 token 页面模型，包含标题结构、主要区域、可交互元素、表单、表格样例和页面消息。优先用它理解页面，避免直接拉取完整 HTML/DOM。
 - `browser_get_page_text`：读取当前页面可见文本
 - `browser_get_interactives`：获取可交互元素
 - `browser_find_and_click`：查找并点击元素
@@ -121,7 +122,7 @@ browser_use
 ```text
 browser_use
 browser_open_url
-browser_get_page_text
+browser_get_page_model
 browser_screenshot
 ```
 

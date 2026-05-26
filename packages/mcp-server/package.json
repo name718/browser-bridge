@@ -1,6 +1,6 @@
 {
   "name": "@majuntao-1/browser-bridge-mcp-server",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "description": "MCP server and local daemon for Browser Bridge.",
   "main": "dist/index.js",
@@ -25,7 +25,7 @@
     "smoke": "node scripts/smoke-test.mjs"
   },
   "dependencies": {
-    "@majuntao-1/browser-bridge-shared": "^0.1.0",
+    "@majuntao-1/browser-bridge-shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.13.0",
     "ws": "^8.17.0",
     "zod": "^3.23.8"

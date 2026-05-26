@@ -3,6 +3,7 @@ import {
   type BrowserActAction,
   type BrowserActResult,
   type BrowserFindResult,
+  type BrowserPageModel,
   type BridgeRequest,
   type PageSnapshot
 } from "@majuntao-1/browser-bridge-shared";
@@ -89,6 +90,8 @@ async function handleRequest(request: BridgeRequest): Promise<unknown> {
       return getVisibleText();
     case "browser_get_page_snapshot":
       return getPageSnapshot();
+    case "browser_get_page_model":
+      return getPageModel(request.params ?? {});
     case "browser_get_interactives":
       return getInteractives(request.params ?? {});
     case "browser_find":
@@ -187,6 +190,188 @@ function getInteractives(params: Record<string, unknown>): {
   };
 }
 
+function getPageModel(params: Record<string, unknown>): BrowserPageModel {
+  const visibleOnly = params.visibleOnly !== false;
+  const viewportOnly = params.viewportOnly === true;
+  const maxTextLength = clamp(numberParam(params, "maxTextLength") ?? 2000, 0, 20_000);
+  const maxElements = clamp(numberParam(params, "maxElements") ?? 120, 0, 300);
+  const maxHeadings = clamp(numberParam(params, "maxHeadings") ?? 60, 0, 200);
+  const maxRegions = clamp(numberParam(params, "maxRegions") ?? 40, 0, 120);
+  const maxTables = clamp(numberParam(params, "maxTables") ?? 10, 0, 50);
+  const maxTableRows = clamp(numberParam(params, "maxTableRows") ?? 5, 0, 30);
+  const fullText = getVisibleText();
+
+  const interactives = getActionableElements({ visibleOnly, viewportOnly })
+    .slice(0, maxElements)
+    .map(toPageModelElement);
+
+  return {
+    tabId: -1,
+    url: location.href,
+    title: document.title,
+    viewport: {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      scrollX: window.scrollX,
+      scrollY: window.scrollY
+    },
+    summary: {
+      textSample: truncate(fullText, maxTextLength),
+      textLength: fullText.length,
+      truncated: fullText.length > maxTextLength
+    },
+    outline: getPageOutline({ visibleOnly, viewportOnly, limit: maxHeadings }),
+    regions: getPageRegions({ visibleOnly, viewportOnly, limit: maxRegions }),
+    interactives,
+    forms: getPageForms({ visibleOnly, viewportOnly, maxElements }),
+    tables: getPageTables({ visibleOnly, viewportOnly, maxTables, maxTableRows }),
+    messages: getPageMessages({ visibleOnly, viewportOnly }),
+    limits: {
+      maxTextLength,
+      maxElements,
+      maxHeadings,
+      maxRegions,
+      maxTables,
+      maxTableRows
+    }
+  };
+}
+
+function getPageOutline(options: {
+  visibleOnly: boolean;
+  viewportOnly: boolean;
+  limit: number;
+}): BrowserPageModel["outline"] {
+  return Array.from(document.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6,[role='heading']"))
+    .filter((element) => includeElementInModel(element, options))
+    .slice(0, options.limit)
+    .map((element, index) => ({
+      level: headingLevel(element),
+      text: truncate(getElementText(element), 160) ?? "",
+      elementId: ensureElementId(element, index),
+      rect: elementRect(element)
+    }))
+    .filter((heading) => Boolean(heading.text));
+}
+
+function getPageRegions(options: {
+  visibleOnly: boolean;
+  viewportOnly: boolean;
+  limit: number;
+}): BrowserPageModel["regions"] {
+  const selector = [
+    "main",
+    "nav",
+    "header",
+    "footer",
+    "aside",
+    "section",
+    "article",
+    "form",
+    "[role='main']",
+    "[role='navigation']",
+    "[role='banner']",
+    "[role='contentinfo']",
+    "[role='complementary']",
+    "[role='region']",
+    "[role='dialog']"
+  ].join(",");
+
+  return Array.from(document.querySelectorAll<HTMLElement>(selector))
+    .filter((element) => includeElementInModel(element, options))
+    .slice(0, options.limit)
+    .map((element, index) => ({
+      elementId: ensureElementId(element, index),
+      role: element.getAttribute("role") || inferLandmarkRole(element),
+      tagName: element.tagName.toLowerCase(),
+      name: accessibleName(element),
+      textSample: truncate(getElementText(element), 240),
+      rect: elementRect(element)
+    }));
+}
+
+function getPageForms(options: {
+  visibleOnly: boolean;
+  viewportOnly: boolean;
+  maxElements: number;
+}): BrowserPageModel["forms"] {
+  return Array.from(document.querySelectorAll<HTMLFormElement>("form"))
+    .filter((form) => includeElementInModel(form, options))
+    .slice(0, 20)
+    .map((form, index) => {
+      const fields = Array.from(form.querySelectorAll<HTMLElement>(ACTIONABLE_SELECTOR))
+        .filter((element) => includeElementInModel(element, options))
+        .slice(0, Math.min(options.maxElements, 40))
+        .map(toPageModelElement);
+      return {
+        elementId: ensureElementId(form, index),
+        name: accessibleName(form),
+        fields
+      };
+    });
+}
+
+function getPageTables(options: {
+  visibleOnly: boolean;
+  viewportOnly: boolean;
+  maxTables: number;
+  maxTableRows: number;
+}): BrowserPageModel["tables"] {
+  return Array.from(document.querySelectorAll<HTMLTableElement>("table"))
+    .filter((table) => includeElementInModel(table, options))
+    .slice(0, options.maxTables)
+    .map((table, index) => {
+      const rows = Array.from(table.rows);
+      const headers = Array.from(table.querySelectorAll<HTMLTableCellElement>("thead th, tr:first-child th"))
+        .map((cell) => normalizeText(cell.innerText || cell.textContent || ""))
+        .filter(Boolean)
+        .slice(0, 20);
+      const bodyRows = rows
+        .filter((row) => row.cells.length > 0 && !row.closest("thead"))
+        .slice(0, options.maxTableRows)
+        .map((row) => Array.from(row.cells)
+          .map((cell) => truncate(normalizeText(cell.innerText || cell.textContent || ""), 80) ?? "")
+          .slice(0, 20));
+
+      return {
+        elementId: ensureElementId(table, index),
+        caption: truncate(table.caption?.innerText || table.getAttribute("aria-label") || undefined, 120),
+        headers,
+        rowCount: rows.filter((row) => !row.closest("thead")).length,
+        sampleRows: bodyRows,
+        rect: elementRect(table)
+      };
+    });
+}
+
+function getPageMessages(options: {
+  visibleOnly: boolean;
+  viewportOnly: boolean;
+}): BrowserPageModel["messages"] {
+  const selector = [
+    "[role='alert']",
+    "[role='status']",
+    "[aria-live]",
+    ".error",
+    ".warning",
+    ".success",
+    ".toast",
+    ".message",
+    ".notification"
+  ].join(",");
+
+  return Array.from(document.querySelectorAll<HTMLElement>(selector))
+    .filter((element) => includeElementInModel(element, options))
+    .slice(0, 30)
+    .map((element, index) => ({
+      elementId: ensureElementId(element, index),
+      role: element.getAttribute("role") || "message",
+      text: truncate(getElementText(element), 240) ?? "",
+      rect: elementRect(element)
+    }))
+    .filter((message) => Boolean(message.text));
+}
+
 function getVisibleText(): string {
   const text = document.body?.innerText ?? "";
   return text.replace(/\n{3,}/g, "\n\n").trim().slice(0, 120_000);
@@ -194,7 +379,6 @@ function getVisibleText(): string {
 
 function toBrowserElement(element: HTMLElement, index: number): BrowserElement {
   const elementId = ensureElementId(element, index);
-  const rect = element.getBoundingClientRect();
   const input = element instanceof HTMLInputElement ? element : undefined;
   const value = input?.type === "password" ? undefined : getElementValue(element);
 
@@ -210,12 +394,18 @@ function toBrowserElement(element: HTMLElement, index: number): BrowserElement {
     visible: isVisible(element),
     disabled: isDisabled(element),
     selectorHint: buildSelectorHint(element),
-    rect: {
-      x: rect.x,
-      y: rect.y,
-      width: rect.width,
-      height: rect.height
-    }
+    rect: elementRect(element)
+  };
+}
+
+function toPageModelElement(element: HTMLElement, index: number): BrowserElement {
+  const model = toBrowserElement(element, index);
+  return {
+    ...model,
+    text: truncate(model.text, 160),
+    ariaLabel: truncate(model.ariaLabel, 120),
+    placeholder: truncate(model.placeholder, 120),
+    value: truncate(model.value, 160)
   };
 }
 
@@ -1056,6 +1246,68 @@ function inferRole(element: HTMLElement): string {
   return "generic";
 }
 
+function inferLandmarkRole(element: HTMLElement): string {
+  const tagName = element.tagName.toLowerCase();
+  if (tagName === "main") return "main";
+  if (tagName === "nav") return "navigation";
+  if (tagName === "header") return "banner";
+  if (tagName === "footer") return "contentinfo";
+  if (tagName === "aside") return "complementary";
+  if (tagName === "form") return "form";
+  if (tagName === "article") return "article";
+  if (tagName === "section") return "region";
+  return inferRole(element);
+}
+
+function headingLevel(element: HTMLElement): number {
+  const tagName = element.tagName.toLowerCase();
+  const match = tagName.match(/^h([1-6])$/);
+  if (match) {
+    return Number(match[1]);
+  }
+  const ariaLevel = Number(element.getAttribute("aria-level"));
+  return Number.isFinite(ariaLevel) && ariaLevel > 0 ? ariaLevel : 2;
+}
+
+function accessibleName(element: HTMLElement): string | undefined {
+  const labelledBy = element.getAttribute("aria-labelledby");
+  const labelledByText = labelledBy
+    ?.split(/\s+/)
+    .map((id) => document.getElementById(id)?.textContent ?? "")
+    .join(" ");
+  const name = normalizeText(
+    labelledByText ||
+    element.getAttribute("aria-label") ||
+    element.getAttribute("title") ||
+    element.querySelector("h1,h2,h3,h4,h5,h6,legend")?.textContent ||
+    ""
+  );
+  return truncate(name || undefined, 160);
+}
+
+function includeElementInModel(element: HTMLElement, options: {
+  visibleOnly: boolean;
+  viewportOnly: boolean;
+}): boolean {
+  if (options.visibleOnly && !isVisible(element)) {
+    return false;
+  }
+  if (options.viewportOnly && !isInViewport(element)) {
+    return false;
+  }
+  return true;
+}
+
+function elementRect(element: HTMLElement): BrowserElement["rect"] {
+  const rect = element.getBoundingClientRect();
+  return {
+    x: Math.round(rect.x),
+    y: Math.round(rect.y),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height)
+  };
+}
+
 function buildSelectorHint(element: HTMLElement): string | undefined {
   if (element.id) {
     return `#${cssEscape(element.id)}`;
@@ -1136,6 +1388,10 @@ function truncate(value: string | undefined, maxLength: number): string | undefi
     return undefined;
   }
   return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 function stringParam(params: Record<string, unknown>, key: string): string | undefined {

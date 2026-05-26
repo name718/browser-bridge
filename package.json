@@ -5,11 +5,11 @@
   "type": "module",
   "scripts": {
     "build": "pnpm -r build",
-    "typecheck": "pnpm --filter @browser-bridge/shared build && pnpm --filter @browser-bridge/extension typecheck && pnpm --filter @browser-bridge/mcp-server typecheck",
-    "dev:server": "pnpm --filter @browser-bridge/mcp-server dev",
-    "dev:daemon": "pnpm --filter @browser-bridge/mcp-server dev:daemon",
+    "typecheck": "pnpm --filter @majuntao-1/browser-bridge-shared build && pnpm --filter @browser-bridge/extension typecheck && pnpm --filter @majuntao-1/browser-bridge-mcp-server typecheck",
+    "dev:server": "pnpm --filter @majuntao-1/browser-bridge-mcp-server dev",
+    "dev:daemon": "pnpm --filter @majuntao-1/browser-bridge-mcp-server dev:daemon",
     "build:extension": "pnpm --filter @browser-bridge/extension build",
-    "smoke": "pnpm --filter @browser-bridge/mcp-server smoke"
+    "smoke": "pnpm --filter @majuntao-1/browser-bridge-mcp-server smoke"
   },
   "devDependencies": {
     "@types/node": "^20.12.12",

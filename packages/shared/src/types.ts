@@ -21,6 +21,87 @@ export type PageSnapshot = {
   elements: BrowserElement[];
 };
 
+export type BrowserPageModelParams = {
+  tabId?: number;
+  visibleOnly?: boolean;
+  viewportOnly?: boolean;
+  maxTextLength?: number;
+  maxElements?: number;
+  maxHeadings?: number;
+  maxRegions?: number;
+  maxTables?: number;
+  maxTableRows?: number;
+};
+
+export type BrowserPageModel = {
+  tabId: number;
+  url: string;
+  title: string;
+  viewport: {
+    width: number;
+    height: number;
+    scrollX: number;
+    scrollY: number;
+  };
+  summary: {
+    textSample?: string;
+    textLength: number;
+    truncated: boolean;
+  };
+  outline: BrowserPageModelHeading[];
+  regions: BrowserPageModelRegion[];
+  interactives: BrowserElement[];
+  forms: BrowserPageModelForm[];
+  tables: BrowserPageModelTable[];
+  messages: BrowserPageModelMessage[];
+  limits: {
+    maxTextLength: number;
+    maxElements: number;
+    maxHeadings: number;
+    maxRegions: number;
+    maxTables: number;
+    maxTableRows: number;
+  };
+};
+
+export type BrowserPageModelHeading = {
+  level: number;
+  text: string;
+  elementId?: string;
+  rect?: BrowserElement["rect"];
+};
+
+export type BrowserPageModelRegion = {
+  elementId: string;
+  role: string;
+  tagName: string;
+  name?: string;
+  textSample?: string;
+  rect?: BrowserElement["rect"];
+};
+
+export type BrowserPageModelForm = {
+  elementId: string;
+  name?: string;
+  fields: BrowserElement[];
+};
+
+export type BrowserPageModelTable = {
+  elementId: string;
+  caption?: string;
+  headers: string[];
+  rowCount: number;
+  sampleRows: string[][];
+  rect?: BrowserElement["rect"];
+};
+
+export type BrowserPageModelMessage = {
+  elementId: string;
+  role: string;
+  text: string;
+  rect?: BrowserElement["rect"];
+};
+
 export type BrowserScreenshot = {
   tabId: number;
   url?: string;
@@ -285,6 +366,7 @@ export type BrowserStepAction =
   | "pressKey"
   | "assertText"
   | "getText"
+  | "pageModel"
   | "snapshot"
   | "screenshot"
   | "pdf"
@@ -319,6 +401,12 @@ export type BrowserStep = BrowserStepTarget & {
   contains?: string;
   visibleOnly?: boolean;
   viewportOnly?: boolean;
+  maxTextLength?: number;
+  maxElements?: number;
+  maxHeadings?: number;
+  maxRegions?: number;
+  maxTables?: number;
+  maxTableRows?: number;
   format?: "png" | "jpeg";
   quality?: number;
   landscape?: boolean;

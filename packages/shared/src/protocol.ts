@@ -3,6 +3,7 @@ export type BridgeTool =
   | "browser_get_active_tab"
   | "browser_get_page_text"
   | "browser_get_page_snapshot"
+  | "browser_get_page_model"
   | "browser_get_interactives"
   | "browser_find"
   | "browser_act"

@@ -96,6 +96,7 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return activateTab(Number(request.params?.tabId));
     case "browser_get_page_text":
     case "browser_get_page_snapshot":
+    case "browser_get_page_model":
     case "browser_get_interactives":
     case "browser_find":
     case "browser_act":
@@ -250,6 +251,17 @@ async function runStep(step: BrowserStep, currentTabId?: number): Promise<unknow
       }));
     case "getText":
       return sendToContentScript(stepRequest("browser_get_page_text", step, currentTabId, {}));
+    case "pageModel":
+      return sendToContentScript(stepRequest("browser_get_page_model", step, currentTabId, {
+        visibleOnly: step.visibleOnly,
+        viewportOnly: step.viewportOnly,
+        maxTextLength: step.maxTextLength,
+        maxElements: step.maxElements,
+        maxHeadings: step.maxHeadings,
+        maxRegions: step.maxRegions,
+        maxTables: step.maxTables,
+        maxTableRows: step.maxTableRows
+      }));
     case "snapshot":
       return sendToContentScript(stepRequest("browser_get_page_snapshot", step, currentTabId, {}));
     case "screenshot":
@@ -1082,6 +1094,7 @@ function parseStepAction(value: unknown): BrowserStepAction {
     "pressKey",
     "assertText",
     "getText",
+    "pageModel",
     "snapshot",
     "screenshot",
     "pdf",

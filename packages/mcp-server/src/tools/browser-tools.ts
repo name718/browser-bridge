@@ -133,6 +133,17 @@ const getInteractivesSchema = optionalTabId.extend({
   viewportOnly: z.boolean().optional()
 });
 
+const pageModelSchema = optionalTabId.extend({
+  visibleOnly: z.boolean().optional(),
+  viewportOnly: z.boolean().optional(),
+  maxTextLength: z.number().int().min(0).max(20_000).optional(),
+  maxElements: z.number().int().min(0).max(300).optional(),
+  maxHeadings: z.number().int().min(0).max(200).optional(),
+  maxRegions: z.number().int().min(0).max(120).optional(),
+  maxTables: z.number().int().min(0).max(50).optional(),
+  maxTableRows: z.number().int().min(0).max(30).optional()
+});
+
 const screenshotSchema = optionalTabId.extend({
   format: z.enum(["png", "jpeg"]).optional(),
   quality: z.number().int().min(0).max(100).optional(),
@@ -210,6 +221,7 @@ const runStepSchema = stepTargetSchema.extend({
     "pressKey",
     "assertText",
     "getText",
+    "pageModel",
     "snapshot",
     "screenshot",
     "pdf",
@@ -230,6 +242,12 @@ const runStepSchema = stepTargetSchema.extend({
   contains: z.string().optional(),
   visibleOnly: z.boolean().optional(),
   viewportOnly: z.boolean().optional(),
+  maxTextLength: z.number().int().min(0).max(20_000).optional(),
+  maxElements: z.number().int().min(0).max(300).optional(),
+  maxHeadings: z.number().int().min(0).max(200).optional(),
+  maxRegions: z.number().int().min(0).max(120).optional(),
+  maxTables: z.number().int().min(0).max(50).optional(),
+  maxTableRows: z.number().int().min(0).max(30).optional(),
   format: z.enum(["png", "jpeg"]).optional(),
   quality: z.number().int().min(0).max(100).optional(),
   landscape: z.boolean().optional(),
@@ -290,6 +308,25 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
       handler: async (args) => {
         const parsed = optionalTabId.parse(args ?? {});
         return bridge.call("browser_get_page_snapshot", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_get_page_model",
+      description: "返回低 token 的语义化页面模型 JSON：标题结构、主要区域、可交互元素、表单、表格样例和页面消息。默认替代完整 HTML/DOM/snapshot，用于让 Agent 先理解页面再按需操作。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        visibleOnly: { type: "boolean" },
+        viewportOnly: { type: "boolean" },
+        maxTextLength: { type: "number" },
+        maxElements: { type: "number" },
+        maxHeadings: { type: "number" },
+        maxRegions: { type: "number" },
+        maxTables: { type: "number" },
+        maxTableRows: { type: "number" }
+      }),
+      handler: async (args) => {
+        const parsed = pageModelSchema.parse(args ?? {});
+        return bridge.call("browser_get_page_model", parsed, { tabId: parsed.tabId });
       }
     },
     {
@@ -822,7 +859,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_run_steps",
-      description: "按顺序执行结构化浏览器操作步骤。支持 open、click、hover、type、clear、scroll、waitFor、pressKey、assertText、getText、snapshot、screenshot、pdf、sleep 等动作。",
+      description: "按顺序执行结构化浏览器操作步骤。支持 open、click、hover、type、clear、scroll、waitFor、pressKey、assertText、getText、pageModel、snapshot、screenshot、pdf、sleep 等动作。",
       inputSchema: schema({
         tabId: { type: "number" },
         stopOnError: { type: "boolean" },
@@ -836,7 +873,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
             properties: {
               action: {
                 type: "string",
-                enum: ["open", "activateTab", "click", "hover", "type", "fillForm", "clear", "scroll", "waitFor", "pressKey", "assertText", "getText", "snapshot", "screenshot", "sleep"]
+                enum: ["open", "activateTab", "click", "hover", "type", "fillForm", "clear", "scroll", "waitFor", "pressKey", "assertText", "getText", "pageModel", "snapshot", "screenshot", "sleep"]
               },
               description: { type: "string" },
               tabId: { type: "number" },
@@ -868,6 +905,12 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
               contains: { type: "string" },
               visibleOnly: { type: "boolean" },
               viewportOnly: { type: "boolean" },
+              maxTextLength: { type: "number" },
+              maxElements: { type: "number" },
+              maxHeadings: { type: "number" },
+              maxRegions: { type: "number" },
+              maxTables: { type: "number" },
+              maxTableRows: { type: "number" },
               format: { type: "string", enum: ["png", "jpeg"] },
               quality: { type: "number" },
               landscape: { type: "boolean" },
