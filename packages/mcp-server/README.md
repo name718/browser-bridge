@@ -21,7 +21,7 @@ Browser Bridge 是一个「Chrome 插件 + 本地 MCP 服务」组合，用来�
 插件下载地址：
 
 ```text
-https://github.com/name718/browser-bridge/raw/main/release/browser-bridge-extension-0.1.1.zip
+https://github.com/name718/browser-bridge/blob/main/release/browser-bridge-extension-0.1.1.zip
 ```
 
 安装步骤：
@@ -153,5 +153,5 @@ https://github.com/name718/browser-bridge
 Chrome 插件 zip：
 
 ```text
-https://github.com/name718/browser-bridge/raw/main/release/browser-bridge-extension-0.1.1.zip
+https://github.com/name718/browser-bridge/blob/main/release/browser-bridge-extension-0.1.1.zip
 ```
