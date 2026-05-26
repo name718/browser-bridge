@@ -925,6 +925,29 @@ async function exportZipStreaming(ctx) {
     state.buffer = ''
   }
 
+  async function getCodegenDsl(node) {
+    if (!mg.codegen || typeof mg.codegen.getDSL !== 'function') return null
+    try {
+      const data = await mg.codegen.getDSL(node.id)
+      if (data) {
+        debugLog('CodegenDSL', {
+          nodeId: node.id || '',
+          nodeName: node.name || '',
+        })
+        return data
+      }
+    } catch (e) {
+      addDiagnosticWarning(diagnostics, {
+        type: 'codegen-dsl-fallback',
+        message: 'mg.codegen.getDSL failed; fallback to legacy extractor',
+        nodeId: node.id || '',
+        nodeName: node.name || '',
+        error: e && e.message ? e.message : String(e),
+      })
+    }
+    return null
+  }
+
   async function streamNodeJson(node, options, state) {
     const data = await extractNode(node, Object.assign({}, options, { shallow: true }))
     const bounds = data.absoluteBoundingBox || data.absoluteRenderBounds
@@ -955,11 +978,24 @@ async function exportZipStreaming(ctx) {
     emitNodeJson(state, ']}')
   }
 
+  async function streamTopLevelDsl(node, options, state) {
+    const codegenDsl = await getCodegenDsl(node)
+    if (codegenDsl) {
+      const bounds = normalizeBox(readProp(node, 'absoluteBoundingBox')) || normalizeBox(readProp(node, 'absoluteRenderBounds'))
+      contentBounds = mergeBounds(contentBounds, bounds)
+      state.contentBounds = mergeBounds(state.contentBounds, bounds)
+      state.codegenDsl = true
+      emitNodeJson(state, JSON.stringify(codegenDsl))
+      return
+    }
+    await streamNodeJson(node, options, state)
+  }
+
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i]
     const fileName = createTopLevelAssetFileName(DSL_EXPORT_DIR, i, node, '.json')
     const state = createNodeJsonState(fileName)
-    await streamNodeJson(node, {
+    await streamTopLevelDsl(node, {
       includeImages: false,
       imageNodes: new Set(),
       parentId: page.id || null,
@@ -979,6 +1015,7 @@ async function exportZipStreaming(ctx) {
       nodeCount: countNodeTree([node]),
       contentBounds: state.contentBounds,
       nodeJsonSize: state.size,
+      dslSource: state.codegenDsl ? 'mg.codegen.getDSL' : 'legacy-extractNode',
     })
     await wait(0)
   }
