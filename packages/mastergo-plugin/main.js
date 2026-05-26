@@ -1452,7 +1452,6 @@ function buildOfflineBindingIndex(options) {
       name: node.name || '',
       image: imageAsset ? imageAsset.fileName : createTopLevelAssetFileName(PICTURE_EXPORT_DIR, index, node, '.png'),
       dsl: dslFile ? dslFile.fileName : createTopLevelAssetFileName(DSL_EXPORT_DIR, index, node, '.json'),
-      layer_id: id,
     }
   })
   return createBindingBase(options, pageItems)
