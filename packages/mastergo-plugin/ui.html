@@ -607,7 +607,7 @@
         progressTextEl.textContent = '导出完成';
         btnDownloadZip.style.display = currentZipPayload ? 'inline-block' : 'none';
         hintEl.textContent = currentZipPayload && currentZipPayload.mode === 'binding'
-          ? 'ZIP 包含 binding.json、每个顶层图层一个 dsl/ 分片，以及 picture/ 目录。'
+          ? 'ZIP 包含 binding.json 和 picture/ 目录。'
           : (currentZipPayload && currentZipPayload.bindingJson
             ? 'ZIP 包含 manifest.json + dsl/ 分片 + binding.json + picture/ 目录'
             : 'ZIP 包含 manifest.json、每个顶层图层一个 dsl/ 分片，以及 picture/ 目录。');

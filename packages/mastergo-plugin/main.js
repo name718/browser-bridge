@@ -1087,8 +1087,8 @@ async function exportZipStreaming(ctx) {
     stats,
   })
 
-  // 生成 binding.json：仅保留 MCP 消费所需的文件索引。
-  const bindingJson = JSON.stringify(buildBindingIndex({
+  // 生成离线 binding.json：保留顶层图层名称、图片路径和 DSL 路径。
+  const bindingJson = JSON.stringify(buildOfflineBindingIndex({
     fileId: mg.documentId || '',
     exportedAt: startedAt,
     pageName: page.name || 'untitled',
@@ -1353,9 +1353,18 @@ function keyByNodeId(items) {
   return map
 }
 
-function buildBindingIndex(options) {
+function createBindingBase(options, pageItems) {
+  return {
+    file_id: options.fileId == null ? '' : options.fileId,
+    exported_at: options.exportedAt || new Date().toISOString(),
+    pages: {
+      [options.pageName || 'untitled']: pageItems,
+    },
+  }
+}
+
+function buildOfflineBindingIndex(options) {
   const nodes = options.nodes || []
-  const pageName = options.pageName || 'untitled'
   const assetsByNodeId = keyByNodeId(options.assets)
   const dslByNodeId = keyByNodeId(options.dslFiles)
   const pageItems = nodes.map((node, index) => {
@@ -1368,13 +1377,21 @@ function buildBindingIndex(options) {
       dsl: dslFile ? dslFile.fileName : createTopLevelAssetFileName(DSL_EXPORT_DIR, index, node, '.json'),
     }
   })
-  return {
-    file_id: options.fileId || '',
-    exported_at: options.exportedAt || new Date().toISOString(),
-    pages: {
-      [pageName]: pageItems,
-    },
-  }
+  return createBindingBase(options, pageItems)
+}
+
+function buildMcpBindingIndex(options) {
+  const nodes = options.nodes || []
+  const assetsByNodeId = keyByNodeId(options.assets)
+  const pageItems = nodes.map((node, index) => {
+    const id = node.id || ''
+    const imageAsset = assetsByNodeId[id]
+    return {
+      id,
+      image: imageAsset ? imageAsset.fileName : createTopLevelAssetFileName(PICTURE_EXPORT_DIR, index, node, '.png'),
+    }
+  })
+  return createBindingBase(options, pageItems)
 }
 
 // ─── 批量导出图片 ───
@@ -1472,52 +1489,13 @@ async function exportDesign(config) {
         await wait(0)
       }
 
-      const dslFiles = []
-      const progress = {
-        current: 0,
-        total: countNodeTree(bindingNodes),
-      }
-      for (let i = 0; i < bindingNodes.length; i++) {
-        const node = bindingNodes[i]
-        postProgress('dsl', i + 1, bindingNodes.length, '正在导出 DSL ' + (i + 1) + '/' + bindingNodes.length)
-        const fileName = createTopLevelAssetFileName(DSL_EXPORT_DIR, i, node, '.json')
-        const data = await extractNode(node, {
-          includeImages: false,
-          imageNodes: new Set(),
-          parentId: page.id || null,
-          depth: 0,
-          index: i,
-          siblingCount: bindingNodes.length,
-          pathIds: [page.id || ''],
-          pathNames: [page.name || ''],
-          progress,
-          diagnostics,
-        })
-        const json = JSON.stringify(data, null, 2)
-        dslFiles.push({
-          fileName,
-          nodeId: node.id || '',
-          nodeName: node.name || '',
-          nodeCount: countNodeTree([node]),
-          nodeJsonSize: json.length,
-        })
-        mg.ui.postMessage({
-          type: 'zipJsonFileMeta',
-          fileName,
-          prefix: json,
-          suffix: '',
-        })
-        await wait(0)
-      }
-
-      // 生成 binding.json：仅保留 MCP 消费所需的文件索引。
-      const bindingJson = JSON.stringify(buildBindingIndex({
+      // 生成 MCP binding.json：仅保留顶层图层 id 和图片路径。
+      const bindingJson = JSON.stringify(buildMcpBindingIndex({
         fileId: mg.documentId || '',
         exportedAt: startedAt,
         pageName: page.name || 'untitled',
         nodes: bindingNodes,
         assets: assetsMeta,
-        dslFiles,
       }), null, 2)
 
       const stats = {
