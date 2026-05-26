@@ -155,6 +155,34 @@
       margin-top: 10px;
       line-height: 1.5;
     }
+    .config-panel {
+      border: 1px solid #dee0e3;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+      background: #fff;
+    }
+    .config-row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .config-label {
+      font-size: 12px;
+      color: #646a73;
+    }
+    .config-input {
+      width: 100%;
+      height: 30px;
+      border: 1px solid #dee0e3;
+      border-radius: 6px;
+      padding: 0 8px;
+      font-size: 12px;
+      outline: none;
+    }
+    .config-input:focus {
+      border-color: #3370ff;
+    }
   </style>
 </head>
 <body>
@@ -179,6 +207,12 @@
       <div class="info-value" id="info-nodes">-</div>
       <div class="info-label">画布尺寸</div>
       <div class="info-value" id="info-size">-</div>
+    </div>
+  </div>
+  <div class="config-panel" id="config-panel">
+    <div class="config-row">
+      <label class="config-label" for="frame-name-pattern">顶层 Frame 名称正则（仅当前页面命令生效）</label>
+      <input class="config-input" id="frame-name-pattern" placeholder="例如：\\[page\\]；留空导出当前页面全部顶层节点">
     </div>
   </div>
   <div class="hint" id="selection-summary" style="display:none"></div>
@@ -206,6 +240,8 @@
     var progressBarEl = document.getElementById('progress-bar');
     var progressTextEl = document.getElementById('progress-text');
     var infoPanelEl = document.getElementById('info-panel');
+    var configPanelEl = document.getElementById('config-panel');
+    var frameNamePatternEl = document.getElementById('frame-name-pattern');
     var currentZipPayload = null;
     var currentZipName = 'mastergo_export.zip';
     var streamZipPayload = null;
@@ -254,9 +290,27 @@
       }
       if (info.exportTarget === 'selection') {
         showSelectionSummary(info.selection);
+        configPanelEl.style.display = 'none';
       } else {
         selectionSummaryEl.style.display = 'none';
+        configPanelEl.style.display = 'block';
       }
+    }
+
+    function readExportConfig() {
+      var frameNamePattern = frameNamePatternEl ? frameNamePatternEl.value.trim() : '';
+      if (frameNamePattern) {
+        try {
+          new RegExp(frameNamePattern);
+        } catch (e) {
+          showStatus('error', '顶层 Frame 名称正则无效：' + e.message);
+          return null;
+        }
+      }
+      return {
+        pngScale: defaultPngScale,
+        topFrameNamePattern: frameNamePattern
+      };
     }
 
     function updateProgress(payload) {
@@ -660,6 +714,8 @@
 
     btnStartExport.addEventListener('click', function () {
       if (exportStarted) return;
+      var exportConfig = readExportConfig();
+      if (!exportConfig) return;
       exportStarted = true;
       currentZipPayload = null;
       streamZipPayload = null;
@@ -670,12 +726,12 @@
       setLoading(true);
       window.parent.postMessage({
         type: 'startExport',
-        config: { pngScale: defaultPngScale }
+        config: exportConfig
       }, '*');
       window.parent.postMessage({
         pluginMessage: {
           type: 'startExport',
-          config: { pngScale: defaultPngScale }
+          config: exportConfig
         }
       }, '*');
     });

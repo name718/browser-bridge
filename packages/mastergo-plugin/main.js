@@ -44,7 +44,29 @@ function normalizeExportConfig(config) {
   const pngScale = Math.max(MIN_PNG_EXPORT_SCALE, Math.min(MAX_PNG_EXPORT_SCALE, Number.isFinite(rawScale) ? rawScale : DEFAULT_PNG_EXPORT_SCALE))
   return {
     pngScale,
+    topFrameNamePattern: config && config.topFrameNamePattern ? String(config.topFrameNamePattern).trim() : '',
   }
+}
+
+function createTopFrameNameMatcher(pattern) {
+  if (!pattern) return null
+  try {
+    return new RegExp(pattern)
+  } catch {
+    return null
+  }
+}
+
+function filterCurrentPageNodes(nodes, exportConfig) {
+  const pattern = exportConfig && exportConfig.topFrameNamePattern
+  if (!pattern) return nodes || []
+  const matcher = createTopFrameNameMatcher(pattern)
+  if (!matcher) return nodes || []
+  return (nodes || []).filter(node => node && node.type === 'FRAME' && matcher.test(node.name || ''))
+}
+
+function describeNamePattern(pattern) {
+  return pattern ? '，匹配正则 /' + pattern + '/' : ''
 }
 
 function commandInfo(command, doc, page) {
@@ -1075,6 +1097,7 @@ async function exportZipStreaming(ctx) {
         nodeName: file.nodeName,
         nodeCount: file.nodeCount,
         contentBounds: file.contentBounds,
+        dslSource: file.dslSource,
       })),
     },
     renderAssets: {
@@ -1102,6 +1125,7 @@ async function exportZipStreaming(ctx) {
         fileName: file.fileName,
         nodeId: file.nodeId,
         nodeName: file.nodeName,
+        dslSource: file.dslSource,
       },
     }), null, 2).replace(/\n}$/, ',\n  "nodes": [\n')
     splitJsonSize += prefix.length + file.nodeJsonSize + suffix.length
@@ -1127,6 +1151,7 @@ async function exportZipStreaming(ctx) {
   // 生成离线 binding.json：保留顶层图层名称、图片路径和 DSL 路径。
   const bindingJson = JSON.stringify(buildOfflineBindingIndex({
     fileId: mg.documentId || '',
+    pageId: page.id || '',
     exportedAt: startedAt,
     pageName: page.name || 'untitled',
     nodes,
@@ -1400,6 +1425,21 @@ function createBindingBase(options, pageItems) {
   }
 }
 
+function createMcpBindingItem(options, node, index, imageAsset) {
+  const fileId = options.fileId == null ? '' : String(options.fileId)
+  const pageId = options.pageId || ''
+  const nodeId = node.id || ''
+  return {
+    name: node.name || '',
+    image: imageAsset ? imageAsset.fileName : createTopLevelAssetFileName(PICTURE_EXPORT_DIR, index, node, '.png'),
+    file_id: fileId,
+    page_id: pageId,
+    node_id: nodeId,
+    layer_id: nodeId,
+    url: fileId ? 'https://mastergo.com/file/' + fileId + '?page_id=' + pageId + '&layer_id=' + encodeURIComponent(nodeId) : '',
+  }
+}
+
 function buildOfflineBindingIndex(options) {
   const nodes = options.nodes || []
   const assetsByNodeId = keyByNodeId(options.assets)
@@ -1412,6 +1452,7 @@ function buildOfflineBindingIndex(options) {
       name: node.name || '',
       image: imageAsset ? imageAsset.fileName : createTopLevelAssetFileName(PICTURE_EXPORT_DIR, index, node, '.png'),
       dsl: dslFile ? dslFile.fileName : createTopLevelAssetFileName(DSL_EXPORT_DIR, index, node, '.json'),
+      layer_id: id,
     }
   })
   return createBindingBase(options, pageItems)
@@ -1423,10 +1464,7 @@ function buildMcpBindingIndex(options) {
   const pageItems = nodes.map((node, index) => {
     const id = node.id || ''
     const imageAsset = assetsByNodeId[id]
-    return {
-      id,
-      image: imageAsset ? imageAsset.fileName : createTopLevelAssetFileName(PICTURE_EXPORT_DIR, index, node, '.png'),
-    }
+    return createMcpBindingItem(options, node, index, imageAsset)
   })
   return createBindingBase(options, pageItems)
 }
@@ -1487,10 +1525,15 @@ async function exportDesign(config) {
         return
       }
       const bindingNodes = isSelection ? selection : (page.children || [])
+      const filteredBindingNodes = isSelection ? bindingNodes : filterCurrentPageNodes(bindingNodes, exportConfig)
+      if (!isSelection && exportConfig.topFrameNamePattern && filteredBindingNodes.length === 0) {
+        mg.ui.postMessage({ type: 'error', message: '当前页面没有匹配正则 /' + exportConfig.topFrameNamePattern + '/ 的顶层 Frame' })
+        return
+      }
       mode = isSelection
-        ? '选中图层绑定（JSON+PNG，' + bindingNodes.length + ' 个）'
-        : '当前页面绑定（JSON+PNG）'
-      postProgress('start', 0, bindingNodes.length, '准备导出绑定 ' + mode)
+        ? '选中图层绑定（JSON+PNG，' + filteredBindingNodes.length + ' 个）'
+        : '当前页面绑定（JSON+PNG' + describeNamePattern(exportConfig.topFrameNamePattern) + '）'
+      postProgress('start', 0, filteredBindingNodes.length, '准备导出绑定 ' + mode)
       const pngScale = normalizeExportConfig(exportConfig).pngScale
       const startedAt = new Date().toISOString()
 
@@ -1503,9 +1546,9 @@ async function exportDesign(config) {
 
       // 导出 PNG（文件名用 node ID 以便和 MCP JSON 关联）
       const assetsMeta = []
-      for (let i = 0; i < bindingNodes.length; i++) {
-        const node = bindingNodes[i]
-        postProgress('png', i + 1, bindingNodes.length, '正在导出 PNG ' + (i + 1) + '/' + bindingNodes.length)
+      for (let i = 0; i < filteredBindingNodes.length; i++) {
+        const node = filteredBindingNodes[i]
+        postProgress('png', i + 1, filteredBindingNodes.length, '正在导出 PNG ' + (i + 1) + '/' + filteredBindingNodes.length)
         const image = await exportPngForNode(node, pngScale)
         if (!image) continue
         const pngFileName = createTopLevelAssetFileName(PICTURE_EXPORT_DIR, i, node, '.png')
@@ -1526,18 +1569,19 @@ async function exportDesign(config) {
         await wait(0)
       }
 
-      // 生成 MCP binding.json：仅保留顶层图层 id 和图片路径。
+      // 生成 MCP binding.json：与离线索引字段一致，但不包含 dsl 字段。
       const bindingJson = JSON.stringify(buildMcpBindingIndex({
         fileId: mg.documentId || '',
+        pageId: page.id || '',
         exportedAt: startedAt,
         pageName: page.name || 'untitled',
-        nodes: bindingNodes,
+        nodes: filteredBindingNodes,
         assets: assetsMeta,
       }), null, 2)
 
       const stats = {
-        nodeCount: bindingNodes.length,
-        topLevelNodeCount: bindingNodes.length,
+        nodeCount: filteredBindingNodes.length,
+        topLevelNodeCount: filteredBindingNodes.length,
         jsonSize: bindingJson.length,
       }
 
@@ -1567,8 +1611,14 @@ async function exportDesign(config) {
       nodes = selection
       mode = includeZipAssets ? '选中图层（JSON+PNG Zip，' + nodes.length + ' 个）' : '选中图层 (' + nodes.length + ' 个)'
     } else {
-      nodes = page.children || []
-      mode = includeZipAssets ? '当前页面（JSON+PNG Zip）' : (includeImages ? '当前页面（含图片）' : '当前页面')
+      nodes = filterCurrentPageNodes(page.children || [], exportConfig)
+      if (exportConfig.topFrameNamePattern && nodes.length === 0) {
+        mg.ui.postMessage({ type: 'error', message: '当前页面没有匹配正则 /' + exportConfig.topFrameNamePattern + '/ 的顶层 Frame' })
+        return
+      }
+      mode = includeZipAssets
+        ? '当前页面（JSON+PNG Zip' + describeNamePattern(exportConfig.topFrameNamePattern) + '）'
+        : (includeImages ? '当前页面（含图片' + describeNamePattern(exportConfig.topFrameNamePattern) + '）' : '当前页面' + describeNamePattern(exportConfig.topFrameNamePattern))
     }
 
     postProgress('start', 0, nodes.length, '准备导出 ' + mode)
