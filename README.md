@@ -243,9 +243,9 @@ Browser Bridge 面向普通网页：优先用 DOM、文本、交互元素和 CDP
 
 ### 1. 安装 Chrome 插件
 
-当前版本暂未上架 Chrome Web Store。请从仓库的 `release/browser-bridge-extension-0.1.1.zip` 解压后手动加载：
+当前版本暂未上架 Chrome Web Store。请从仓库的 `release/browser-bridge-extension-0.1.2.zip` 解压后手动加载：
 
-1. 解压 `release/browser-bridge-extension-0.1.1.zip`
+1. 解压 `release/browser-bridge-extension-0.1.2.zip`
 2. 打开 `chrome://extensions`
 2. 开启「开发者模式」
 3. 点击「加载已解压的扩展程序」
