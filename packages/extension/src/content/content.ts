@@ -152,16 +152,42 @@ function getLinks(): { links: Array<{ text?: string; href: string; visible: bool
 }
 
 function getPageSnapshot(): PageSnapshot {
-  const elements = getActionableElements({ visibleOnly: true })
-    .slice(0, 300)
-    .map(toBrowserElement);
+  const allElements = getActionableElements({ visibleOnly: true });
+  const foldedElements: BrowserElement[] = [];
+  const signatureMap = new Map<string, number>();
+
+  for (let i = 0; i < allElements.length; i++) {
+    const el = allElements[i];
+    const parent = el.parentElement;
+    const signature = `${parent?.tagName}-${el.tagName}-${el.className}-${el.getAttribute("role") || inferRole(el)}`;
+    
+    const count = signatureMap.get(signature) || 0;
+    if (count < 5) { // Keep first 5 of same signature under same parent (simplified signature here)
+      foldedElements.push(toBrowserElement(el, i));
+      signatureMap.set(signature, count + 1);
+    } else if (count === 5) {
+      // Add a summary element instead of just skipping
+      foldedElements.push({
+        elementId: `folded-${i}`,
+        role: "text",
+        tagName: "span",
+        text: `... (more similar ${el.tagName.toLowerCase()} items hidden)`,
+        visible: true,
+        disabled: false,
+        rect: elementRect(el)
+      });
+      signatureMap.set(signature, count + 1);
+    }
+    
+    if (foldedElements.length >= 400) break; // Hard limit
+  }
 
   return {
     tabId: -1,
     url: location.href,
     title: document.title,
     text: getVisibleText(),
-    elements
+    elements: foldedElements
   };
 }
 
@@ -373,8 +399,68 @@ function getPageMessages(options: {
 }
 
 function getVisibleText(): string {
-  const text = document.body?.innerText ?? "";
-  return text.replace(/\n{3,}/g, "\n\n").trim().slice(0, 120_000);
+  const lines: string[] = [];
+  const walk = (node: Node) => {
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const element = node as HTMLElement;
+      if (!isVisible(element)) return;
+
+      const tagName = element.tagName.toLowerCase();
+      if (tagName === "script" || tagName === "style" || tagName === "noscript") return;
+
+      if (tagName === "h1" || tagName === "h2" || tagName === "h3" || tagName === "h4" || tagName === "h5" || tagName === "h6") {
+        const level = parseInt(tagName[1]);
+        lines.push(`\n${"#".repeat(level)} ${element.innerText.trim()}\n`);
+      } else if (tagName === "table") {
+        lines.push(`\n${processTable(element as HTMLTableElement)}\n`);
+      } else if (tagName === "p" || tagName === "div" || tagName === "section" || tagName === "article") {
+        // Continue walking children but maybe add newlines for block elements
+        for (const child of node.childNodes) {
+          walk(child);
+        }
+        lines.push("\n");
+      } else if (tagName === "li") {
+        lines.push("- ");
+        for (const child of node.childNodes) {
+          walk(child);
+        }
+        lines.push("\n");
+      } else {
+        for (const child of node.childNodes) {
+          walk(child);
+        }
+      }
+    } else if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent?.trim();
+      if (text) {
+        lines.push(text + " ");
+      }
+    }
+  };
+
+  function processTable(table: HTMLTableElement): string {
+    const rows = Array.from(table.rows).slice(0, 20); // Limit rows
+    if (rows.length === 0) return "";
+    
+    const markdownRows = rows.map(row => {
+      const cells = Array.from(row.cells).slice(0, 10); // Limit columns
+      return `| ${cells.map(cell => cell.innerText.trim().replace(/\|/g, "\\|")).join(" | ")} |`;
+    });
+
+    if (markdownRows.length > 0) {
+      const firstRowCells = Array.from(rows[0].cells).slice(0, 10);
+      const separator = `| ${firstRowCells.map(() => "---").join(" | ")} |`;
+      markdownRows.splice(1, 0, separator);
+    }
+
+    return markdownRows.join("\n");
+  }
+
+  if (document.body) {
+    walk(document.body);
+  }
+  
+  return lines.join("").replace(/\n{3,}/g, "\n\n").trim().slice(0, 120_000);
 }
 
 function toBrowserElement(element: HTMLElement, index: number): BrowserElement {
