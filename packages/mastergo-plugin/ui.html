@@ -209,12 +209,7 @@
       <div class="info-value" id="info-size">-</div>
     </div>
   </div>
-  <div class="config-panel" id="config-panel">
-    <div class="config-row">
-      <label class="config-label" for="frame-name-pattern">顶层 Frame 名称正则（仅当前页面命令生效）</label>
-      <input class="config-input" id="frame-name-pattern" placeholder="例如：\\[page\\]；留空导出当前页面全部顶层节点">
-    </div>
-  </div>
+  <div class="config-panel" id="config-panel" style="display:none"></div>
   <div class="hint" id="selection-summary" style="display:none"></div>
   <div class="progress" id="progress">
     <div class="progress-track">
@@ -241,7 +236,6 @@
     var progressTextEl = document.getElementById('progress-text');
     var infoPanelEl = document.getElementById('info-panel');
     var configPanelEl = document.getElementById('config-panel');
-    var frameNamePatternEl = document.getElementById('frame-name-pattern');
     var currentZipPayload = null;
     var currentZipName = 'mastergo_export.zip';
     var streamZipPayload = null;
@@ -290,26 +284,16 @@
       }
       if (info.exportTarget === 'selection') {
         showSelectionSummary(info.selection);
-        configPanelEl.style.display = 'none';
       } else {
         selectionSummaryEl.style.display = 'none';
-        configPanelEl.style.display = 'block';
       }
+      configPanelEl.style.display = 'none';
     }
 
     function readExportConfig() {
-      var frameNamePattern = frameNamePatternEl ? frameNamePatternEl.value.trim() : '';
-      if (frameNamePattern) {
-        try {
-          new RegExp(frameNamePattern);
-        } catch (e) {
-          showStatus('error', '顶层 Frame 名称正则无效：' + e.message);
-          return null;
-        }
-      }
       return {
         pngScale: defaultPngScale,
-        topFrameNamePattern: frameNamePattern
+        topFrameNamePattern: 'h5page'
       };
     }
 
