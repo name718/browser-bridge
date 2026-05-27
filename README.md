@@ -106,20 +106,21 @@ Browser Bridge 面向普通网页：优先用 DOM、文本、交互元素和 CDP
 
 ## 工具一览
 
-共 **36 个 MCP 工具**，分为 10 大类：
+共 **39 个 MCP 工具**，分为 11 大类：
 
 | 类别 | 工具 | 说明 |
 |---|---|---|
 | **连接** | `browser_use` `browser_status` | 激活和状态检查 |
 | **标签页** | `browser_list_tabs` `browser_open_url` `browser_activate_tab` `browser_get_active_tab` | 标签页管理 |
-| **页面读取** | `browser_get_page_text` `browser_get_page_snapshot` `browser_get_interactives` `browser_get_links` `browser_get_selected_text` `browser_capture_page` | 多层级内容获取 |
+| **页面读取** | `browser_get_page_text` `browser_get_page_snapshot` `browser_get_interactives` `browser_get_links` `browser_get_selected_text` `browser_capture_page` `browser_get_ax_tree` | 增加无障碍树读取 |
 | **截图/导出** | `browser_screenshot` `browser_save_screenshot` `browser_pdf` `browser_save_pdf` | 视觉捕获 |
 | **元素查找** | `browser_find` `browser_find_and_click` `browser_find_and_type` | 智能元素定位 |
 | **元素操作** | `browser_click` `browser_type` `browser_clear` `browser_hover` `browser_press_key` `browser_fill_form` `browser_scroll` `browser_wait_for` `browser_assert_text` | 交互操作 |
 | **脚本执行** | `browser_evaluate` | 自定义 JS 执行 |
 | **CDP** | `browser_cdp` `browser_cdp_session` | Chrome DevTools Protocol |
 | **性能分析** | `browser_responsive` `browser_network_analysis` | 响应式测试 + 网络分析 |
-| **自动化** | `browser_run_steps` `browser_get_audit_log` | 多步骤流程 + 审计 |
+| **网络与监控** | `browser_wait_for_request` `browser_console_monitor` `browser_get_audit_log` | 请求监听 + 控制台监控 + 审计 |
+| **自动化** | `browser_run_steps` | 多步骤流程 |
 
 ## 使用场景
 
