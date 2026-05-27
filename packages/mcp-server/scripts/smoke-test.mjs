@@ -35,6 +35,9 @@ try {
   const toolNames = tools.tools.map((tool) => tool.name).sort();
   write("工具列表", toolNames);
 
+  // 必须先激活
+  await client.callTool({ name: "browser_use", arguments: {} });
+
   if (requestedTool) {
     await callAndWrite(requestedTool, readJsonArg("--args") ?? {});
   } else {

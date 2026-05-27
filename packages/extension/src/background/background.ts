@@ -104,6 +104,10 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
     case "browser_get_selected_text":
     case "browser_get_links":
       return sendToContentScript(request);
+    case "browser_get_ax_tree":
+      return getAXTree(request);
+    case "browser_wait_for_request":
+      return waitForNetworkRequest(request);
     case "browser_get_audit_log":
       return getAuditLog(typeof request.params?.limit === "number" ? request.params.limit : 20);
     case "browser_run_steps":
@@ -703,6 +707,68 @@ async function evaluateScript(request: BridgeRequest): Promise<Record<string, un
     });
     throw error;
   }
+}
+
+async function getAXTree(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+
+  const tab = await chrome.tabs.get(tabId);
+  await assertUrlAllowed(tab.url);
+
+  const debuggee = { tabId };
+  try {
+    await chrome.debugger.attach(debuggee, "1.3");
+    const result = await chrome.debugger.sendCommand(debuggee, "Accessibility.getFullAXTree", {});
+    await appendAuditLog({ tool: "browser_get_ax_tree", url: tab.url, ok: true });
+    return { tabId, url: tab.url, title: tab.title, axTree: result };
+  } catch (error) {
+    await appendAuditLog({
+      tool: "browser_get_ax_tree",
+      url: tab.url,
+      ok: false,
+      errorCode: error instanceof Error ? error.message.split(":", 1)[0] : "INTERNAL_ERROR"
+    });
+    throw error;
+  } finally {
+    try { chrome.debugger.detach(debuggee); } catch { /* ignore */ }
+  }
+}
+
+async function waitForNetworkRequest(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const urlPattern = typeof params.urlPattern === "string" ? params.urlPattern : "";
+  if (!urlPattern) throw new Error("INVALID_PARAMS: urlPattern 参数必填");
+
+  const timeoutMs = typeof params.timeoutMs === "number" ? params.timeoutMs : 10000;
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      chrome.webRequest.onCompleted.removeListener(listener);
+      reject(new Error(`ACTION_TIMEOUT: 在 ${timeoutMs}ms 内未检测到符合模式 ${urlPattern} 的请求`));
+    }, timeoutMs);
+
+    const listener = (details: chrome.webRequest.WebResponseCacheDetails) => {
+      if (details.tabId === tabId && details.url.includes(urlPattern)) {
+        clearTimeout(timeout);
+        chrome.webRequest.onCompleted.removeListener(listener);
+        resolve({
+          ok: true,
+          url: details.url,
+          method: details.method,
+          statusCode: details.statusCode,
+          timeStamp: details.timeStamp
+        });
+      }
+    };
+
+    chrome.webRequest.onCompleted.addListener(listener, { urls: ["<all_urls>"], tabId });
+  });
 }
 
 async function executeCdp(request: BridgeRequest): Promise<Record<string, unknown>> {

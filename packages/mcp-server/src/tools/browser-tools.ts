@@ -287,6 +287,36 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
       handler: async () => bridge.getStatus()
     },
     {
+      name: "browser_get_ax_tree",
+      description: "获取当前页面的完整无障碍树（Accessibility Tree）。相比 DOM 树，AXTree 更加简洁并聚焦于可交互元素和语义信息，是 AI 理解页面结构和进行导航的极佳选择。",
+      inputSchema: schema({
+        tabId: { type: "number" }
+      }),
+      handler: async (args) => {
+        const parsed = optionalTabId.parse(args ?? {});
+        return bridge.call("browser_get_ax_tree", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_wait_for_request",
+      description: "等待符合特定模式（URL 或关键字）的网络请求完成。常用于单页应用（SPA）中等待点击按钮后的 API 数据回包。支持设置超时时间。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        urlPattern: { type: "string" },
+        timeoutMs: { type: "number" }
+      }, ["urlPattern"]),
+      handler: async (args) => {
+        const parsed = optionalTabId.extend({
+          urlPattern: z.string().min(1),
+          timeoutMs: z.number().int().positive().optional()
+        }).parse(args ?? {});
+        return bridge.call("browser_wait_for_request", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: (parsed.timeoutMs ?? 10000) + 2000
+        });
+      }
+    },
+    {
       name: "browser_get_active_tab",
       description: "返回当前活动的 Chrome 标签页。",
       inputSchema: schema({}),

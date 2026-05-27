@@ -302,3 +302,51 @@ MVP 验证目标：
 - 能对普通页面执行点击。
 - 能处理连接失败、元素不存在、权限不足等错误。
 - 有基础安全限制，避免明显误操作。
+
+
+
+✦ 基于对 browser-bridge 项目的深入分析，我为你整理了一份涵盖性能优化、稳定性增强和新特性扩展的建议清单。
+
+  1. 性能与 Token 效率优化 (Optimization)
+
+   * 语义化快照压缩 (Semantic Snapshot Pruning):
+       * 现状: browser_get_page_snapshot 目前暴力截取前 300 个元素，这可能包含大量重复的低价值信息（如长列表中的 50 个相似商品）。
+       * 优化: 引入“结构折叠”机制。对于结构相同的兄弟节点（如 <li> 列表），仅保留前 N 个代表性节点，并标注“同类项共 X 个”，大幅降低发送给
+         AI 的 Token 消耗。
+   * 结构化 Markdown 转换:
+       * 现状: browser_get_page_text 直接返回 innerText，丢失了标题级别、表格结构和链接关联。
+       * 优化: 升级文本提取逻辑，将 HTML 转换为高质量的 Markdown。特别是表格（Table）的保留，能显著提升 AI 对复杂页面数据的理解能力。
+   * CDP 异步流式传输:
+       * 现状: 某些 CDP 操作（如 browser_cdp_session）可能产生大量数据。
+       * 优化: 支持在 Daemon 和 MCP Server 之间使用流式传输，避免大 JSON 对象阻塞主线程。
+
+  2. 交互可靠性增强 (Stability)
+
+   * 智能自动等待 (Auto-Waiting):
+       * 建议: 借鉴 Playwright 的思路。在执行 browser_click 或 browser_type
+         前，自动检查元素的“可交互性”（Actionability）：是否可见、是否被其他元素遮挡、是否正在进行 CSS 动画、是否处于 Enabled 状态。
+   * 视觉操作反馈 (Visual Ripple):
+       * 建议: 当 AI 执行点击操作时，在浏览器真实页面上注入一个短暂的视觉动画（如红圈脉冲）。这不仅方便用户观察 AI
+         的操作轨迹，也极大地利于调试。
+   * 失败现场自动保存:
+       * 建议: 当 browser_act 失败时，自动捕获当前视口截图和控制台错误日志（Console Logs），并随错误信息一同返回给 AI，让 AI
+         能立即进行自我诊断（Self-Correction）。
+
+  3. 特性扩展建议 (New Features)
+
+   * 无障碍树 (Accessibility Tree) 支持:
+       * 特性: browser_get_ax_tree。
+       * 理由: 相比复杂的 DOM 树，AXTree（Accessibility Tree）更简洁且更符合人类交互逻辑。AI 代理通过 AXTree 导航通常比直接读 DOM 更精准。
+   * 网络请求监听与等待:
+       * 特性: browser_wait_for_request(pattern)。
+       * 理由: 在单页应用（SPA）中，点击按钮后可能需要等待特定的 API 请求完成。允许 AI 等待某个 XHR/Fetch
+         请求结束，可以极大地提高自动化的成功率。
+   * 多标签页协同管理:
+       * 特性: browser_close_tab, browser_new_tab, browser_switch_context。
+       * 理由: 处理跨站跳转或多任务并行场景。
+   * 会话导出与复用:
+       * 特性: browser_export_session / browser_import_session。
+       * 理由: 允许用户将当前浏览器的 Cookie 和 LocalStorage 加密导出，并在其他环境或以后快速恢复登录态。
+   * 安全白名单管理:
+       * 特性: 在插件 UI 中增加“受信任域名”列表。
+       * 理由: 对于内网开发环境或特定可信网站，允许跳过所有“高风险操作确认”弹窗，实现完全无人值守的自动化。

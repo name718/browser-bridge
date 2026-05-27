@@ -873,8 +873,13 @@ async function clickElement(params: Record<string, unknown>): Promise<{ clicked:
   if (params.__confirmedHighRisk !== true && await isHighRiskBlockingEnabled()) {
     await assertElementClickSafe(element);
   }
+  
+  await ensureElementActionable(element);
   element.scrollIntoView({ block: "center", inline: "center" });
-  await delay(30);
+  await delay(100); // Wait for scroll to settle
+  
+  showVisualRipple(element);
+  
   dispatchPointerEvent(element, "mouseover");
   dispatchPointerEvent(element, "mousemove");
   dispatchPointerEvent(element, "mousedown");
@@ -883,14 +888,119 @@ async function clickElement(params: Record<string, unknown>): Promise<{ clicked:
   return { clicked: true, element: toBrowserElement(element, 0) };
 }
 
-async function hoverElement(params: Record<string, unknown>): Promise<{ hovered: boolean; element: BrowserElement }> {
+async function typeIntoElement(params: Record<string, unknown>): Promise<{ typed: boolean; element: BrowserElement }> {
   const element = await findTargetWithRetry(params, { allowText: true });
+  const text = stringParam(params, "text") ?? "";
+  const replace = params.replace === true;
+
+  await ensureElementActionable(element);
   element.scrollIntoView({ block: "center", inline: "center" });
-  await delay(30);
-  dispatchPointerEvent(element, "mouseover");
-  dispatchPointerEvent(element, "mouseenter");
-  dispatchPointerEvent(element, "mousemove");
-  return { hovered: true, element: toBrowserElement(element, 0) };
+  await delay(100);
+
+  showVisualRipple(element, "#3b82f6"); // Blue ripple for typing
+
+  element.focus();
+  if (replace) {
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      element.value = "";
+    } else if (element.isContentEditable) {
+      element.textContent = "";
+    }
+  }
+
+  for (const char of text) {
+    const keyEventInit = {
+      key: char,
+      code: `Key${char.toUpperCase()}`,
+      bubbles: true
+    };
+    element.dispatchEvent(new KeyboardEvent("keydown", keyEventInit));
+    element.dispatchEvent(new KeyboardEvent("keypress", keyEventInit));
+    
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      element.value += char;
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+    } else if (element.isContentEditable) {
+      element.textContent += char;
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    
+    element.dispatchEvent(new KeyboardEvent("keyup", keyEventInit));
+    await delay(Math.random() * 20 + 10); // Human-like delay
+  }
+
+  element.dispatchEvent(new Event("change", { bubbles: true }));
+  return { typed: true, element: toBrowserElement(element, 0) };
+}
+
+async function ensureElementActionable(element: HTMLElement, timeoutMs: number = 3000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (!isVisible(element)) {
+      await delay(100);
+      continue;
+    }
+    
+    if (isDisabled(element)) {
+      await delay(100);
+      continue;
+    }
+
+    // Check if element is moving (stable)
+    const rect1 = element.getBoundingClientRect();
+    await delay(50);
+    const rect2 = element.getBoundingClientRect();
+    if (rect1.top !== rect2.top || rect1.left !== rect2.left) {
+      continue;
+    }
+
+    // Check if obscured (basic check)
+    const centerX = rect1.left + rect1.width / 2;
+    const centerY = rect1.top + rect1.height / 2;
+    const topEl = document.elementFromPoint(centerX, centerY);
+    if (topEl && !element.contains(topEl) && !topEl.contains(element)) {
+      // It might be obscured by an overlay, but we don't block too strictly here
+      // as elementFromPoint can be tricky with z-index and transparent layers.
+    }
+
+    return; // Ready!
+  }
+  throw new Error(`ACTION_TIMEOUT: 元素在 ${timeoutMs}ms 内未达到可交互状态`);
+}
+
+function showVisualRipple(element: HTMLElement, color: string = "#ef4444"): void {
+  const rect = element.getBoundingClientRect();
+  const ripple = document.createElement("div");
+  
+  ripple.style.cssText = `
+    position: fixed;
+    top: ${rect.top + rect.height / 2}px;
+    left: ${rect.left + rect.width / 2}px;
+    width: 2px;
+    height: 2px;
+    background: transparent;
+    border: 4px solid ${color};
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 2147483647;
+    transform: translate(-50%, -50%);
+    animation: bb-ripple-animation 0.6s ease-out forwards;
+  `;
+
+  if (!document.getElementById("bb-ripple-style")) {
+    const style = document.createElement("style");
+    style.id = "bb-ripple-style";
+    style.textContent = `
+      @keyframes bb-ripple-animation {
+        0% { width: 0; height: 0; opacity: 1; border-width: 4px; }
+        100% { width: 100px; height: 100px; opacity: 0; border-width: 1px; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  document.body.appendChild(ripple);
+  setTimeout(() => ripple.remove(), 600);
 }
 
 async function assertElementClickSafe(element: HTMLElement): Promise<void> {
@@ -1010,16 +1120,6 @@ async function isHighRiskBlockingEnabled(): Promise<boolean> {
     : true;
 }
 
-async function typeIntoElement(params: Record<string, unknown>): Promise<{ typed: boolean; element: BrowserElement }> {
-  const element = await findTargetWithRetry(params, { allowText: false });
-  const text = stringParam(params, "text");
-  if (!text) {
-    throw new Error("INVALID_PARAMS: text 参数必填");
-  }
-  setElementValue(element, text, params.replace === true);
-  return { typed: true, element: toBrowserElement(element, 0) };
-}
-
 async function fillForm(params: Record<string, unknown>): Promise<{
   filled: boolean;
   fields: Array<{ index: number; ok: boolean; element?: BrowserElement; error?: string }>;
@@ -1033,28 +1133,28 @@ async function fillForm(params: Record<string, unknown>): Promise<{
   }
 
   const results = [];
-  const timeoutMs = numberParam(params, "timeoutMs");
   for (const [index, field] of fields.entries()) {
     if (!isRecord(field) || typeof field.value !== "string") {
       results.push({ index, ok: false, error: "字段必须包含 value" });
       continue;
     }
     try {
-      const element = await findTargetWithRetry(field, { allowText: false, timeoutMs });
-      setElementValue(element, field.value, field.replace !== false);
-      results.push({ index, ok: true, element: toBrowserElement(element, index) });
+      const result = await typeIntoElement({
+        ...field,
+        text: field.value,
+        replace: field.replace !== false
+      });
+      results.push({ index, ok: true, element: result.element });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       results.push({ index, ok: false, error: message });
     }
   }
 
-  const failed = results.find((result) => !result.ok);
-  if (failed) {
-    throw new Error(`ELEMENT_NOT_FOUND: 表单第 ${failed.index + 1} 项填写失败：${failed.error}`);
-  }
-
-  return { filled: true, fields: results };
+  return {
+    filled: results.every((r) => r.ok),
+    fields: results
+  };
 }
 
 async function clearElement(params: Record<string, unknown>): Promise<{ cleared: boolean; element: BrowserElement }> {
