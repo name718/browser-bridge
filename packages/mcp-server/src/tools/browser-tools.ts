@@ -281,6 +281,23 @@ export type BrowserToolDefinition = {
 export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefinition[] {
   return [
     {
+      name: "browser_console_monitor",
+      description: "启动控制台监听，捕获指定时间内的所有 console 日志（log, warn, error）和未捕获的异常。这对于调试页面报错或观察交互产生的日志非常有用。durationMs 默认为 5000ms。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        durationMs: { type: "number" }
+      }),
+      handler: async (args) => {
+        const parsed = optionalTabId.extend({
+          durationMs: z.number().int().positive().optional()
+        }).parse(args ?? {});
+        return bridge.call("browser_console_monitor", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: (parsed.durationMs ?? 5000) + 2000
+        });
+      }
+    },
+    {
       name: "browser_status",
       description: "返回 Chrome 插件是否已连接到本地浏览器桥接服务。",
       inputSchema: schema({}),

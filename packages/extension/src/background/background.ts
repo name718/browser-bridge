@@ -108,6 +108,8 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return getAXTree(request);
     case "browser_wait_for_request":
       return waitForNetworkRequest(request);
+    case "browser_console_monitor":
+      return monitorConsole(request);
     case "browser_get_audit_log":
       return getAuditLog(typeof request.params?.limit === "number" ? request.params.limit : 20);
     case "browser_run_steps":
@@ -769,6 +771,67 @@ async function waitForNetworkRequest(request: BridgeRequest): Promise<Record<str
 
     chrome.webRequest.onCompleted.addListener(listener, { urls: ["<all_urls>"], tabId });
   });
+}
+
+async function monitorConsole(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const durationMs = typeof params.durationMs === "number" ? Math.max(params.durationMs, 100) : 5000;
+  
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+
+  const tab = await chrome.tabs.get(tabId);
+  await assertUrlAllowed(tab.url);
+
+  const debuggee = { tabId };
+  const logs: any[] = [];
+
+  const onEvent = (source: chrome.debugger.Debuggee, method: string, params: any) => {
+    if (source.tabId !== tabId) return;
+    
+    if (method === "Runtime.consoleAPICalled") {
+      logs.push({
+        type: params.type,
+        timestamp: Date.now(),
+        args: params.args.map((a: any) => a.value || a.description || "[complex object]")
+      });
+    } else if (method === "Runtime.exceptionThrown") {
+      logs.push({
+        type: "error",
+        timestamp: params.timestamp,
+        exception: params.exceptionDetails.exception?.description || params.exceptionDetails.text
+      });
+    }
+  };
+
+  try {
+    await chrome.debugger.attach(debuggee, "1.3");
+    chrome.debugger.onEvent.addListener(onEvent);
+    await chrome.debugger.sendCommand(debuggee, "Runtime.enable", {});
+
+    await delay(durationMs);
+
+    await appendAuditLog({ tool: "browser_console_monitor", url: tab.url, ok: true });
+    return {
+      tabId,
+      url: tab.url,
+      title: tab.title,
+      durationMs,
+      logs
+    };
+  } catch (error) {
+    await appendAuditLog({
+      tool: "browser_console_monitor",
+      url: tab.url,
+      ok: false,
+      errorCode: error instanceof Error ? error.message.split(":", 1)[0] : "INTERNAL_ERROR"
+    });
+    throw error;
+  } finally {
+    chrome.debugger.onEvent.removeListener(onEvent);
+    try { chrome.debugger.detach(debuggee); } catch { /* ignore */ }
+  }
 }
 
 async function executeCdp(request: BridgeRequest): Promise<Record<string, unknown>> {

@@ -28,6 +28,7 @@ export type BridgeTool =
   | "browser_wait_for"
   | "browser_get_ax_tree"
   | "browser_wait_for_request"
+  | "browser_console_monitor"
   | "browser_run_steps"
   | "browser_pdf"
   | "browser_save_pdf"
