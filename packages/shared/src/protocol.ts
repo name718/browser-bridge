@@ -40,7 +40,12 @@ export type BridgeTool =
   | "browser_cdp"
   | "browser_cdp_session"
   | "browser_responsive"
-  | "browser_network_analysis";
+  | "browser_network_analysis"
+  | "browser_route"
+  | "browser_export_session"
+  | "browser_import_session"
+  | "browser_close_tab"
+  | "browser_new_tab";
 
 export type BridgeRequest = {
   id: string;

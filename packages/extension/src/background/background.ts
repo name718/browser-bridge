@@ -136,6 +136,16 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return captureResponsive(request);
     case "browser_network_analysis":
       return runNetworkAnalysis(request);
+    case "browser_route":
+      return browserRoute(request);
+    case "browser_export_session":
+      return exportSession(request);
+    case "browser_import_session":
+      return importSession(request);
+    case "browser_close_tab":
+      return closeTab(request);
+    case "browser_new_tab":
+      return newTab(request);
     case "browser_screenshot":
     case "browser_click":
     case "browser_find_and_click":
@@ -1407,6 +1417,179 @@ async function runNetworkAnalysis(request: BridgeRequest): Promise<Record<string
     chrome.debugger.onEvent.removeListener(listener);
     try { chrome.debugger.detach(debuggee); } catch { /* ignore */ }
   }
+}
+
+async function browserRoute(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const urlPattern = typeof params.urlPattern === "string" ? params.urlPattern : "";
+  if (!urlPattern) throw new Error("INVALID_PARAMS: urlPattern 参数必填");
+
+  const responseCode = typeof params.responseCode === "number" ? params.responseCode : 200;
+  const responseBody = typeof params.responseBody === "string" ? params.responseBody : "";
+  const contentType = typeof params.contentType === "string" ? params.contentType : "application/json";
+  const headers = isRecord(params.headers) ? params.headers : {};
+  const durationMs = typeof params.durationMs === "number" ? Math.max(params.durationMs, 100) : 10000;
+
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+
+  const tab = await chrome.tabs.get(tabId);
+  await assertUrlAllowed(tab.url);
+
+  const debuggee = { tabId };
+
+  const onEvent = async (source: chrome.debugger.Debuggee, method: string, eventParams: any) => {
+    if (source.tabId !== tabId) return;
+    if (method === "Fetch.requestPaused") {
+      const { requestId, request: interceptedRequest } = eventParams;
+      if (interceptedRequest.url.includes(urlPattern)) {
+        const responseHeaders = Object.entries(headers).map(([name, value]) => ({
+          name,
+          value: String(value)
+        }));
+        
+        // Add Content-Type if not present
+        if (!responseHeaders.find(h => h.name.toLowerCase() === "content-type")) {
+          responseHeaders.push({ name: "Content-Type", value: contentType });
+        }
+
+        await chrome.debugger.sendCommand(debuggee, "Fetch.fulfillRequest", {
+          requestId,
+          responseCode,
+          responseHeaders,
+          body: stringToBase64(responseBody)
+        });
+      } else {
+        await chrome.debugger.sendCommand(debuggee, "Fetch.continueRequest", { requestId });
+      }
+    }
+  };
+
+  try {
+    await chrome.debugger.attach(debuggee, "1.3");
+    chrome.debugger.onEvent.addListener(onEvent);
+    await chrome.debugger.sendCommand(debuggee, "Fetch.enable", {
+      patterns: [{ urlPattern: "*", requestStage: "Request" }]
+    });
+
+    await delay(durationMs);
+
+    await appendAuditLog({ tool: "browser_route", url: tab.url, ok: true });
+    return { ok: true, urlPattern, durationMs };
+  } catch (error) {
+    await appendAuditLog({
+      tool: "browser_route",
+      url: tab.url,
+      ok: false,
+      errorCode: error instanceof Error ? error.message.split(":", 1)[0] : "INTERNAL_ERROR"
+    });
+    throw error;
+  } finally {
+    chrome.debugger.onEvent.removeListener(onEvent);
+    try {
+      await chrome.debugger.sendCommand(debuggee, "Fetch.disable", {});
+      await chrome.debugger.detach(debuggee);
+    } catch { /* ignore */ }
+  }
+}
+
+async function exportSession(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+
+  const tab = await chrome.tabs.get(tabId);
+  const url = new URL(tab.url || "");
+  const domain = params.domain && typeof params.domain === "string" ? params.domain : url.hostname;
+
+  // Get Cookies
+  const cookies = await chrome.cookies.getAll({ domain });
+
+  // Get LocalStorage
+  const [{ result: localStorage }] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => ({ ...window.localStorage })
+  });
+
+  const sessionData = JSON.stringify({
+    domain,
+    cookies,
+    localStorage,
+    exportedAt: new Date().toISOString()
+  });
+
+  await appendAuditLog({ tool: "browser_export_session", url: tab.url, ok: true });
+
+  return {
+    domain,
+    sessionData: btoa(unescape(encodeURIComponent(sessionData)))
+  };
+}
+
+async function importSession(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const sessionDataRaw = typeof params.sessionData === "string" ? params.sessionData : "";
+  if (!sessionDataRaw) throw new Error("INVALID_PARAMS: sessionData 参数必填");
+
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+
+  const tab = await chrome.tabs.get(tabId);
+  const sessionData = JSON.parse(decodeURIComponent(escape(atob(sessionDataRaw))));
+
+  // Restore Cookies
+  if (Array.isArray(sessionData.cookies)) {
+    for (const cookie of sessionData.cookies) {
+      const { hostOnly, session, ...cookieDetails } = cookie;
+      const protocol = cookie.secure ? "https:" : "http:";
+      const cookieUrl = `${protocol}//${cookie.domain.startsWith(".") ? cookie.domain.slice(1) : cookie.domain}${cookie.path}`;
+      await chrome.cookies.set({
+        ...cookieDetails,
+        url: cookieUrl
+      });
+    }
+  }
+
+  // Restore LocalStorage
+  if (sessionData.localStorage && typeof sessionData.localStorage === "object") {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (data) => {
+        Object.entries(data).forEach(([key, value]) => {
+          window.localStorage.setItem(key, String(value));
+        });
+      },
+      args: [sessionData.localStorage]
+    });
+  }
+
+  await appendAuditLog({ tool: "browser_import_session", url: tab.url, ok: true });
+
+  return { ok: true, domain: sessionData.domain };
+}
+
+async function closeTab(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+
+  await chrome.tabs.remove(tabId);
+  await appendAuditLog({ tool: "browser_close_tab", ok: true });
+  return { ok: true, tabId };
+}
+
+async function newTab(request: BridgeRequest): Promise<BrowserTab> {
+  const params = isRecord(request.params) ? request.params : {};
+  const url = typeof params.url === "string" ? params.url : undefined;
+  if (url) await assertUrlAllowed(url);
+  
+  const tab = await chrome.tabs.create({ url, active: true });
+  await appendAuditLog({ tool: "browser_new_tab", url: tab.url, ok: true });
+  return normalizeTab(tab);
 }
 
 async function handleCdpInput(message: any): Promise<any> {

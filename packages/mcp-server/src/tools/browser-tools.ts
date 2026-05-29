@@ -1027,6 +1027,83 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
           timeoutMs: parsed.timeoutMs
         });
       }
+    },
+    {
+      name: "browser_route",
+      description: "声明式网络路由。支持拦截匹配指定模式的请求，并返回自定义的响应码、响应体和 Header。常用于 Mock 接口或模拟异常场景。支持一次性或持续拦截。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        urlPattern: { type: "string" },
+        responseCode: { type: "number" },
+        responseBody: { type: "string" },
+        contentType: { type: "string" },
+        headers: { type: "object" },
+        durationMs: { type: "number" }
+      }, ["urlPattern"]),
+      handler: async (args) => {
+        const parsed = optionalTabId.extend({
+          urlPattern: z.string().min(1),
+          responseCode: z.number().int().positive().optional(),
+          responseBody: z.string().optional(),
+          contentType: z.string().optional(),
+          headers: z.record(z.string()).optional(),
+          durationMs: z.number().int().positive().optional()
+        }).parse(args ?? {});
+        return bridge.call("browser_route", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: (parsed.durationMs ?? 10000) + 2000
+        });
+      }
+    },
+    {
+      name: "browser_export_session",
+      description: "导出当前浏览器的会话数据，包括指定域名的 Cookies 和 LocalStorage。返回加密（或 base64）的 JSON 字符串，可用于后续恢复登录态。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        domain: { type: "string" }
+      }),
+      handler: async (args) => {
+        const parsed = optionalTabId.extend({
+          domain: z.string().optional()
+        }).parse(args ?? {});
+        return bridge.call("browser_export_session", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_import_session",
+      description: "导入会话数据以恢复登录态。接收由 browser_export_session 生成的数据字符串。注意：导入后可能需要刷新页面生效。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        sessionData: { type: "string" }
+      }, ["sessionData"]),
+      handler: async (args) => {
+        const parsed = optionalTabId.extend({
+          sessionData: z.string().min(1)
+        }).parse(args ?? {});
+        return bridge.call("browser_import_session", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_close_tab",
+      description: "关闭指定的 Chrome 标签页。如果不提供 tabId，则关闭当前活动标签页。",
+      inputSchema: schema({
+        tabId: { type: "number" }
+      }),
+      handler: async (args) => {
+        const parsed = optionalTabId.parse(args ?? {});
+        return bridge.call("browser_close_tab", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_new_tab",
+      description: "创建一个新的空白标签页或打开指定 URL 的标签页。",
+      inputSchema: schema({
+        url: { type: "string" }
+      }),
+      handler: async (args) => {
+        const parsed = z.object({ url: z.string().url().optional() }).parse(args ?? {});
+        return bridge.call("browser_new_tab", parsed);
+      }
     }
   ];
 }
