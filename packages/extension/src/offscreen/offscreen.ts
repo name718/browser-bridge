@@ -125,7 +125,8 @@ async function handleSocketMessage(raw: string): Promise<void> {
 
   const request = envelope.payload as BridgeRequest;
   const response = await sendRequestToBackground(request);
-  socket?.send(JSON.stringify({ kind: "response", payload: response }));
+  const responsePayload = JSON.stringify({ kind: "response", payload: response });
+  socket?.send(responsePayload);
 }
 
 async function sendRequestToBackground(request: BridgeRequest): Promise<BridgeResponse> {

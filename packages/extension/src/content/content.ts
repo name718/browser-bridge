@@ -51,6 +51,8 @@ const HIGH_RISK_TEXT_PATTERNS = [
   /拒绝/
 ];
 
+let activeOperations = 0;
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "browser_bridge_ping") {
     sendResponse({ ok: true });
@@ -66,10 +68,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return false;
   }
 
-  void handleRequest(message.request as BridgeRequest)
-    .then((data) => sendResponse({ ok: true, data }))
+  const request = message.request as BridgeRequest;
+  console.log(`[BrowserBridge] 收到请求: ${request.tool}`, request.params);
+  
+  activeOperations++;
+  updateOverlay(request.tool);
+
+  void handleRequest(request)
+    .then((data) => {
+      console.log(`[BrowserBridge] 请求成功: ${request.tool}`);
+      sendResponse({ ok: true, data });
+    })
     .catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
+      console.error(`[BrowserBridge] 请求失败: ${request.tool}`, message);
       const [code, detail] = message.includes(": ")
         ? message.split(/: (.*)/s, 2)
         : ["INTERNAL_ERROR", message];
@@ -80,9 +92,166 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           message: detail || message
         }
       });
+    })
+    .finally(() => {
+      activeOperations--;
+      updateOverlay();
     });
   return true;
 });
+
+function updateOverlay(tool?: string) {
+  if (activeOperations > 0) {
+    showSciFiOverlay(tool);
+  } else {
+    hideSciFiOverlay();
+  }
+}
+
+function showSciFiOverlay(tool?: string) {
+  let overlay = document.getElementById("browser-bridge-agent-overlay");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "browser-bridge-agent-overlay";
+    overlay.style.cssText = `
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(0, 20, 40, 0.15);
+      pointer-events: none;
+      z-index: 2147483646;
+      border: 4px double rgba(0, 255, 255, 0.3);
+      box-sizing: border-box;
+      box-shadow: inset 0 0 100px rgba(0, 255, 255, 0.1);
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      padding: 30px;
+    `;
+
+    const scanLine = document.createElement("div");
+    scanLine.style.cssText = `
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 2px;
+      background: rgba(0, 255, 255, 0.5);
+      box-shadow: 0 0 10px rgba(0, 255, 255, 0.8);
+      animation: bb-scan 4s linear infinite;
+    `;
+
+    const container = document.createElement("div");
+    container.style.cssText = `
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 10px;
+    `;
+
+    const statusText = document.createElement("div");
+    statusText.id = "bb-status-text";
+    statusText.style.cssText = `
+      color: #00ffff;
+      font-size: 16px;
+      font-weight: bold;
+      text-shadow: 0 0 8px #00ffff;
+      background: rgba(0, 40, 80, 0.85);
+      padding: 8px 16px;
+      border-radius: 4px;
+      border-right: 4px solid #00ffff;
+      letter-spacing: 1px;
+      animation: bb-pulse 1.5s ease-in-out infinite;
+    `;
+    statusText.innerText = "AGENT ACTIVE";
+
+    const logContainer = document.createElement("div");
+    logContainer.id = "bb-log-container";
+    logContainer.style.cssText = `
+      color: rgba(0, 255, 255, 0.8);
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 12px;
+      background: rgba(0, 20, 40, 0.7);
+      padding: 10px;
+      border-radius: 4px;
+      max-width: 300px;
+      text-align: right;
+      border-right: 2px solid rgba(0, 255, 255, 0.4);
+    `;
+
+    const corners = ["top-left", "top-right", "bottom-left", "bottom-right"];
+    corners.forEach(corner => {
+      const el = document.createElement("div");
+      el.style.cssText = `
+        position: absolute;
+        width: 40px;
+        height: 40px;
+        border-color: #00ffff;
+        border-style: solid;
+        border-width: 0;
+        ${corner.includes("top") ? "top: 15px;" : "bottom: 15px;"}
+        ${corner.includes("left") ? "left: 15px;" : "right: 15px;"}
+        ${corner.includes("top") ? "border-top-width: 2px;" : "border-bottom-width: 2px;"}
+        ${corner.includes("left") ? "border-left-width: 2px;" : "border-right-width: 2px;"}
+        opacity: 0.6;
+      `;
+      overlay?.appendChild(el);
+    });
+
+    if (!document.getElementById("bb-overlay-style")) {
+      const style = document.createElement("style");
+      style.id = "bb-overlay-style";
+      style.textContent = `
+        @keyframes bb-scan {
+          0% { top: -10%; }
+          100% { top: 110%; }
+        }
+        @keyframes bb-pulse {
+          0%, 100% { opacity: 1; filter: brightness(1.2); }
+          50% { opacity: 0.8; filter: brightness(0.8); }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    container.appendChild(statusText);
+    container.appendChild(logContainer);
+    overlay.appendChild(scanLine);
+    overlay.appendChild(container);
+    document.documentElement.appendChild(overlay);
+  } else {
+    overlay.style.display = "flex";
+  }
+
+  if (tool) {
+    const logContainer = document.getElementById("bb-log-container");
+    if (logContainer) {
+      const entry = document.createElement("div");
+      entry.innerText = `> ${tool}`;
+      logContainer.appendChild(entry);
+      if (logContainer.childNodes.length > 5) {
+        logContainer.removeChild(logContainer.firstChild!);
+      }
+    }
+    const statusText = document.getElementById("bb-status-text");
+    if (statusText) {
+      statusText.innerText = `AGENT: ${tool.toUpperCase().replace("BROWSER_", "")}`;
+    }
+  }
+}
+
+function hideSciFiOverlay() {
+  const overlay = document.getElementById("browser-bridge-agent-overlay");
+  if (overlay) {
+    overlay.style.display = "none";
+    const logContainer = document.getElementById("bb-log-container");
+    if (logContainer) logContainer.innerHTML = "";
+  }
+}
 
 async function handleRequest(request: BridgeRequest): Promise<unknown> {
   switch (request.tool) {
