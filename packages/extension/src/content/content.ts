@@ -52,9 +52,36 @@ const HIGH_RISK_TEXT_PATTERNS = [
 ];
 
 let activeOperations = 0;
+const recentLogs: Array<{ type: string; message: string }> = [];
+
+// Capture recent console logs for diagnostics
+const originalConsoleError = console.error;
+const originalConsoleWarn = console.warn;
+console.error = (...args) => {
+  recentLogs.push({ type: "error", message: args.join(" ") });
+  if (recentLogs.length > 20) recentLogs.shift();
+  originalConsoleError.apply(console, args);
+};
+console.warn = (...args) => {
+  recentLogs.push({ type: "warn", message: args.join(" ") });
+  if (recentLogs.length > 20) recentLogs.shift();
+  originalConsoleWarn.apply(console, args);
+};
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "browser_bridge_ping") {
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === "browser_bridge_draw_overlay") {
+    drawVisualOverlay();
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === "browser_bridge_remove_overlay") {
+    removeVisualOverlay();
     sendResponse({ ok: true });
     return true;
   }
@@ -85,11 +112,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       const [code, detail] = message.includes(": ")
         ? message.split(/: (.*)/s, 2)
         : ["INTERNAL_ERROR", message];
+      
+      // Enrich error with diagnostics
+      const diagnostics = getDiagnostics(request);
+      
       sendResponse({
         ok: false,
         error: {
           code,
-          message: detail || message
+          message: detail || message,
+          diagnostics
         }
       });
     })
@@ -99,6 +131,90 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     });
   return true;
 });
+
+function getDiagnostics(request: BridgeRequest): Record<string, unknown> {
+  const diagnostics: Record<string, unknown> = {
+    url: location.href,
+    recentLogs: [...recentLogs]
+  };
+
+  const params = request.params ?? {};
+  const elementId = String(params.elementId ?? "");
+  const selector = String(params.selector ?? "");
+
+  if (elementId) {
+    const el = document.querySelector(`[${ELEMENT_ATTR}="${cssEscape(elementId)}"]`);
+    if (el) {
+      diagnostics.htmlSnippet = el.outerHTML.slice(0, 1000);
+    }
+  } else if (selector) {
+    try {
+      const el = document.querySelector(selector);
+      if (el) {
+        diagnostics.htmlSnippet = el.outerHTML.slice(0, 1000);
+      }
+    } catch { /* ignore */ }
+  }
+
+  return diagnostics;
+}
+
+function drawVisualOverlay(): void {
+  removeVisualOverlay();
+  const overlay = document.createElement("div");
+  overlay.id = "browser-bridge-visual-mapping";
+  overlay.style.cssText = "position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2147483646;";
+  document.body.appendChild(overlay);
+
+  const elements = getActionableElements({ visibleOnly: true, viewportOnly: true });
+  elements.forEach((el, index) => {
+    const rect = el.getBoundingClientRect();
+    const box = document.createElement("div");
+    const id = index + 1;
+    
+    // Assign a temporary ID attribute so Agent can reference it
+    el.setAttribute("data-bb-temp-id", String(id));
+    
+    box.style.cssText = `
+      position: fixed;
+      top: ${rect.top}px;
+      left: ${rect.left}px;
+      width: ${rect.width}px;
+      height: ${rect.height}px;
+      border: 2px solid #ef4444;
+      background: rgba(239, 68, 68, 0.1);
+      box-sizing: border-box;
+      pointer-events: none;
+    `;
+    
+    const label = document.createElement("div");
+    label.innerText = String(id);
+    label.style.cssText = `
+      position: absolute;
+      top: -20px;
+      left: 0;
+      background: #ef4444;
+      color: white;
+      font-size: 12px;
+      padding: 0 4px;
+      border-radius: 2px;
+      line-height: 18px;
+      white-space: nowrap;
+    `;
+    
+    box.appendChild(label);
+    overlay.appendChild(box);
+  });
+}
+
+function removeVisualOverlay(): void {
+  const overlay = document.getElementById("browser-bridge-visual-mapping");
+  if (overlay) overlay.remove();
+  
+  document.querySelectorAll("[data-bb-temp-id]").forEach(el => {
+    el.removeAttribute("data-bb-temp-id");
+  });
+}
 
 function updateOverlay(tool?: string) {
   if (activeOperations > 0) {
@@ -896,6 +1012,10 @@ function findTarget(params: Record<string, unknown>, options: { allowText?: bool
   let element: Element | null = null;
   if (elementId) {
     element = document.querySelector(`[${ELEMENT_ATTR}="${cssEscape(elementId)}"]`);
+    // Fallback to temp ID if not found and elementId looks like a number
+    if (!element && /^\d+$/.test(elementId)) {
+      element = document.querySelector(`[data-bb-temp-id="${cssEscape(elementId)}"]`);
+    }
   }
 
   // Playwright-style selector support
@@ -938,6 +1058,10 @@ function findTarget(params: Record<string, unknown>, options: { allowText?: bool
  */
 function resolveSelector(selector: string): HTMLElement | null {
   try {
+    // Support numeric ID directly from visual overlay
+    if (/^\d+$/.test(selector)) {
+      return document.querySelector(`[data-bb-temp-id="${cssEscape(selector)}"]`) as HTMLElement | null;
+    }
     if (selector.startsWith("text=")) {
       return findByText(selector.slice(5));
     }

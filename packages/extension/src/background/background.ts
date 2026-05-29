@@ -462,28 +462,45 @@ async function captureScreenshot(
   const params = isRecord(request.params) ? request.params : {};
   const requestedFormat = params.format === "jpeg" ? "jpeg" : "png";
   const quality = typeof params.quality === "number" ? params.quality : undefined;
-  if (params.mode === "cdp" || typeof params.scale === "number") {
-    return captureCdpScreenshot(tab, request);
+  const overlay = params.overlay === true;
+
+  if (overlay) {
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: "browser_bridge_draw_overlay" });
+      await delay(100); // Wait for overlay to render
+    } catch { /* ignore */ }
   }
 
-  await chrome.tabs.update(tab.id, { active: true });
-  if (tab.windowId) {
-    await chrome.windows.update(tab.windowId, { focused: true });
+  try {
+    if (params.mode === "cdp" || typeof params.scale === "number") {
+      return await captureCdpScreenshot(tab, request);
+    }
+
+    await chrome.tabs.update(tab.id, { active: true });
+    if (tab.windowId) {
+      await chrome.windows.update(tab.windowId, { focused: true });
+    }
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+      format: requestedFormat,
+      quality
+    });
+
+    await appendAuditLog({ tool: request.tool, url: tab.url, ok: true });
+
+    return {
+      tabId: tab.id,
+      url: tab.url,
+      title: tab.title,
+      mimeType: requestedFormat === "jpeg" ? "image/jpeg" : "image/png",
+      dataUrl
+    };
+  } finally {
+    if (overlay) {
+      try {
+        await chrome.tabs.sendMessage(tab.id, { type: "browser_bridge_remove_overlay" });
+      } catch { /* ignore */ }
+    }
   }
-  const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-    format: requestedFormat,
-    quality
-  });
-
-  await appendAuditLog({ tool: request.tool, url: tab.url, ok: true });
-
-  return {
-    tabId: tab.id,
-    url: tab.url,
-    title: tab.title,
-    mimeType: requestedFormat === "jpeg" ? "image/jpeg" : "image/png",
-    dataUrl
-  };
 }
 
 async function captureCdpScreenshot(
@@ -823,17 +840,28 @@ function simplifyAXTree(nodes: any[]): string {
     const name = node.name?.value || "";
     const value = node.value?.value || "";
     const description = node.description?.value || "";
-
-    // Ignore very generic containers with no info and no children
-    if (role === "GenericContainer" && !name && !value && !description && (!node.childIds || node.childIds.length === 0)) {
-      return "";
+    
+    // 更激进的过滤：忽略无意义的容器且无实质内容
+    const isGeneric = [
+      "GenericContainer", "Box", "Section", "WebArea", "RootWebArea", 
+      "none", "presentation", "group", "StaticText"
+    ].includes(role);
+    
+    if (isGeneric && !name && !value && !description) {
+      let childrenOutput = "";
+      if (node.childIds) {
+        for (const childId of node.childIds) {
+          childrenOutput += processNode(childId, depth); // 不增加深度，拉平层级
+        }
+      }
+      return childrenOutput;
     }
 
     const indent = "  ".repeat(depth);
     let line = `${indent}${role}`;
     if (name) line += ` "${name}"`;
-    if (value) line += ` value="${value}"`;
-    if (description) line += ` (${description})`;
+    if (value) line += ` val="${value}"`;
+    if (description) line += ` desc="${description}"`;
     line += ` [${nodeId}]\n`;
 
     let children = "";
