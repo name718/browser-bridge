@@ -962,7 +962,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
             properties: {
               action: {
                 type: "string",
-                enum: ["open", "activateTab", "click", "hover", "type", "fillForm", "clear", "scroll", "waitFor", "pressKey", "assertText", "getText", "pageModel", "snapshot", "screenshot", "sleep"]
+                enum: ["open", "activateTab", "click", "hover", "type", "fillForm", "clear", "scroll", "waitFor", "pressKey", "assertText", "getText", "pageModel", "snapshot", "screenshot", "pdf", "sleep"]
               },
               description: { type: "string" },
               tabId: { type: "number" },

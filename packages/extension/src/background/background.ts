@@ -22,6 +22,7 @@ let currentBridgeUrl = DEFAULT_BRIDGE_URL;
 let lastBridgeError = "";
 let offscreenCreation: Promise<void> | undefined;
 let recordedSteps: any[] = [];
+let isRecording = false;
 
 void ensureOffscreenDocument();
 setupKeepalive();
@@ -1661,15 +1662,17 @@ async function newTab(request: BridgeRequest): Promise<BrowserTab> {
 
 async function newContext(request: BridgeRequest): Promise<BrowserTab> {
   const params = isRecord(request.params) ? request.params : {};
-  const url = typeof params.url === "string" ? params.url : "about:blank";
-  await assertUrlAllowed(url);
+  const url = typeof params.url === "string" ? params.url : undefined;
+  if (url) {
+    await assertUrlAllowed(url);
+  }
 
   const isAllowed = await chrome.extension.isAllowedIncognitoAccess();
   if (!isAllowed) {
     throw new Error("PERMISSION_DENIED: 插件未被允许访问隐身模式。请在扩展程序页面开启“在隐身模式下启用”。");
   }
 
-  const window = await chrome.windows.create({ url, incognito: true });
+  const window = await chrome.windows.create({ url: url ?? "about:blank", incognito: true });
   const tab = window.tabs?.[0];
   if (!tab) throw new Error("INTERNAL_ERROR: 无法创建隐身窗口");
   

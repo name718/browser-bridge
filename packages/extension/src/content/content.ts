@@ -764,18 +764,18 @@ function getVisibleText(): string {
         lines.push(`\n${processTable(element as HTMLTableElement)}\n`);
       } else if (tagName === "p" || tagName === "div" || tagName === "section" || tagName === "article") {
         // Continue walking children but maybe add newlines for block elements
-        for (const child of node.childNodes) {
+        for (const child of Array.from(node.childNodes)) {
           walk(child);
         }
         lines.push("\n");
       } else if (tagName === "li") {
         lines.push("- ");
-        for (const child of node.childNodes) {
+        for (const child of Array.from(node.childNodes)) {
           walk(child);
         }
         lines.push("\n");
       } else {
-        for (const child of node.childNodes) {
+        for (const child of Array.from(node.childNodes)) {
           walk(child);
         }
       }
@@ -1307,11 +1307,30 @@ async function clickElement(params: Record<string, unknown>): Promise<{ clicked:
   return { clicked: true, element: toBrowserElement(element, 0) };
 }
 
+async function hoverElement(params: Record<string, unknown>): Promise<{ hovered: boolean; element: BrowserElement }> {
+  const element = await findTargetWithRetry(params, { allowText: true });
+
+  await ensureElementActionable(element);
+  element.scrollIntoView({ block: "center", inline: "center" });
+  await delay(150);
+
+  showVisualRipple(element);
+  dispatchPointerEvent(element, "mouseover");
+  dispatchPointerEvent(element, "mouseenter");
+  dispatchPointerEvent(element, "mousemove");
+  element.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, cancelable: true, view: window }));
+  element.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false, cancelable: true, view: window }));
+  element.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true, view: window }));
+
+  return { hovered: true, element: toBrowserElement(element, 0) };
+}
+
 async function typeIntoElement(params: Record<string, unknown>): Promise<{ typed: boolean; element: BrowserElement }> {
   const element = await findTargetWithRetry(params, { allowText: true });
   const text = stringParam(params, "text") ?? "";
   const replace = params.replace === true;
 
+  assertEditableElement(element);
   await ensureElementActionable(element);
   element.scrollIntoView({ block: "center", inline: "center" });
   await delay(150);
@@ -1871,6 +1890,27 @@ function getPlaceholder(element: HTMLElement): string | undefined {
     return element.placeholder || undefined;
   }
   return undefined;
+}
+
+function assertEditableElement(element: HTMLElement): void {
+  if (isEditableElement(element)) {
+    return;
+  }
+
+  throw new Error("ELEMENT_NOT_FOUND: 未找到可输入的表单控件");
+}
+
+function isEditableElement(element: HTMLElement): boolean {
+  if (element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+    return true;
+  }
+
+  if (element instanceof HTMLInputElement) {
+    const type = element.type.toLowerCase();
+    return !["button", "submit", "reset", "checkbox", "radio", "file", "image", "hidden"].includes(type);
+  }
+
+  return element.isContentEditable || element.getAttribute("role") === "textbox";
 }
 
 function inferRole(element: HTMLElement): string {
