@@ -40,7 +40,7 @@ Browser Bridge 需要同时安装 Chrome 插件和本地 MCP 服务。
 插件包下载地址：
 
 ```text
-https://github.com/name718/browser-bridge/raw/main/release/browser-bridge-extension-0.1.2.zip
+https://github.com/name718/browser-bridge/raw/main/release/browser-bridge-extension-0.3.0.zip
 ```
 
 下载后解压，在 Chrome 中打开 `chrome://extensions`，开启「开发者模式」，点击「加载已解压的扩展程序」，选择解压后的插件目录。
