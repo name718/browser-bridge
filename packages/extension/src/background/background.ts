@@ -55,6 +55,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     void handleBridgeRequest(message.request as BridgeRequest).then(sendResponse);
     return true;
   }
+  if (message?.type === "browser_bridge_cdp_input") {
+    void handleCdpInput(message).then(sendResponse);
+    return true;
+  }
   if (message?.type === "popup_save_security") {
     void chrome.storage.local.set(message.security ?? {}).then(() => {
       sendResponse({ ok: true });
@@ -1374,6 +1378,65 @@ async function runNetworkAnalysis(request: BridgeRequest): Promise<Record<string
   } finally {
     chrome.debugger.onEvent.removeListener(listener);
     try { chrome.debugger.detach(debuggee); } catch { /* ignore */ }
+  }
+}
+
+async function handleCdpInput(message: any): Promise<any> {
+  const { action, params, tabId: requestedTabId } = message;
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) return { ok: false, error: "TAB_NOT_FOUND" };
+  
+  const debuggee = { tabId };
+
+  try {
+    await chrome.debugger.attach(debuggee, "1.3");
+    
+    if (action === "click") {
+      const { x, y } = params;
+      // Simulate a full click sequence
+      await chrome.debugger.sendCommand(debuggee, "Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: Math.round(x),
+        y: Math.round(y),
+        button: "left",
+        clickCount: 1
+      });
+      await delay(50);
+      await chrome.debugger.sendCommand(debuggee, "Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: Math.round(x),
+        y: Math.round(y),
+        button: "left",
+        clickCount: 1
+      });
+    } else if (action === "type") {
+      const { text } = params;
+      for (const char of text) {
+        await chrome.debugger.sendCommand(debuggee, "Input.dispatchKeyEvent", {
+          type: "keyDown",
+          text: char,
+          unmodifiedText: char
+        });
+        await delay(20);
+        await chrome.debugger.sendCommand(debuggee, "Input.dispatchKeyEvent", {
+          type: "keyUp",
+          text: char,
+          unmodifiedText: char
+        });
+      }
+    }
+    
+    return { ok: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("Another debugger") || message.includes("already attached")) {
+      return { ok: false, error: "DEBUGGER_BUSY: 目标标签页已有 DevTools 打开" };
+    }
+    return { ok: false, error: message };
+  } finally {
+    try {
+      await chrome.debugger.detach(debuggee);
+    } catch { /* ignore */ }
   }
 }
 

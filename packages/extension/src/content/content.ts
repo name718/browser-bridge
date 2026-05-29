@@ -867,7 +867,7 @@ async function findTargetWithRetry(
   params: Record<string, unknown>,
   options: { allowText?: boolean; timeoutMs?: number } = {}
 ): Promise<HTMLElement> {
-  const timeoutMs = options.timeoutMs ?? numberParam(params, "timeoutMs") ?? 1200;
+  const timeoutMs = options.timeoutMs ?? numberParam(params, "timeoutMs") ?? 3000;
   const start = Date.now();
   let lastError: unknown;
 
@@ -876,7 +876,7 @@ async function findTargetWithRetry(
       return findTarget(params, options);
     } catch (error) {
       lastError = error;
-      await delay(80);
+      await delay(100);
     }
   }
 
@@ -897,9 +897,12 @@ function findTarget(params: Record<string, unknown>, options: { allowText?: bool
   if (elementId) {
     element = document.querySelector(`[${ELEMENT_ATTR}="${cssEscape(elementId)}"]`);
   }
+
+  // Playwright-style selector support
   if (!element && selector) {
-    element = document.querySelector(selector);
+    element = resolveSelector(selector);
   }
+
   if (!element && query) {
     element = findBestElement({ ...params, text: text ?? query });
   }
@@ -921,16 +924,57 @@ function findTarget(params: Record<string, unknown>, options: { allowText?: bool
   if (!element) {
     element = findBestElement(params);
   }
+
   if (!element || !(element instanceof HTMLElement)) {
     throw new Error("ELEMENT_NOT_FOUND: 未找到元素");
   }
-  if (!isVisible(element)) {
-    throw new Error("ELEMENT_NOT_VISIBLE: 元素不可见");
-  }
-  if (isDisabled(element)) {
-    throw new Error("ELEMENT_DISABLED: 元素已禁用");
-  }
+
   return element;
+}
+
+/**
+ * 解析 Playwright 风格的选择器
+ * 支持: text=, xpath=, role=, css=, id=, data-testid=
+ */
+function resolveSelector(selector: string): HTMLElement | null {
+  try {
+    if (selector.startsWith("text=")) {
+      return findByText(selector.slice(5));
+    }
+    if (selector.startsWith("xpath=")) {
+      const result = document.evaluate(
+        selector.slice(6),
+        document,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null
+      );
+      const node = result.singleNodeValue;
+      return node instanceof HTMLElement ? node : null;
+    }
+    if (selector.startsWith("role=")) {
+      // 简化版 role 选择器: role=button[name="Submit"]
+      const match = selector.match(/^role=([^\[]+)(?:\[name=(?:"([^"]+)"|'([^']+)')\])?$/);
+      if (match) {
+        const role = match[1];
+        const name = match[2] || match[3];
+        return findByRole(role, name);
+      }
+    }
+    if (selector.startsWith("id=")) {
+      return document.getElementById(selector.slice(3));
+    }
+    if (selector.startsWith("data-testid=")) {
+      return document.querySelector(`[data-testid="${cssEscape(selector.slice(12))}"]`) as HTMLElement | null;
+    }
+
+    // 默认作为 CSS 选择器
+    const cleanSelector = selector.startsWith("css=") ? selector.slice(4) : selector;
+    return document.querySelector(cleanSelector) as HTMLElement | null;
+  } catch (error) {
+    console.warn("[BrowserBridge] 选择器解析失败:", selector, error);
+    return null;
+  }
 }
 
 function findBestElement(params: Record<string, unknown>): HTMLElement | null {
@@ -1042,18 +1086,36 @@ async function clickElement(params: Record<string, unknown>): Promise<{ clicked:
   if (params.__confirmedHighRisk !== true && await isHighRiskBlockingEnabled()) {
     await assertElementClickSafe(element);
   }
-  
+
   await ensureElementActionable(element);
   element.scrollIntoView({ block: "center", inline: "center" });
-  await delay(100); // Wait for scroll to settle
-  
+  await delay(150); // Wait for scroll to settle
+
   showVisualRipple(element);
-  
+
+  // 首先尝试标准的事件分发
   dispatchPointerEvent(element, "mouseover");
   dispatchPointerEvent(element, "mousemove");
   dispatchPointerEvent(element, "mousedown");
+
+  // 某些复杂的按钮可能不响应标准的 .click()，我们这里执行它
   element.click();
+
   dispatchPointerEvent(element, "mouseup");
+
+  // 降级策略: 如果定义了 forceCdp 或标准点击可能无效，可以使用 CDP
+  if (params.forceCdp === true) {
+    const rect = element.getBoundingClientRect();
+    await chrome.runtime.sendMessage({
+      type: "browser_bridge_cdp_input",
+      action: "click",
+      params: {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2
+      }
+    });
+  }
+
   return { clicked: true, element: toBrowserElement(element, 0) };
 }
 
@@ -1064,7 +1126,7 @@ async function typeIntoElement(params: Record<string, unknown>): Promise<{ typed
 
   await ensureElementActionable(element);
   element.scrollIntoView({ block: "center", inline: "center" });
-  await delay(100);
+  await delay(150);
 
   showVisualRipple(element, "#3b82f6"); // Blue ripple for typing
 
@@ -1077,66 +1139,101 @@ async function typeIntoElement(params: Record<string, unknown>): Promise<{ typed
     }
   }
 
-  for (const char of text) {
-    const keyEventInit = {
-      key: char,
-      code: `Key${char.toUpperCase()}`,
-      bubbles: true
-    };
-    element.dispatchEvent(new KeyboardEvent("keydown", keyEventInit));
-    element.dispatchEvent(new KeyboardEvent("keypress", keyEventInit));
-    
-    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-      element.value += char;
-      element.dispatchEvent(new Event("input", { bubbles: true }));
-    } else if (element.isContentEditable) {
-      element.textContent += char;
-      element.dispatchEvent(new Event("input", { bubbles: true }));
+  if (params.forceCdp === true) {
+    await chrome.runtime.sendMessage({
+      type: "browser_bridge_cdp_input",
+      action: "type",
+      params: { text }
+    });
+  } else {
+    for (const char of text) {
+      const keyEventInit = {
+        key: char,
+        code: `Key${char.toUpperCase()}`,
+        bubbles: true
+      };
+      element.dispatchEvent(new KeyboardEvent("keydown", keyEventInit));
+      element.dispatchEvent(new KeyboardEvent("keypress", keyEventInit));
+
+      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+        element.value += char;
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+      } else if (element.isContentEditable) {
+        element.textContent += char;
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+
+      element.dispatchEvent(new KeyboardEvent("keyup", keyEventInit));
+      await delay(Math.random() * 20 + 10); // Human-like delay
     }
-    
-    element.dispatchEvent(new KeyboardEvent("keyup", keyEventInit));
-    await delay(Math.random() * 20 + 10); // Human-like delay
   }
 
   element.dispatchEvent(new Event("change", { bubbles: true }));
   return { typed: true, element: toBrowserElement(element, 0) };
 }
-
 async function ensureElementActionable(element: HTMLElement, timeoutMs: number = 3000): Promise<void> {
   const start = Date.now();
+  let lastRect: DOMRect | undefined;
+  let stableCount = 0;
+
   while (Date.now() - start < timeoutMs) {
     if (!isVisible(element)) {
-      await delay(100);
+      await delay(150);
       continue;
     }
-    
+
     if (isDisabled(element)) {
+      await delay(150);
+      continue;
+    }
+
+    // 稳定性检查 (Check if element is moving)
+    const currentRect = element.getBoundingClientRect();
+    if (lastRect &&
+        Math.abs(currentRect.top - lastRect.top) < 0.5 &&
+        Math.abs(currentRect.left - lastRect.left) < 0.5 &&
+        Math.abs(currentRect.width - lastRect.width) < 0.5 &&
+        Math.abs(currentRect.height - lastRect.height) < 0.5) {
+      stableCount++;
+    } else {
+      stableCount = 0;
+    }
+    lastRect = currentRect;
+
+    if (stableCount < 2) {
       await delay(100);
       continue;
     }
 
-    // Check if element is moving (stable)
-    const rect1 = element.getBoundingClientRect();
-    await delay(50);
-    const rect2 = element.getBoundingClientRect();
-    if (rect1.top !== rect2.top || rect1.left !== rect2.left) {
+    // 遮挡检查 (Obscuration check)
+    // 检查元素的中心点或四个角是否至少有一个是可点击的
+    const points = [
+      { x: currentRect.left + currentRect.width / 2, y: currentRect.top + currentRect.height / 2 },
+      { x: currentRect.left + 2, y: currentRect.top + 2 },
+      { x: currentRect.right - 2, y: currentRect.top + 2 },
+      { x: currentRect.left + 2, y: currentRect.bottom - 2 },
+      { x: currentRect.right - 2, y: currentRect.bottom - 2 }
+    ];
+
+    let isObscured = true;
+    for (const point of points) {
+      const topEl = document.elementFromPoint(point.x, point.y);
+      if (topEl && (element === topEl || element.contains(topEl) || topEl.contains(element))) {
+        isObscured = false;
+        break;
+      }
+    }
+
+    if (isObscured) {
+      // 如果完全被遮挡，等待一会再试（可能是临时的 loading 层）
+      await delay(200);
       continue;
     }
 
-    // Check if obscured (basic check)
-    const centerX = rect1.left + rect1.width / 2;
-    const centerY = rect1.top + rect1.height / 2;
-    const topEl = document.elementFromPoint(centerX, centerY);
-    if (topEl && !element.contains(topEl) && !topEl.contains(element)) {
-      // It might be obscured by an overlay, but we don't block too strictly here
-      // as elementFromPoint can be tricky with z-index and transparent layers.
-    }
-
-    return; // Ready!
+    return; // 准备就绪
   }
-  throw new Error(`ACTION_TIMEOUT: 元素在 ${timeoutMs}ms 内未达到可交互状态`);
+  throw new Error(`ACTION_TIMEOUT: 元素在 ${timeoutMs}ms 内未达到可交互状态（可能被遮挡、正在移动或不可见）`);
 }
-
 function showVisualRipple(element: HTMLElement, color: string = "#ef4444"): void {
   const rect = element.getBoundingClientRect();
   const ripple = document.createElement("div");

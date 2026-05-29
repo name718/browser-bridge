@@ -34,12 +34,12 @@
 
 ## 3. 分阶段实施计划 (Implementation Plan)
 
-### 第一阶段：交互稳定性与定位增强 (稳定性打底)
+### 第一阶段：交互稳定性与定位增强 (稳定性打底) [DONE]
 - **目标**: 解决“点不准、点不到、找不到”的问题。
 - **任务**:
-    - [ ] 集成 Playwright 风格的选择器解析逻辑。
-    - [ ] 实现 `ensureElementActionable` 检查机制。
-    - [ ] 优化 `browser_click` 和 `browser_type` 的底层执行逻辑。
+    - [x] 集成 Playwright 风格的选择器解析逻辑。
+    - [x] 实现 `ensureElementActionable` 检查机制。
+    - [x] 优化 `browser_click` 和 `browser_type` 的底层执行逻辑。
 
 ### 第二阶段：AI 感知力与诊断提升 (体验升级)
 - **目标**: 让 AI “看”得更清，失败时能自己诊断。
