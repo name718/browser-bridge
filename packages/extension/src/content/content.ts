@@ -137,6 +137,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "agent_session_status") {
+    isStickyMask = Boolean(message.active);
+    updateOverlay(isStickyMask ? "SESSION_ACTIVE" : undefined);
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (message?.type !== "browser_bridge_request") {
     if (message?.type === "browser_bridge_confirm") {
       void showConfirmationOverlay(String(message.reason ?? "高风险操作"))
@@ -149,13 +156,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const request = message.request as BridgeRequest;
   console.log(`[BrowserBridge] 收到请求: ${request.tool}`, request.params);
   
-  if (request.tool === "browser_use") {
-    isStickyMask = request.params?.use !== false;
-    updateOverlay(isStickyMask ? "SESSION_ACTIVE" : undefined, request.params);
-    sendResponse({ ok: true, isStickyMask });
-    return true;
-  }
-
   activeOperations++;
   updateOverlay(request.tool, request.params);
 
@@ -188,6 +188,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       updateOverlay();
     });
   return true;
+});
+
+// Initialization: Query agent session status
+void chrome.runtime.sendMessage({ type: "get_agent_session_status" }).then((response) => {
+  if (response?.active !== undefined) {
+    isStickyMask = Boolean(response.active);
+    if (isStickyMask) updateOverlay("SESSION_ACTIVE");
+  }
 });
 
 function getDiagnostics(request: BridgeRequest): Record<string, unknown> {

@@ -23,6 +23,22 @@ let lastBridgeError = "";
 let offscreenCreation: Promise<void> | undefined;
 let recordedSteps: any[] = [];
 let isRecording = false;
+let isAgentSessionActive = false;
+
+async function broadcastAgentSessionStatus(active: boolean) {
+  isAgentSessionActive = active;
+  const tabs = await chrome.tabs.query({});
+  for (const tab of tabs) {
+    if (tab.id) {
+      chrome.tabs.sendMessage(tab.id, {
+        type: "agent_session_status",
+        active: isAgentSessionActive
+      }).catch(() => {
+        // Content script might not be injected
+      });
+    }
+  }
+}
 
 void ensureOffscreenDocument();
 setupKeepalive();
@@ -85,6 +101,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (recordedSteps.length > 100) recordedSteps.shift();
     return false;
   }
+  if (message?.type === "get_agent_session_status") {
+    sendResponse({ active: isAgentSessionActive });
+    return true;
+  }
   return false;
 });
 
@@ -129,8 +149,11 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
     case "browser_assert_text":
     case "browser_get_selected_text":
     case "browser_get_links":
-    case "browser_use":
       return sendToContentScript(request);
+    case "browser_use":
+      const use = request.params?.use !== false;
+      await broadcastAgentSessionStatus(use);
+      return { ok: true, isAgentSessionActive };
     case "browser_get_ax_tree":
       return getAXTree(request);
     case "browser_observe":
