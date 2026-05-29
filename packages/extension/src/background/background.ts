@@ -92,6 +92,8 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return listTabs();
     case "browser_open_url":
       return openUrl(String(request.params?.url ?? ""));
+    case "browser_open_incognito":
+      return openIncognito(String(request.params?.url ?? ""));
     case "browser_activate_tab":
       return activateTab(Number(request.params?.tabId));
     case "browser_get_page_text":
@@ -106,6 +108,10 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return sendToContentScript(request);
     case "browser_get_ax_tree":
       return getAXTree(request);
+    case "browser_observe":
+      return observePage(request);
+    case "browser_mock_network":
+      return mockNetwork(request);
     case "browser_wait_for_request":
       return waitForNetworkRequest(request);
     case "browser_console_monitor":
@@ -322,6 +328,25 @@ async function openUrl(url: string): Promise<BrowserTab> {
   }
   await assertUrlAllowed(url);
   const tab = await chrome.tabs.create({ url, active: true });
+  return normalizeTab(tab);
+}
+
+async function openIncognito(url: string): Promise<BrowserTab> {
+  if (!url) {
+    throw new Error("INVALID_PARAMS: url 参数必填");
+  }
+
+  const isAllowed = await chrome.extension.isAllowedIncognitoAccess();
+  if (!isAllowed) {
+    throw new Error("PERMISSION_DENIED: 插件未被允许访问隐身模式。请在 chrome://extensions 中开启“在隐身模式下启用”。");
+  }
+
+  await assertUrlAllowed(url);
+  const window = await chrome.windows.create({ url, incognito: true });
+  const tab = window.tabs?.[0];
+  if (!tab || tab.id === undefined) {
+    throw new Error("INTERNAL_ERROR: 无法创建隐身标签页");
+  }
   return normalizeTab(tab);
 }
 
@@ -735,8 +760,89 @@ async function getAXTree(request: BridgeRequest): Promise<Record<string, unknown
     });
     throw error;
   } finally {
-    try { chrome.debugger.detach(debuggee); } catch { /* ignore */ }
+    try {
+      chrome.debugger.detach(debuggee);
+    } catch {
+      /* ignore */
+    }
   }
+}
+
+async function observePage(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+
+  const tab = await chrome.tabs.get(tabId);
+  await assertUrlAllowed(tab.url);
+
+  const debuggee = { tabId };
+  try {
+    await chrome.debugger.attach(debuggee, "1.3");
+    const result = (await chrome.debugger.sendCommand(debuggee, "Accessibility.getFullAXTree", {})) as { nodes: any[] };
+    const simplified = simplifyAXTree(result.nodes);
+    await appendAuditLog({ tool: "browser_observe", url: tab.url, ok: true });
+    return {
+      tabId,
+      url: tab.url,
+      title: tab.title,
+      axTree: simplified
+    };
+  } catch (error) {
+    await appendAuditLog({
+      tool: "browser_observe",
+      url: tab.url,
+      ok: false,
+      errorCode: error instanceof Error ? error.message.split(":", 1)[0] : "INTERNAL_ERROR"
+    });
+    throw error;
+  } finally {
+    try {
+      chrome.debugger.detach(debuggee);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function simplifyAXTree(nodes: any[]): string {
+  if (!nodes || nodes.length === 0) return "";
+  const nodeMap = new Map();
+  nodes.forEach((n) => nodeMap.set(n.nodeId, n));
+
+  function processNode(nodeId: string, depth: number = 0): string {
+    const node = nodeMap.get(nodeId);
+    if (!node || node.ignored) return "";
+
+    const role = node.role?.value || "unknown";
+    const name = node.name?.value || "";
+    const value = node.value?.value || "";
+    const description = node.description?.value || "";
+
+    // Ignore very generic containers with no info and no children
+    if (role === "GenericContainer" && !name && !value && !description && (!node.childIds || node.childIds.length === 0)) {
+      return "";
+    }
+
+    const indent = "  ".repeat(depth);
+    let line = `${indent}${role}`;
+    if (name) line += ` "${name}"`;
+    if (value) line += ` value="${value}"`;
+    if (description) line += ` (${description})`;
+    line += ` [${nodeId}]\n`;
+
+    let children = "";
+    if (node.childIds) {
+      for (const childId of node.childIds) {
+        children += processNode(childId, depth + 1);
+      }
+    }
+
+    return line + children;
+  }
+
+  return processNode(nodes[0].nodeId);
 }
 
 async function waitForNetworkRequest(request: BridgeRequest): Promise<Record<string, unknown>> {
@@ -794,13 +900,16 @@ async function monitorConsole(request: BridgeRequest): Promise<Record<string, un
       logs.push({
         type: params.type,
         timestamp: Date.now(),
-        args: params.args.map((a: any) => a.value || a.description || "[complex object]")
+        args: params.args.map((a: any) => a.value || a.description || "[complex object]"),
+        stackTrace: params.stackTrace
       });
     } else if (method === "Runtime.exceptionThrown") {
       logs.push({
         type: "error",
         timestamp: params.timestamp,
-        exception: params.exceptionDetails.exception?.description || params.exceptionDetails.text
+        text: params.exceptionDetails.text,
+        exception: params.exceptionDetails.exception?.description || params.exceptionDetails.text,
+        stackTrace: params.exceptionDetails.stackTrace
       });
     }
   };
@@ -830,8 +939,91 @@ async function monitorConsole(request: BridgeRequest): Promise<Record<string, un
     throw error;
   } finally {
     chrome.debugger.onEvent.removeListener(onEvent);
-    try { chrome.debugger.detach(debuggee); } catch { /* ignore */ }
+    try {
+      await chrome.debugger.detach(debuggee);
+    } catch {
+      /* ignore */
+    }
   }
+}
+
+async function mockNetwork(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const urlPattern = typeof params.urlPattern === "string" ? params.urlPattern : "";
+  if (!urlPattern) throw new Error("INVALID_PARAMS: urlPattern 参数必填");
+
+  const responseCode = typeof params.responseCode === "number" ? params.responseCode : 200;
+  const responseBody = typeof params.responseBody === "string" ? params.responseBody : "";
+  const contentType = typeof params.contentType === "string" ? params.contentType : "application/json";
+  const durationMs = typeof params.durationMs === "number" ? Math.max(params.durationMs, 100) : 10000;
+
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+
+  const tab = await chrome.tabs.get(tabId);
+  await assertUrlAllowed(tab.url);
+
+  const debuggee = { tabId };
+
+  const onEvent = async (source: chrome.debugger.Debuggee, method: string, params: any) => {
+    if (source.tabId !== tabId) return;
+    if (method === "Fetch.requestPaused") {
+      const { requestId, request: interceptedRequest } = params;
+      if (interceptedRequest.url.includes(urlPattern)) {
+        await chrome.debugger.sendCommand(debuggee, "Fetch.fulfillRequest", {
+          requestId,
+          responseCode,
+          responseHeaders: [
+            { name: "Content-Type", value: contentType },
+            { name: "Access-Control-Allow-Origin", value: "*" }
+          ],
+          body: stringToBase64(responseBody)
+        });
+      } else {
+        await chrome.debugger.sendCommand(debuggee, "Fetch.continueRequest", { requestId });
+      }
+    }
+  };
+
+  try {
+    await chrome.debugger.attach(debuggee, "1.3");
+    chrome.debugger.onEvent.addListener(onEvent);
+    await chrome.debugger.sendCommand(debuggee, "Fetch.enable", {
+      patterns: [{ urlPattern: "*", requestStage: "Request" }]
+    });
+
+    await delay(durationMs);
+
+    await appendAuditLog({ tool: "browser_mock_network", url: tab.url, ok: true });
+    return { ok: true, urlPattern, durationMs };
+  } catch (error) {
+    await appendAuditLog({
+      tool: "browser_mock_network",
+      url: tab.url,
+      ok: false,
+      errorCode: error instanceof Error ? error.message.split(":", 1)[0] : "INTERNAL_ERROR"
+    });
+    throw error;
+  } finally {
+    chrome.debugger.onEvent.removeListener(onEvent);
+    try {
+      await chrome.debugger.sendCommand(debuggee, "Fetch.disable", {});
+      await chrome.debugger.detach(debuggee);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function stringToBase64(str: string): string {
+  const bytes = new TextEncoder().encode(str);
+  let binary = "";
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
 }
 
 async function executeCdp(request: BridgeRequest): Promise<Record<string, unknown>> {

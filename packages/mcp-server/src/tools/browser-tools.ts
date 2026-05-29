@@ -315,6 +315,42 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
       }
     },
     {
+      name: "browser_observe",
+      description: "【推荐】获取当前页面的简化无障碍树（Text-based AOM）。相比完整 AXTree，它以更直观的缩进文本形式返回，极大节省 Token，是 AI 观察页面结构的首选工具。",
+      inputSchema: schema({
+        tabId: { type: "number" }
+      }),
+      handler: async (args) => {
+        const parsed = optionalTabId.parse(args ?? {});
+        return bridge.call("browser_observe", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_mock_network",
+      description: "在指定时间内拦截并模拟特定的网络请求。支持设置 URL 匹配模式、响应码、响应体和内容类型。常用于模拟 API 报错或特定返回数据。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        urlPattern: { type: "string" },
+        responseCode: { type: "number" },
+        responseBody: { type: "string" },
+        contentType: { type: "string" },
+        durationMs: { type: "number" }
+      }, ["urlPattern"]),
+      handler: async (args) => {
+        const parsed = optionalTabId.extend({
+          urlPattern: z.string().min(1),
+          responseCode: z.number().int().positive().optional(),
+          responseBody: z.string().optional(),
+          contentType: z.string().optional(),
+          durationMs: z.number().int().positive().optional()
+        }).parse(args ?? {});
+        return bridge.call("browser_mock_network", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: (parsed.durationMs ?? 10000) + 2000
+        });
+      }
+    },
+    {
       name: "browser_wait_for_request",
       description: "等待符合特定模式（URL 或关键字）的网络请求完成。常用于单页应用（SPA）中等待点击按钮后的 API 数据回包。支持设置超时时间。",
       inputSchema: schema({
@@ -827,6 +863,12 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
       description: "在新的 Chrome 标签页中打开 URL。",
       inputSchema: schema({ url: { type: "string" } }, ["url"]),
       handler: async (args) => bridge.call("browser_open_url", openUrlSchema.parse(args ?? {}))
+    },
+    {
+      name: "browser_open_incognito",
+      description: "在新的 Chrome 隐身窗口中打开 URL。这可以用于测试未登录状态或干净的沙盒环境。注意：需要在插件管理页开启“在隐身模式下启用”。",
+      inputSchema: schema({ url: { type: "string" } }, ["url"]),
+      handler: async (args) => bridge.call("browser_open_incognito", openUrlSchema.parse(args ?? {}))
     },
     {
       name: "browser_activate_tab",

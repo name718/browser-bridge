@@ -235,6 +235,10 @@ export type TypeParams = {
   replace?: boolean;
 };
 
+export type OpenIncognitoParams = {
+  url?: string;
+};
+
 export type BrowserFormField = BrowserStepTarget & {
   value: string;
   replace?: boolean;
