@@ -22,10 +22,15 @@ let activated = false;
 const browserUseTool = {
   name: "browser_use",
   description:
-    "激活浏览器桥接 MCP 工具集。调用此工具后，所有 browser_* 工具才可正常使用。未激活时调用任何 browser_* 工具都会被拒绝。",
+    "激活或关闭浏览器桥接 MCP 工具集。当 use=true 时，会激活工具并打开 Sci-Fi 蒙层（作为 Agent 正在使用浏览器的标识）；当 use=false 时，会关闭蒙层。Agent 在开始一系列浏览器操作前必须先调用此工具 (use=true)，并在结束所有浏览器操作后再次调用 (use=false) 以关闭蒙层。蒙层不会立即消失，会有一定的平滑退出时间。",
   inputSchema: {
     type: "object",
-    properties: {},
+    properties: {
+      use: {
+        type: "boolean",
+        description: "是否正在使用浏览器。true 开启蒙层，false 关闭蒙层。"
+      }
+    },
     required: [],
     additionalProperties: false
   }
@@ -56,13 +61,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // browser_use 激活开关
   if (name === "browser_use") {
-    activated = true;
-    logger.info("browser-bridge activated by user");
+    const args = (request.params.arguments ?? {}) as { use?: boolean };
+    const use = args.use !== false; // 默认 true
+    activated = use;
+    
+    // 通知插件开启/关闭蒙层
+    let extensionResult = {};
+    try {
+      extensionResult = await bridge.call("browser_use", { use });
+    } catch (e) {
+      logger.warn("failed to send browser_use to extension", e);
+    }
+
+    logger.info("browser-bridge status changed", { activated: use });
     return {
       content: [
         {
           type: "text",
-          text: JSON.stringify({ activated: true, message: "浏览器桥接工具已激活，现在可以使用所有 browser_* 工具。" }, null, 2)
+          text: JSON.stringify({ 
+            activated: use, 
+            message: use ? "浏览器桥接工具已激活且蒙层已开启。" : "浏览器桥接工具已关闭且蒙层将平滑退出。",
+            extensionResult 
+          }, null, 2)
         }
       ]
     };

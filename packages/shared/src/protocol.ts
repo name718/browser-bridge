@@ -16,6 +16,7 @@ export type BridgeTool =
   | "browser_get_selected_text"
   | "browser_get_links"
   | "browser_get_audit_log"
+  | "browser_use"
   | "browser_screenshot"
   | "browser_save_screenshot"
   | "browser_click"

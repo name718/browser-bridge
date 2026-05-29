@@ -129,6 +129,7 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
     case "browser_assert_text":
     case "browser_get_selected_text":
     case "browser_get_links":
+    case "browser_use":
       return sendToContentScript(request);
     case "browser_get_ax_tree":
       return getAXTree(request);
