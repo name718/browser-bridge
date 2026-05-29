@@ -1104,6 +1104,36 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
         const parsed = z.object({ url: z.string().url().optional() }).parse(args ?? {});
         return bridge.call("browser_new_tab", parsed);
       }
+    },
+    {
+      name: "browser_new_context",
+      description: "开启一个新的隐私会话环境（隐身窗口）。这提供了一个干净的 Cookie 和存储环境，防止会话污染。",
+      inputSchema: schema({
+        url: { type: "string" }
+      }),
+      handler: async (args) => {
+        const parsed = z.object({ url: z.string().url().optional() }).parse(args ?? {});
+        return bridge.call("browser_new_context", parsed);
+      }
+    },
+    {
+      name: "browser_toggle_recording",
+      description: "开启或关闭用户操作录制。开启后，用户在浏览器中的点击和输入将被记录，可随后通过 browser_get_recorded_steps 获取。",
+      inputSchema: schema({
+        enabled: { type: "boolean" }
+      }, ["enabled"]),
+      handler: async (args) => {
+        const parsed = z.object({ enabled: z.boolean() }).parse(args ?? {});
+        return bridge.call("browser_toggle_recording", parsed);
+      }
+    },
+    {
+      name: "browser_get_recorded_steps",
+      description: "获取最近录制的用户操作步骤。返回 JSON 格式的步骤列表，可用于生成自动化脚本。",
+      inputSchema: schema({}),
+      handler: async () => {
+        return bridge.call("browser_get_recorded_steps", {});
+      }
     }
   ];
 }

@@ -21,6 +21,7 @@ let connected = false;
 let currentBridgeUrl = DEFAULT_BRIDGE_URL;
 let lastBridgeError = "";
 let offscreenCreation: Promise<void> | undefined;
+let recordedSteps: any[] = [];
 
 void ensureOffscreenDocument();
 setupKeepalive();
@@ -64,6 +65,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse({ ok: true });
     });
     return true;
+  }
+  if (message?.type === "popup_toggle_recording") {
+    void toggleRecording({
+      id: "popup",
+      tool: "browser_toggle_recording",
+      params: { enabled: message.enabled }
+    }).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (message?.type === "popup_clear_recording") {
+    recordedSteps = [];
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (message?.type === "browser_bridge_record_step") {
+    recordedSteps.push({ timestamp: Date.now(), ...message.step });
+    if (recordedSteps.length > 100) recordedSteps.shift();
+    return false;
   }
   return false;
 });
@@ -146,6 +165,12 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return closeTab(request);
     case "browser_new_tab":
       return newTab(request);
+    case "browser_new_context":
+      return newContext(request);
+    case "browser_toggle_recording":
+      return toggleRecording(request);
+    case "browser_get_recorded_steps":
+      return getRecordedSteps();
     case "browser_screenshot":
     case "browser_click":
     case "browser_find_and_click":
@@ -396,6 +421,42 @@ async function sendToContentScript(request: BridgeRequest): Promise<unknown> {
 
   try {
     await ensureContentScript(tabId);
+    
+    // 如果是搜索/操作类工具，主 frame 找不到时尝试其他 frame
+    const isSearchOrAct = [
+      "browser_click", "browser_type", "browser_hover", "browser_find", 
+      "browser_act", "browser_find_and_click", "browser_find_and_type", "browser_clear"
+    ].includes(request.tool);
+
+    if (isSearchOrAct) {
+      const frames = await chrome.webNavigation.getAllFrames({ tabId });
+      if (frames && frames.length > 1) {
+        for (const frame of frames) {
+          try {
+            const response = await chrome.tabs.sendMessage(tabId, {
+              type: "browser_bridge_request",
+              request: {
+                ...request,
+                tabId,
+                params: {
+                  ...(isRecord(request.params) ? request.params : {}),
+                  __confirmedHighRisk: confirmedHighRisk
+                }
+              }
+            }, { frameId: frame.frameId });
+
+            if (response?.ok) {
+              await appendAuditLog({ tool: request.tool, url: tab.url, ok: true });
+              return response.data;
+            }
+          } catch {
+            continue; 
+          }
+        }
+        throw new Error("ELEMENT_NOT_FOUND: 在所有 Frame 中均未找到目标元素");
+      }
+    }
+
     const response = await chrome.tabs.sendMessage(tabId, {
       type: "browser_bridge_request",
       request: {
@@ -406,7 +467,7 @@ async function sendToContentScript(request: BridgeRequest): Promise<unknown> {
           __confirmedHighRisk: confirmedHighRisk
         }
       }
-    });
+    }, { frameId: 0 });
 
     if (!response?.ok) {
       const code = response?.error?.code ?? "INTERNAL_ERROR";
@@ -709,6 +770,7 @@ async function evaluateScript(request: BridgeRequest): Promise<Record<string, un
 
   const requestedTabId = request.tabId ?? Number(params.tabId);
   const tabId = requestedTabId || (await getActiveTab()).id;
+  const frameId = typeof params.frameId === "number" ? params.frameId : undefined;
   if (!tabId) {
     throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
   }
@@ -721,8 +783,13 @@ async function evaluateScript(request: BridgeRequest): Promise<Record<string, un
   }
 
   try {
+    const target: chrome.scripting.InjectionTarget = { tabId };
+    if (frameId !== undefined) {
+      target.frameIds = [frameId];
+    }
+
     const results = await chrome.scripting.executeScript({
-      target: { tabId },
+      target,
       world: "MAIN",
       func: (expr: string) => {
         try {
@@ -1592,6 +1659,57 @@ async function newTab(request: BridgeRequest): Promise<BrowserTab> {
   return normalizeTab(tab);
 }
 
+async function newContext(request: BridgeRequest): Promise<BrowserTab> {
+  const params = isRecord(request.params) ? request.params : {};
+  const url = typeof params.url === "string" ? params.url : "about:blank";
+  await assertUrlAllowed(url);
+
+  const isAllowed = await chrome.extension.isAllowedIncognitoAccess();
+  if (!isAllowed) {
+    throw new Error("PERMISSION_DENIED: 插件未被允许访问隐身模式。请在扩展程序页面开启“在隐身模式下启用”。");
+  }
+
+  const window = await chrome.windows.create({ url, incognito: true });
+  const tab = window.tabs?.[0];
+  if (!tab) throw new Error("INTERNAL_ERROR: 无法创建隐身窗口");
+  
+  await appendAuditLog({ tool: "browser_new_context", url: tab.url, ok: true });
+  return normalizeTab(tab);
+}
+
+async function toggleRecording(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  isRecording = Boolean(params.enabled);
+  if (!isRecording) {
+    // Clear recorded steps when stopping? Or keep them? Let's keep for now.
+  } else {
+    recordedSteps = []; // Clear on start
+  }
+
+  // Notify all tabs
+  const tabs = await chrome.tabs.query({});
+  for (const tab of tabs) {
+    if (tab.id) {
+      try {
+        await chrome.tabs.sendMessage(tab.id, {
+          type: "browser_bridge_toggle_recording",
+          enabled: isRecording
+        }, { frameId: 0 }); // Usually enough to trigger in content script
+      } catch { /* ignore inactive tabs */ }
+    }
+  }
+
+  await appendAuditLog({ tool: "browser_toggle_recording", ok: true });
+  return { ok: true, isRecording };
+}
+
+async function getRecordedSteps(): Promise<Record<string, unknown>> {
+  const steps = [...recordedSteps];
+  // Optional: auto-stop after reading? No.
+  await appendAuditLog({ tool: "browser_get_recorded_steps", ok: true });
+  return { steps, count: steps.length };
+}
+
 async function handleCdpInput(message: any): Promise<any> {
   const { action, params, tabId: requestedTabId } = message;
   const tabId = requestedTabId || (await getActiveTab()).id;
@@ -1656,7 +1774,7 @@ async function ensureContentScript(tabId: number): Promise<void> {
     await chrome.tabs.sendMessage(tabId, { type: "browser_bridge_ping" });
   } catch {
     await chrome.scripting.executeScript({
-      target: { tabId },
+      target: { tabId, allFrames: true },
       files: ["content.js"]
     });
   }
@@ -1861,6 +1979,8 @@ async function getPopupStatus(): Promise<Record<string, unknown>> {
   return {
     connected,
     bridgeUrl: currentBridgeUrl,
+    isRecording,
+    recordedCount: recordedSteps.length,
     lastError: lastBridgeError,
     readyState: offscreenStatus.readyState,
     security,

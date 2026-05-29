@@ -53,6 +53,51 @@ const HIGH_RISK_TEXT_PATTERNS = [
 
 let activeOperations = 0;
 const recentLogs: Array<{ type: string; message: string }> = [];
+let isRecording = false;
+
+// Session Recording functionality
+document.addEventListener("click", (event) => {
+  if (!isRecording) return;
+  const target = event.target as HTMLElement;
+  if (!target) return;
+  
+  // Try to generate a selector or use text
+  const text = getElementText(target);
+  const selector = buildSelectorHint(target);
+  
+  chrome.runtime.sendMessage({
+    type: "browser_bridge_record_step",
+    step: {
+      action: "click",
+      text: text || undefined,
+      selector: text ? undefined : selector,
+      url: location.href
+    }
+  });
+}, true);
+
+document.addEventListener("change", (event) => {
+  if (!isRecording) return;
+  const target = event.target as HTMLElement;
+  if (!target) return;
+  
+  const value = getElementValue(target);
+  const placeholder = getPlaceholder(target);
+  const ariaLabel = target.getAttribute("aria-label");
+  const selector = buildSelectorHint(target);
+  
+  chrome.runtime.sendMessage({
+    type: "browser_bridge_record_step",
+    step: {
+      action: "type",
+      value,
+      placeholder: placeholder || undefined,
+      ariaLabel: ariaLabel || undefined,
+      selector: (!placeholder && !ariaLabel) ? selector : undefined,
+      url: location.href
+    }
+  });
+}, true);
 
 // Capture recent console logs for diagnostics
 const originalConsoleError = console.error;
@@ -82,6 +127,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "browser_bridge_remove_overlay") {
     removeVisualOverlay();
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === "browser_bridge_toggle_recording") {
+    isRecording = Boolean(message.enabled);
     sendResponse({ ok: true });
     return true;
   }
@@ -443,39 +494,52 @@ function getPageSnapshot(): PageSnapshot {
 
   for (let i = 0; i < allElements.length; i++) {
     const el = allElements[i];
+
+    // Visual importance filtering
+    const style = window.getComputedStyle(el);
+    const opacity = parseFloat(style.opacity || "1");
+    const rect = el.getBoundingClientRect();
+    if (opacity < 0.05 || (rect.width < 5 && rect.height < 5)) {
+      continue; // Skip practically invisible or tiny elements
+    }
+
     const parent = el.parentElement;
-    const signature = `${parent?.tagName}-${el.tagName}-${el.className}-${el.getAttribute("role") || inferRole(el)}`;
-    
+    // Semantic signature: Parent + Tag + Role
+    const signature = `${parent?.tagName}-${el.tagName}-${el.getAttribute("role") || inferRole(el)}`;
+
     const count = signatureMap.get(signature) || 0;
-    if (count < 5) { // Keep first 5 of same signature under same parent (simplified signature here)
-      foldedElements.push(toBrowserElement(el, i));
+    if (count < 3) { // Stricter compression: keep first 3 of same signature
+      const browserEl = toBrowserElement(el, i);
+      // Remove extremely long hints or values to save tokens
+      if (browserEl.selectorHint && browserEl.selectorHint.length > 50) {
+        browserEl.selectorHint = undefined;
+      }
+      foldedElements.push(browserEl);
       signatureMap.set(signature, count + 1);
-    } else if (count === 5) {
-      // Add a summary element instead of just skipping
+    } else if (count === 3) {
       foldedElements.push({
         elementId: `folded-${i}`,
         role: "text",
         tagName: "span",
-        text: `... (more similar ${el.tagName.toLowerCase()} items hidden)`,
+        text: `[... ${el.tagName.toLowerCase()} items hidden]`,
         visible: true,
         disabled: false,
         rect: elementRect(el)
       });
       signatureMap.set(signature, count + 1);
     }
-    
-    if (foldedElements.length >= 400) break; // Hard limit
+
+    if (foldedElements.length >= 250) break; // Harder limit to protect context window
   }
 
   return {
     tabId: -1,
     url: location.href,
     title: document.title,
-    text: getVisibleText(),
+    text: getVisibleText().slice(0, 10000), // Cap text length
     elements: foldedElements
   };
 }
-
 function getInteractives(params: Record<string, unknown>): {
   url: string;
   title: string;
@@ -1394,7 +1458,7 @@ function showVisualRipple(element: HTMLElement, color: string = "#ef4444"): void
 }
 
 async function assertElementClickSafe(element: HTMLElement): Promise<void> {
-  const text = [
+  const directText = [
     getElementText(element),
     element.getAttribute("aria-label"),
     element.getAttribute("title"),
@@ -1403,8 +1467,11 @@ async function assertElementClickSafe(element: HTMLElement): Promise<void> {
     .filter((value): value is string => Boolean(value))
     .join(" ");
 
-  if (HIGH_RISK_TEXT_PATTERNS.some((pattern) => pattern.test(text))) {
-    const confirmed = await showConfirmationOverlay(`点击目标看起来是高风险操作。\n\n${text}`);
+  const contextText = getNearbyText(element);
+  const combinedText = `${directText} ${contextText}`;
+
+  if (HIGH_RISK_TEXT_PATTERNS.some((pattern) => pattern.test(combinedText))) {
+    const confirmed = await showConfirmationOverlay(`Agent 试图执行高风险浏览器操作。\n\n目标元素及上下文可能涉及敏感动作（如删除、支付）：\n\n【元素文本】: ${directText || "(空)"}\n【附近文本】: ${truncate(contextText, 100) || "(无)"}`);
     if (!confirmed) {
       throw new Error("USER_REJECTED: 用户已取消高风险浏览器操作");
     }

@@ -104,12 +104,14 @@ export class BrowserBridge {
     return result;
   }
 
-  private async getConnectedSocket(timeoutMs = 5_000): Promise<WebSocket> {
+  private async getConnectedSocket(timeoutMs = 15_000): Promise<WebSocket> {
     if (this.socket?.readyState === WebSocket.OPEN) {
       return this.socket;
     }
 
-    await this.waitForConnection(Math.min(timeoutMs, 5_000));
+    this.logger.info("waiting for extension to reconnect...");
+    // 允许更长的等待时间 (25s) 以便插件的 keepalive 定时器能将其唤醒
+    await this.waitForConnection(Math.min(timeoutMs, 25_000));
 
     const socket = this.socket;
     if (socket?.readyState === WebSocket.OPEN) {

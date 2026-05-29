@@ -1,6 +1,8 @@
 type PopupStatus = {
   connected: boolean;
   bridgeUrl: string;
+  isRecording?: boolean;
+  recordedCount?: number;
   lastError?: string;
   readyState?: string;
   security?: {
@@ -39,13 +41,26 @@ function renderStatus(status: PopupStatus): void {
   const auditLog = document.querySelector("#audit-log");
   const dot = document.querySelector("#status-dot");
   const diagnostics = document.querySelector("#diagnostics");
+  const recordStatus = document.querySelector("#record-status");
+  const toggleRecord = document.querySelector("#toggle-record");
 
-  if (!statusText || !bridgeUrl || !allowlist || !denylist || !blockRisk || !screenshotEnabled || !auditLog || !dot || !diagnostics) {
+  if (!statusText || !bridgeUrl || !allowlist || !denylist || !blockRisk || !screenshotEnabled || !auditLog || !dot || !diagnostics || !recordStatus || !toggleRecord) {
     return;
   }
 
   statusText.textContent = status?.connected ? "已连接" : "未连接";
   diagnostics.textContent = renderDiagnostics(status);
+  
+  if (status?.isRecording) {
+    recordStatus.textContent = `正在录制 (${status.recordedCount ?? 0} 步)`;
+    toggleRecord.textContent = "停止录制";
+    toggleRecord.classList.add("recording");
+  } else {
+    recordStatus.textContent = status?.recordedCount ? `已录制 ${status.recordedCount} 步` : "未在录制";
+    toggleRecord.textContent = "开始录制";
+    toggleRecord.classList.remove("recording");
+  }
+
   setValueIfIdle(bridgeUrl, status?.bridgeUrl ?? "ws://127.0.0.1:17321");
   setValueIfIdle(allowlist, status?.security?.allowlist.join("\n") ?? "http://*\nhttps://*");
   setValueIfIdle(denylist, status?.security?.denylist.join("\n") ?? "");
@@ -104,6 +119,26 @@ document.querySelector("#security-form")?.addEventListener("submit", (event) => 
     window.setTimeout(() => {
       saveStatus.textContent = "";
     }, 1500);
+  });
+});
+
+document.querySelector("#toggle-record")?.addEventListener("click", () => {
+  const toggleRecord = document.querySelector("#toggle-record");
+  const isRecording = toggleRecord?.textContent === "停止录制";
+  
+  chrome.runtime.sendMessage({
+    type: "popup_toggle_recording",
+    enabled: !isRecording
+  }, () => {
+    refreshStatus();
+  });
+});
+
+document.querySelector("#clear-record")?.addEventListener("click", () => {
+  chrome.runtime.sendMessage({
+    type: "popup_clear_recording"
+  }, () => {
+    refreshStatus();
   });
 });
 

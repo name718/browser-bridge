@@ -45,7 +45,10 @@ export type BridgeTool =
   | "browser_export_session"
   | "browser_import_session"
   | "browser_close_tab"
-  | "browser_new_tab";
+  | "browser_new_tab"
+  | "browser_new_context"
+  | "browser_toggle_recording"
+  | "browser_get_recorded_steps";
 
 export type BridgeRequest = {
   id: string;
