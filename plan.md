@@ -294,14 +294,10 @@ MVP 验证目标：
 
 ## 第一版完成标准
 
-第一版完成后应满足：
+## 未来演进路线图
 
-- 本地 AI Agent 能通过 MCP 发现 browser tools。
-- Chrome Extension 能稳定连接 MCP Server。
-- 能读取当前 tab 页面文本和元素。
-- 能对普通页面执行点击。
-- 能处理连接失败、元素不存在、权限不足等错误。
-- 有基础安全限制，避免明显误操作。
+关于本项目与 Playwright / Chrome DevTools MCP 的深度对比以及长期的特性演进计划，请参考 [ROADMAP.md](./ROADMAP.md)。
+
 
 
 
