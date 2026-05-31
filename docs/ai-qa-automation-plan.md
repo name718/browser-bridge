@@ -1,4 +1,4 @@
-# AI 自动化测试方案与开发计划
+# AI 自动化测试方案、实现状态与开发计划
 
 ## 背景
 
@@ -11,6 +11,25 @@ Browser Bridge 当前已经具备真实 Chrome 浏览器操控能力，包括页
 - AI 可以覆盖主流程、异常流程和回归影响点。
 - 执行过程中自动采集截图、Console、Network、页面模型和失败上下文。
 - 最后输出测试报告，并生成可回放脚本。
+
+## 当前实现状态
+
+当前已经完成一个可运行的工程闭环：
+
+- `browser_qa_plan`：根据 `baseUrl`、`prdPath` / `prdText`、`focus`、`branch` / `compareBranch` 和 git diff 生成本地启发式测试计划。
+- `browser_qa_run`：执行结构化 QA cases，生成 `summary.json`、`report.md`、`report.html`、`replay.json`、`replay-viewer.html`、`ci-summary.json`。
+- `browser_qa_from_recording`：读取浏览器录制步骤，清洗并转成 QA case / replay；可选 `run=true` 立即执行。
+- `browser_qa_replay`：读取 `replay.json` 回放，支持 `strict` 和 `smart` 两种模式。
+- `browser_qa_report`：按 run 目录重建 Markdown、HTML、Replay Viewer 或 CI Summary。
+- 扩展录制已增强：支持 click、input、change、keydown、submit、scroll、URL change，并记录 `data-testid`、role、ariaLabel、placeholder、selectorHint、nearText、rect 等定位线索。
+- 录制默认对 password、token、验证码等敏感输入脱敏。
+
+当前边界：
+
+- `browser_qa_plan` 是本地启发式规划，不直接调用外部 LLM。复杂 PRD 语义理解应由上层 AI Agent 继续补全 cases。
+- `smart` replay 当前是语义定位参数增强，会补充 `query`、`visibleOnly` 和默认 timeout；不是完整的模型级自愈。
+- `browser_qa_from_recording` 可以清洗录制步骤并生成 case，但“自动补充业务断言”仍需要上层 AI Agent 根据页面结果继续增强。
+- 报告已包含结构化结果、产物路径和步骤时间线；更深入的失败根因分析仍依赖 Console/Network/PageModel 证据和上层 AI 总结。
 
 ## 目标效果
 
@@ -31,6 +50,8 @@ Browser Bridge 当前已经具备真实 Chrome 浏览器操控能力，包括页
   report.html
   summary.json
   replay.json
+  replay-viewer.html
+  ci-summary.json
   cases/
     refund-main-flow.json
     refund-invalid-amount.json
@@ -65,19 +86,16 @@ Browser Bridge 当前已经具备真实 Chrome 浏览器操控能力，包括页
 - 断言和等待：`browser_assert_text`、`browser_wait_for`、`browser_wait_for_request`
 - 证据采集：`browser_screenshot`、`browser_save_screenshot`、`browser_pdf`、`browser_capture_page`
 - 调试数据：`browser_console_monitor`、`browser_network_analysis`、`browser_cdp_session`
-- 录制雏形：`browser_toggle_recording`、`browser_get_recorded_steps`
+- 增强录制：`browser_toggle_recording`、`browser_get_recorded_steps`、`browser_qa_from_recording`
 - 会话隔离：`browser_new_context`、`browser_import_session`、`browser_export_session`
+- AI QA 编排：`browser_qa_plan`、`browser_qa_run`、`browser_qa_replay`、`browser_qa_report`
 
-当前缺少的是上层 QA 编排能力：
+仍可继续增强的是：
 
-- 测试任务模型
-- PRD 和代码分支输入
-- 测试计划生成
-- 用例执行调度
-- artifacts 归档
-- 测试报告生成
-- 回放脚本标准化
-- 录制步骤增强和清洗
+- 更强的 LLM PRD 理解和自动用例补全。
+- 更深入的失败根因分析。
+- 更完整的 smart replay 自愈策略。
+- 多角色凭据管理和 CI 失败阈值策略。
 
 ## 架构原则
 
@@ -110,10 +128,8 @@ packages/mcp-server/src/qa/
   types.ts
   qa-tools.ts
   planner.ts
-  runner.ts
   artifacts.ts
   reporter.ts
-  replay.ts
   recorder.ts
 ```
 
@@ -122,17 +138,19 @@ packages/mcp-server/src/qa/
 - `types.ts`：定义测试任务、测试计划、测试用例、步骤、结果、报告模型。
 - `qa-tools.ts`：注册 MCP 工具。
 - `planner.ts`：根据 PRD、focus、git diff、页面模型生成测试计划。
-- `runner.ts`：执行 case，调用现有 browser tools。
 - `artifacts.ts`：保存截图、日志、页面模型、summary。
 - `reporter.ts`：生成 Markdown 和 HTML 报告。
-- `replay.ts`：读取 replay 文件并执行回放。
 - `recorder.ts`：清洗和增强用户录制步骤。
+
+说明：当前 `runner` 和 `replay` 逻辑集中在 `qa-tools.ts` 中，后续如果继续膨胀，可以拆出独立文件。
 
 ## 新增 MCP 工具
 
 ### `browser_qa_plan`
 
 根据输入生成测试计划，不执行浏览器操作。
+
+当前实现：读取 PRD 文本、focus 和 git diff，使用本地启发式规则生成 scope、risks、regressionAreas 和初始 cases。
 
 输入：
 
@@ -160,6 +178,8 @@ packages/mcp-server/src/qa/
 ### `browser_qa_run`
 
 生成计划并执行测试，输出 artifacts 和报告。
+
+当前实现：执行用户传入的 `cases` 或 `steps`。如果需要先自动生成计划，应先调用 `browser_qa_plan`，再由上层 Agent 选择/补全 cases 后调用 `browser_qa_run`。
 
 输入：
 
@@ -193,6 +213,43 @@ packages/mcp-server/src/qa/
 }
 ```
 
+实际输出还包含：
+
+```json
+{
+  "reportHtml": ".browser-bridge/runs/refund-flow/report.html",
+  "replayViewer": ".browser-bridge/runs/refund-flow/replay-viewer.html",
+  "ciSummary": ".browser-bridge/runs/refund-flow/ci-summary.json"
+}
+```
+
+### `browser_qa_from_recording`
+
+读取当前扩展录制的用户操作，清洗为 QA case 和 replay。
+
+输入：
+
+```json
+{
+  "taskId": "refund-recorded-flow",
+  "title": "退款录制流程",
+  "outputDir": ".browser-bridge/runs/refund-recorded-flow",
+  "expected": ["录制流程可以成功回放"],
+  "run": false
+}
+```
+
+输出：
+
+```json
+{
+  "ok": true,
+  "recordedCount": 8,
+  "casePath": ".browser-bridge/runs/refund-recorded-flow/recorded-case.json",
+  "replayPath": ".browser-bridge/runs/refund-recorded-flow/replay.json"
+}
+```
+
 ### `browser_qa_replay`
 
 读取 `replay.json` 并回放。
@@ -210,7 +267,9 @@ packages/mcp-server/src/qa/
 模式：
 
 - `strict`：严格使用录制或生成的 selector/text/placeholder。
-- `smart`：元素找不到时，重新读取 `browser_observe` 或 `browser_get_page_model`，用语义重新定位。
+- `smart`：为交互步骤补充 `query`、`visibleOnly` 和默认 timeout，让浏览器端语义定位有更多兜底空间。
+
+说明：当前 `smart` 是工程级语义增强，不是完整的模型级自愈。完整自愈应在后续版本中结合页面模型、候选元素和上层 AI 推理。
 
 ### `browser_qa_report`
 
@@ -224,6 +283,13 @@ packages/mcp-server/src/qa/
   "format": "html"
 }
 ```
+
+`format` 支持：
+
+- `markdown`：生成 `report.md`
+- `html`：生成 `report.html`
+- `viewer`：生成 `replay-viewer.html`
+- `ci`：生成 `ci-summary.json`
 
 ## 测试任务模型
 
@@ -404,14 +470,16 @@ replay.json
 
 ## 录制功能完善计划
 
-当前录制能力是雏形：
+当前录制能力已经从雏形升级为可用于 QA case 生成的基础能力：
 
 - `browser_toggle_recording` 可以开启/关闭录制。
-- `browser_get_recorded_steps` 可以取回点击和输入步骤。
-- Content script 当前主要监听 `click` 和 `change`。
-- 录制步骤只保存基础信息，例如 text、selector、placeholder、ariaLabel、value、url。
+- `browser_get_recorded_steps` 可以取回录制步骤。
+- `browser_qa_from_recording` 可以清洗录制步骤并生成 `recorded-case.json` / `replay.json`。
+- Content script 当前监听 `click`、`input`、`change`、`keydown`、`submit`、`scroll` 和 URL change。
+- 录制步骤会保存 text、role、ariaLabel、placeholder、selector、selectorHint、testId、nearText、rect、url、title 等信息。
+- password、token、验证码等敏感输入默认脱敏。
 
-需要完善为可用于回放和测试生成的正式能力。
+仍可继续增强的部分包括：更强的业务断言补全、Popup 中的录制步骤预览、暂停/继续、导出按钮，以及基于页面模型的完整自愈。
 
 ### 1. 录制数据结构标准化
 
@@ -451,7 +519,7 @@ export type RecordedStep = {
 
 ### 2. 增强录制事件
 
-除 `click` 和 `change` 外，需要补充：
+已覆盖：
 
 - `input`：记录真实输入变化，但要 debounce，避免每个字符都记录。
 - `keydown`：记录 Enter、Escape、Tab、ArrowUp、ArrowDown 等关键按键。
@@ -478,7 +546,7 @@ export type RecordedStep = {
 
 ### 4. 录制步骤清洗
 
-新增 `recorder.ts` 做清洗：
+已新增 `recorder.ts` 做基础清洗：
 
 - 合并连续输入，只保留最终值。
 - 合并连续滚动。
@@ -486,7 +554,12 @@ export type RecordedStep = {
 - 将 checkbox/radio click 转成 `check` / `uncheck`。
 - 将 select change 转成 `select`。
 - 插入必要等待，例如点击后 URL 改变则插入 `waitFor`。
-- 为每步生成自然语言描述。
+- 将录制步骤转换为 `browser_run_steps` 可执行步骤。
+
+后续增强：
+
+- 为每步生成更自然的业务描述。
+- 根据最终页面状态自动补充断言。
 
 示例：
 
@@ -504,7 +577,7 @@ export type RecordedStep = {
 
 ### 5. 录制转用例
 
-新增能力：把用户手工录制流程转成 QA case。
+已新增 `browser_qa_from_recording`：把用户手工录制流程转成 QA case。
 
 流程：
 
@@ -513,7 +586,7 @@ export type RecordedStep = {
   -> 用户手工走一遍流程
   -> 停止录制
   -> 清洗步骤
-  -> AI 根据最后页面状态补充断言
+  -> 可由 AI 根据最后页面状态补充断言
   -> 生成 case.json 和 replay.json
 ```
 
@@ -533,8 +606,8 @@ export type RecordedStep = {
 
 第二层：语义重定位。
 
-- 如果目标找不到，调用 `browser_observe` / `browser_get_page_model`。
-- 根据步骤描述重新匹配最接近元素。
+- 当前 smart replay 会补充 query、visibleOnly 和 timeout，让浏览器端查找更宽容。
+- 后续可在目标找不到时调用 `browser_observe` / `browser_get_page_model`，再根据步骤描述重新匹配最接近元素。
 
 第三层：失败诊断。
 
@@ -577,6 +650,8 @@ Popup 当前已有录制入口，后续可以增强：
 
 ### 阶段 1：QA Artifacts 和报告 MVP
 
+状态：已完成。
+
 目标：先跑起来，能输出测试报告。
 
 任务：
@@ -596,6 +671,8 @@ Popup 当前已有录制入口，后续可以增强：
 
 ### 阶段 2：Replay 标准化
 
+状态：已完成。
+
 目标：测试结果可回放。
 
 任务：
@@ -612,6 +689,8 @@ Popup 当前已有录制入口，后续可以增强：
 - 第二次可通过 replay 复跑同一流程。
 
 ### 阶段 3：录制能力完善
+
+状态：基础能力已完成，Popup 交互增强待继续。
 
 目标：用户手工操作可以转成稳定测试脚本。
 
@@ -632,6 +711,8 @@ Popup 当前已有录制入口，后续可以增强：
 
 ### 阶段 4：PRD 和代码分支理解
 
+状态：本地启发式版本已完成，LLM 深度理解待上层 Agent 或后续集成。
+
 目标：AI 根据需求和代码变化自动规划测试范围。
 
 任务：
@@ -649,6 +730,8 @@ Popup 当前已有录制入口，后续可以增强：
 
 ### 阶段 5：智能回放和自愈
 
+状态：smart replay 参数增强已完成，完整自愈待继续。
+
 目标：UI 有轻微变化时，回放不轻易失败。
 
 任务：
@@ -664,6 +747,8 @@ Popup 当前已有录制入口，后续可以增强：
 - 自愈失败时报告给出候选元素和差异原因。
 
 ### 阶段 6：HTML 报告和 CI 集成
+
+状态：HTML 报告、Replay Viewer、CI Summary 已完成；PR 评论和失败阈值待继续。
 
 目标：可用于团队协作和 PR 流程。
 
