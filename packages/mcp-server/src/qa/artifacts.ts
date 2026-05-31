@@ -17,6 +17,10 @@ export async function readJson<T>(path: string): Promise<T> {
   return JSON.parse(raw) as T;
 }
 
+export async function readText(path: string): Promise<string> {
+  return readFile(resolve(path), "utf8");
+}
+
 export async function writeText(path: string, value: string): Promise<string> {
   const target = resolve(path);
   await mkdir(dirname(target), { recursive: true });

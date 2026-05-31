@@ -8,6 +8,7 @@ export type QaCaseInput = {
   id?: string;
   title: string;
   priority?: QaPriority;
+  type?: "main" | "negative" | "edge" | "regression" | "exploratory" | "recorded";
   steps: BrowserStep[];
   expected?: string[];
 };
@@ -26,6 +27,11 @@ export type QaRunInput = {
   captureConsole?: boolean;
   captureNetwork?: boolean;
   recordReplay?: boolean;
+  prdPath?: string;
+  prdText?: string;
+  branch?: string;
+  compareBranch?: string;
+  focus?: string[];
 };
 
 export type QaStepEvidence = {
@@ -76,10 +82,44 @@ export type QaRunResult = {
     runDir: string;
     summary: string;
     reportMarkdown: string;
+    reportHtml: string;
+    replayViewer: string;
+    ciSummary: string;
     replay: string;
     casesDir: string;
     screenshotsDir: string;
     logsDir: string;
+  };
+};
+
+export type QaPlanInput = {
+  taskId?: string;
+  title?: string;
+  baseUrl?: string;
+  prdPath?: string;
+  prdText?: string;
+  branch?: string;
+  compareBranch?: string;
+  focus?: string[];
+};
+
+export type QaPlan = {
+  taskId: string;
+  title: string;
+  baseUrl?: string;
+  scope: string[];
+  regressionAreas: string[];
+  risks: Array<{
+    level: QaPriority;
+    title: string;
+    reason: string;
+  }>;
+  cases: QaCaseInput[];
+  sources: {
+    prdPath?: string;
+    branch?: string;
+    compareBranch?: string;
+    changedFiles: string[];
   };
 };
 
@@ -108,5 +148,27 @@ export type QaReplayInput = {
 
 export type QaReportInput = {
   runDir: string;
-  format?: "markdown" | "html";
+  format?: "markdown" | "html" | "viewer" | "ci";
+};
+
+export type RecordedStep = {
+  id?: string;
+  timestamp?: number;
+  action: string;
+  url?: string;
+  title?: string;
+  text?: string;
+  query?: string;
+  role?: string;
+  ariaLabel?: string;
+  placeholder?: string;
+  selector?: string;
+  selectorHint?: string;
+  testId?: string;
+  nearText?: string;
+  value?: string;
+  key?: string;
+  direction?: "up" | "down" | "left" | "right";
+  amount?: number;
+  masked?: boolean;
 };

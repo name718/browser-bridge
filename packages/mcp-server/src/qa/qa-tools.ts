@@ -1,17 +1,20 @@
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 import { type BrowserRunStepsResult, type BrowserStep } from "@majuntao-1/browser-bridge-shared";
 import { type BrowserToolBridge, type BrowserToolDefinition } from "../tools/browser-tools.js";
 import { ensureDir, readJson, safeName, timestamp, writeDataUrl, writeJson, writeText } from "./artifacts.js";
-import { renderHtml, renderMarkdown } from "./reporter.js";
+import { createQaPlan } from "./planner.js";
+import { recordedStepsToCase } from "./recorder.js";
+import { renderCiSummary, renderHtml, renderMarkdown, renderReplayViewer } from "./reporter.js";
 import {
   type QaCaseInput,
   type QaCaseResult,
+  type QaPlanInput,
   type QaReplayFile,
   type QaRunInput,
   type QaRunResult,
-  type QaSummary
+  type QaSummary,
+  type RecordedStep
 } from "./types.js";
 
 const stepSchema = z.object({
@@ -73,6 +76,11 @@ const qaRunSchema = z.object({
   title: z.string().optional(),
   baseUrl: z.string().optional(),
   outputDir: z.string().optional(),
+  prdPath: z.string().optional(),
+  prdText: z.string().optional(),
+  branch: z.string().optional(),
+  compareBranch: z.string().optional(),
+  focus: z.array(z.string()).optional(),
   cases: z.array(caseSchema).optional(),
   steps: z.array(stepSchema).optional(),
   stopOnError: z.boolean().optional(),
@@ -86,6 +94,17 @@ const qaRunSchema = z.object({
   message: "cases 或 steps 必须至少提供一个"
 });
 
+const qaPlanSchema = z.object({
+  taskId: z.string().optional(),
+  title: z.string().optional(),
+  baseUrl: z.string().optional(),
+  prdPath: z.string().optional(),
+  prdText: z.string().optional(),
+  branch: z.string().optional(),
+  compareBranch: z.string().optional(),
+  focus: z.array(z.string()).optional()
+});
+
 const qaReplaySchema = z.object({
   replayPath: z.string().min(1),
   caseId: z.string().optional(),
@@ -96,11 +115,34 @@ const qaReplaySchema = z.object({
 
 const qaReportSchema = z.object({
   runDir: z.string().min(1),
-  format: z.enum(["markdown", "html"]).optional()
+  format: z.enum(["markdown", "html", "viewer", "ci"]).optional()
+});
+
+const qaFromRecordingSchema = z.object({
+  taskId: z.string().optional(),
+  title: z.string().optional(),
+  outputDir: z.string().optional(),
+  expected: z.array(z.string()).optional(),
+  run: z.boolean().optional()
 });
 
 export function createQaTools(bridge: BrowserToolBridge): BrowserToolDefinition[] {
   return [
+    {
+      name: "browser_qa_plan",
+      description: "根据 PRD、focus、git diff 和测试环境 URL 生成 AI QA 测试计划。当前实现为本地启发式规划，不调用外部模型。",
+      inputSchema: schema({
+        taskId: { type: "string" },
+        title: { type: "string" },
+        baseUrl: { type: "string" },
+        prdPath: { type: "string" },
+        prdText: { type: "string" },
+        branch: { type: "string" },
+        compareBranch: { type: "string" },
+        focus: { type: "array", items: { type: "string" } }
+      }),
+      handler: async (args) => createQaPlan(qaPlanSchema.parse(args ?? {}) as QaPlanInput)
+    },
     {
       name: "browser_qa_run",
       description: "执行 AI QA 测试任务。MVP 版本支持传入 cases 或 steps，自动执行浏览器步骤，保存 summary、report.md、report.html 和 replay.json。",
@@ -122,6 +164,18 @@ export function createQaTools(bridge: BrowserToolBridge): BrowserToolDefinition[
       handler: async (args) => runQa(bridge, qaRunSchema.parse(args ?? {}) as unknown as QaRunInput)
     },
     {
+      name: "browser_qa_from_recording",
+      description: "读取 browser_toggle_recording/browser_get_recorded_steps 录制的用户操作，清洗为 QA case。默认只生成 case/replay；run=true 时立即执行。",
+      inputSchema: schema({
+        taskId: { type: "string" },
+        title: { type: "string" },
+        outputDir: { type: "string" },
+        expected: { type: "array", items: { type: "string" } },
+        run: { type: "boolean" }
+      }),
+      handler: async (args) => qaFromRecording(bridge, qaFromRecordingSchema.parse(args ?? {}))
+    },
+    {
       name: "browser_qa_replay",
       description: "读取 browser_qa_run 生成的 replay.json 并重新执行。阶段 2 MVP 支持 strict 回放；smart 模式会记录在结果中，后续阶段增强语义自愈。",
       inputSchema: schema({
@@ -138,7 +192,7 @@ export function createQaTools(bridge: BrowserToolBridge): BrowserToolDefinition[
       description: "读取 QA run 目录中的 summary.json，并重新生成 Markdown 或 HTML 报告。",
       inputSchema: schema({
         runDir: { type: "string" },
-        format: { type: "string", enum: ["markdown", "html"] }
+        format: { type: "string", enum: ["markdown", "html", "viewer", "ci"] }
       }, ["runDir"]),
       handler: async (args) => renderQaReport(qaReportSchema.parse(args ?? {}))
     }
@@ -181,6 +235,9 @@ async function runQa(bridge: BrowserToolBridge, input: QaRunInput): Promise<QaRu
     runDir,
     summary: join(runDir, "summary.json"),
     reportMarkdown: join(runDir, "report.md"),
+    reportHtml: join(runDir, "report.html"),
+    replayViewer: join(runDir, "replay-viewer.html"),
+    ciSummary: join(runDir, "ci-summary.json"),
     replay: join(runDir, "replay.json"),
     casesDir,
     screenshotsDir,
@@ -197,7 +254,9 @@ async function runQa(bridge: BrowserToolBridge, input: QaRunInput): Promise<QaRu
   await writeJson(paths.summary, runResult);
   await writeJson(paths.replay, replay);
   await writeText(paths.reportMarkdown, renderMarkdown(runResult));
-  await writeText(join(runDir, "report.html"), renderHtml(runResult));
+  await writeText(paths.reportHtml, renderHtml(runResult));
+  await writeText(paths.replayViewer, renderReplayViewer(runResult, replay));
+  await writeJson(paths.ciSummary, renderCiSummary(runResult));
 
   return runResult;
 }
@@ -309,7 +368,7 @@ async function replayQa(
       title: `${testCase.title} (replay${input.mode === "smart" ? ", smart pending" : ""})`,
       priority: testCase.priority,
       expected: testCase.expected,
-      steps: testCase.steps
+      steps: input.mode === "smart" ? makeSmartReplaySteps(testCase.steps) : testCase.steps
     }));
 
   if (!cases.length) {
@@ -328,14 +387,62 @@ async function replayQa(
   });
 }
 
-async function renderQaReport(input: { runDir: string; format?: "markdown" | "html" }): Promise<Record<string, unknown>> {
+async function renderQaReport(input: { runDir: string; format?: "markdown" | "html" | "viewer" | "ci" }): Promise<Record<string, unknown>> {
   const runDir = resolve(input.runDir);
   const result = await readJson<QaRunResult>(join(runDir, "summary.json"));
   const format = input.format ?? "markdown";
+  const replay = await readJson<QaReplayFile>(join(runDir, "replay.json")).catch(() => undefined);
   const path = format === "html"
     ? await writeText(join(runDir, "report.html"), renderHtml(result))
-    : await writeText(join(runDir, "report.md"), renderMarkdown(result));
+    : format === "viewer" && replay
+      ? await writeText(join(runDir, "replay-viewer.html"), renderReplayViewer(result, replay))
+      : format === "ci"
+        ? await writeJson(join(runDir, "ci-summary.json"), renderCiSummary(result))
+        : await writeText(join(runDir, "report.md"), renderMarkdown(result));
   return { ok: true, format, path };
+}
+
+async function qaFromRecording(
+  bridge: BrowserToolBridge,
+  input: { taskId?: string; title?: string; outputDir?: string; expected?: string[]; run?: boolean }
+): Promise<unknown> {
+  const recorded = await bridge.call<{ steps?: RecordedStep[]; count?: number }>("browser_get_recorded_steps", {});
+  const testCase = recordedStepsToCase(recorded.steps ?? [], {
+    id: input.taskId,
+    title: input.title,
+    expected: input.expected
+  });
+
+  if (input.run === true) {
+    return runQa(bridge, {
+      taskId: input.taskId ?? testCase.id,
+      title: input.title ?? testCase.title,
+      outputDir: input.outputDir,
+      cases: [testCase],
+      screenshotOnError: true,
+      recordReplay: true
+    });
+  }
+
+  const taskId = safeName(input.taskId ?? testCase.id ?? "recorded-flow");
+  const runDir = resolveRunDir(input.outputDir, taskId);
+  await ensureDir(runDir);
+  const replay: QaReplayFile = {
+    version: "1",
+    taskId,
+    title: input.title ?? testCase.title,
+    createdAt: new Date().toISOString(),
+    cases: [{
+      id: testCase.id ?? taskId,
+      title: testCase.title,
+      priority: testCase.priority ?? "P1",
+      expected: testCase.expected ?? [],
+      steps: testCase.steps
+    }]
+  };
+  const casePath = await writeJson(join(runDir, "recorded-case.json"), testCase);
+  const replayPath = await writeJson(join(runDir, "replay.json"), replay);
+  return { ok: true, recordedCount: recorded.count ?? recorded.steps?.length ?? 0, case: testCase, casePath, replayPath };
 }
 
 function normalizeCases(input: QaRunInput): Array<Required<QaCaseInput>> {
@@ -345,6 +452,7 @@ function normalizeCases(input: QaRunInput): Array<Required<QaCaseInput>> {
       id: input.taskId,
       title: input.title ?? "AI QA Case",
       priority: "P0" as const,
+      type: "main" as const,
       steps: input.steps ?? [],
       expected: []
     }];
@@ -353,6 +461,7 @@ function normalizeCases(input: QaRunInput): Array<Required<QaCaseInput>> {
     id: safeName(testCase.id ?? `${index + 1}-${testCase.title}`),
     title: testCase.title,
     priority: testCase.priority ?? "P1",
+    type: testCase.type ?? "exploratory",
     steps: testCase.steps,
     expected: testCase.expected ?? []
   }));
@@ -403,6 +512,21 @@ function makeReplay(
       steps: testCase.steps
     }))
   };
+}
+
+function makeSmartReplaySteps(steps: BrowserStep[]): BrowserStep[] {
+  return steps.map((step) => {
+    if (!["click", "type", "hover", "clear", "waitFor"].includes(step.action)) {
+      return step;
+    }
+    const query = step.query ?? step.text ?? step.placeholder ?? step.ariaLabel ?? step.selector;
+    return {
+      ...step,
+      query,
+      visibleOnly: step.visibleOnly ?? true,
+      timeoutMs: step.timeoutMs ?? 8_000
+    };
+  });
 }
 
 function normalizeError(error: unknown): { code: string; message: string } {
