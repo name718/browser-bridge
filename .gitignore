@@ -11,3 +11,4 @@ coverage/
 *.tsbuildinfo
 !release/
 !release/*.zip
+.gemini
