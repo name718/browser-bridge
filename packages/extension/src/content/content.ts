@@ -336,80 +336,27 @@ function showSciFiOverlay(tool?: string, params?: Record<string, any>) {
     overlay.id = "browser-bridge-agent-overlay";
     overlay.style.cssText = `
       position: fixed;
-      top: 0;
-      left: 0;
-      width: 100vw;
-      height: 100vh;
-      background: 
-        radial-gradient(circle at center, transparent 30%, rgba(0, 10, 20, 0.4) 100%),
-        url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30 0l25.98 15v30L30 60 4.02 45V15z' fill-opacity='0.05' fill='%2300ffff' fill-rule='evenodd'/%3E%3C/svg%3E");
+      top: 16px;
+      right: 16px;
+      width: min(320px, calc(100vw - 32px));
       pointer-events: none;
       z-index: 2147483647;
-      border: 1px solid rgba(0, 255, 255, 0.2);
-      box-sizing: border-box;
-      box-shadow: inset 0 0 150px rgba(0, 255, 255, 0.1);
-      backdrop-filter: blur(2px) saturate(1.2);
       font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-      padding: 40px;
-      transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-    `;
-
-    // High-tech Data Stream background
-    const dataStream = document.createElement("div");
-    dataStream.style.cssText = `
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      opacity: 0.03;
-      pointer-events: none;
-      font-family: monospace;
-      font-size: 10px;
-      color: #00ffff;
-      overflow: hidden;
-      white-space: nowrap;
-      user-select: none;
-    `;
-    for(let i=0; i<20; i++) {
-      const line = document.createElement("div");
-      line.innerText = Math.random().toString(2).substring(2).repeat(10);
-      line.style.animation = `bb-data-stream ${10 + Math.random() * 20}s linear infinite`;
-      line.style.opacity = (0.2 + Math.random() * 0.8).toString();
-      dataStream.appendChild(line);
-    }
-    overlay.appendChild(dataStream);
-
-    const scanLine = document.createElement("div");
-    scanLine.style.cssText = `
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 10px;
-      background: linear-gradient(to bottom, 
-        transparent, 
-        rgba(255, 0, 255, 0.2), 
-        rgba(0, 255, 255, 0.5), 
-        rgba(255, 0, 255, 0.2), 
-        transparent
-      );
-      box-shadow: 0 0 20px rgba(0, 255, 255, 0.4);
-      animation: bb-scan 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-      opacity: 0.6;
+      transition: opacity 0.2s ease, transform 0.2s ease;
     `;
 
     const container = document.createElement("div");
     container.style.cssText = `
       display: flex;
       flex-direction: column;
-      align-items: flex-end;
-      gap: 15px;
-      filter: drop-shadow(0 0 15px rgba(0, 255, 255, 0.4));
+      gap: 8px;
+      color: #0f172a;
+      background: rgba(255, 255, 255, 0.96);
+      border: 1px solid rgba(15, 23, 42, 0.12);
+      border-radius: 8px;
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+      padding: 10px 12px;
+      overflow: hidden;
     `;
 
     const statusBadge = document.createElement("div");
@@ -417,51 +364,33 @@ function showSciFiOverlay(tool?: string, params?: Record<string, any>) {
     statusBadge.style.cssText = `
       display: flex;
       align-items: center;
-      gap: 15px;
-      background: rgba(0, 20, 40, 0.85);
-      padding: 12px 25px;
-      border-radius: 4px;
-      border-left: 5px solid #00ffff;
-      clip-path: polygon(10% 0, 100% 0, 100% 100%, 0 100%, 0 30%);
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-      position: relative;
-      overflow: hidden;
+      gap: 8px;
+      min-width: 0;
     `;
-
-    const badgeGlow = document.createElement("div");
-    badgeGlow.style.cssText = `
-      position: absolute;
-      top: 0;
-      left: -100%;
-      width: 100%;
-      height: 100%;
-      background: linear-gradient(90deg, transparent, rgba(0, 255, 255, 0.2), transparent);
-      animation: bb-glimmer 2s infinite;
-    `;
-    statusBadge.appendChild(badgeGlow);
 
     const dot = document.createElement("div");
     dot.style.cssText = `
       width: 8px;
       height: 8px;
-      background: #ff00ff;
-      border-radius: 2px;
-      box-shadow: 0 0 15px #ff00ff;
-      animation: bb-glitch-blink 0.5s step-end infinite;
+      flex: 0 0 auto;
+      background: #16a34a;
+      border-radius: 999px;
+      box-shadow: 0 0 0 4px rgba(22, 163, 74, 0.14);
+      animation: bb-agent-pulse 1.4s ease-in-out infinite;
     `;
 
     const statusText = document.createElement("div");
     statusText.id = "bb-status-text";
     statusText.style.cssText = `
-      color: #00ffff;
-      font-size: 14px;
-      font-weight: 900;
-      text-transform: uppercase;
-      letter-spacing: 3px;
-      text-shadow: 2px 2px rgba(255, 0, 255, 0.5);
-      animation: bb-glitch-text 3s infinite;
+      color: #0f172a;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     `;
-    statusText.innerText = "智能协议激活中";
+    statusText.innerText = "Browser Bridge 正在操作";
 
     statusBadge.appendChild(dot);
     statusBadge.appendChild(statusText);
@@ -469,93 +398,21 @@ function showSciFiOverlay(tool?: string, params?: Record<string, any>) {
     const logContainer = document.createElement("div");
     logContainer.id = "bb-log-container";
     logContainer.style.cssText = `
-      color: #00ffff;
       font-family: 'JetBrains Mono', 'Fira Code', monospace;
       font-size: 11px;
-      background: rgba(0, 10, 20, 0.9);
-      padding: 15px;
-      border-radius: 4px;
-      min-width: 280px;
-      text-align: right;
-      border: 1px solid rgba(0, 255, 255, 0.3);
-      border-right: 4px solid #ff00ff;
-      line-height: 1.8;
-      box-shadow: 0 5px 20px rgba(0, 0, 0, 0.4);
+      color: #475569;
+      line-height: 1.45;
+      max-height: 84px;
+      overflow: hidden;
     `;
-
-    const corners = ["top-left", "top-right", "bottom-left", "bottom-right"];
-    corners.forEach(corner => {
-      const wrapper = document.createElement("div");
-      wrapper.style.cssText = `
-        position: absolute;
-        width: 80px;
-        height: 80px;
-        ${corner.includes("top") ? "top: 15px;" : "bottom: 15px;"}
-        ${corner.includes("left") ? "left: 15px;" : "right: 15px;"}
-      `;
-      
-      const l1 = document.createElement("div");
-      l1.style.cssText = `
-        position: absolute;
-        width: 100%;
-        height: 100%;
-        border-color: #00ffff;
-        border-style: solid;
-        border-width: 0;
-        ${corner.includes("top") ? "border-top-width: 4px;" : "border-bottom-width: 4px;"}
-        ${corner.includes("left") ? "border-left-width: 4px;" : "border-right-width: 4px;"}
-        box-shadow: 0 0 15px rgba(0, 255, 255, 0.5);
-      `;
-      
-      const l2 = document.createElement("div");
-      l2.style.cssText = `
-        position: absolute;
-        width: 40%;
-        height: 40%;
-        border-color: #ff00ff;
-        border-style: solid;
-        border-width: 0;
-        ${corner.includes("top") ? "top: 8px; border-top-width: 2px;" : "bottom: 8px; border-bottom-width: 2px;"}
-        ${corner.includes("left") ? "left: 8px; border-left-width: 2px;" : "right: 8px; border-right-width: 2px;"}
-        opacity: 0.7;
-      `;
-      
-      wrapper.appendChild(l1);
-      wrapper.appendChild(l2);
-      overlay?.appendChild(wrapper);
-    });
 
     if (!document.getElementById("bb-overlay-style")) {
       const style = document.createElement("style");
       style.id = "bb-overlay-style";
       style.textContent = `
-        @keyframes bb-scan {
-          0% { top: -10%; opacity: 0; }
-          10% { opacity: 0.6; }
-          90% { opacity: 0.6; }
-          100% { top: 110%; opacity: 0; }
-        }
-        @keyframes bb-glitch-blink {
-          0%, 100% { background: #00ffff; box-shadow: 0 0 15px #00ffff; }
-          50% { background: #ff00ff; box-shadow: 0 0 15px #ff00ff; }
-          25%, 75% { opacity: 0.5; }
-        }
-        @keyframes bb-glitch-text {
-          0%, 100% { transform: translate(0); }
-          33% { transform: translate(-2px, 1px); text-shadow: -2px 0 #ff00ff; }
-          66% { transform: translate(2px, -1px); text-shadow: 2px 0 #00ffff; }
-        }
-        @keyframes bb-glimmer {
-          0% { left: -100%; }
-          100% { left: 100%; }
-        }
-        @keyframes bb-data-stream {
-          0% { transform: translateY(0); }
-          100% { transform: translateY(-100%); }
-        }
-        @keyframes bb-fade-in {
-          from { opacity: 0; transform: scale(1.02); }
-          to { opacity: 1; transform: scale(1); }
+        @keyframes bb-agent-pulse {
+          0%, 100% { transform: scale(1); opacity: 1; }
+          50% { transform: scale(0.72); opacity: 0.55; }
         }
       `;
       document.head.appendChild(style);
@@ -563,12 +420,12 @@ function showSciFiOverlay(tool?: string, params?: Record<string, any>) {
 
     container.appendChild(statusBadge);
     container.appendChild(logContainer);
-    overlay.appendChild(scanLine);
     overlay.appendChild(container);
     document.documentElement.appendChild(overlay);
   } else {
-    overlay.style.display = "flex";
+    overlay.style.display = "block";
     overlay.style.opacity = "1";
+    overlay.style.transform = "translateY(0)";
   }
 
   if (tool) {
@@ -577,12 +434,10 @@ function showSciFiOverlay(tool?: string, params?: Record<string, any>) {
       const entry = document.createElement("div");
       entry.style.cssText = `
         opacity: 0;
-        transform: translateX(20px);
-        transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-        border-bottom: 1px solid rgba(0, 255, 255, 0.1);
-        padding: 4px 0;
-        margin-bottom: 6px;
-        text-align: right;
+        transform: translateY(-4px);
+        transition: all 0.18s ease;
+        padding-top: 5px;
+        border-top: 1px solid rgba(15, 23, 42, 0.08);
       `;
       
       let paramText = "";
@@ -592,17 +447,16 @@ function showSciFiOverlay(tool?: string, params?: Record<string, any>) {
           .map(([key, val]) => {
             const str = typeof val === "object" ? JSON.stringify(val) : String(val);
             const truncated = str.length > 30 ? str.substring(0, 27) + "..." : str;
-            return `<span style="color:rgba(0,255,255,0.4);font-size:9px;margin-left:8px;">${key}:</span><span style="color:rgba(255,255,255,0.7);font-size:10px;">${truncated}</span>`;
+            return `<span style="color:#64748b;font-size:10px;margin-right:6px;">${key}: ${truncated}</span>`;
           });
         if (entries.length > 0) {
-          paramText = `<div style="display:flex;flex-wrap:wrap;justify-content:flex-end;margin-top:2px;">${entries.join("")}</div>`;
+          paramText = `<div style="display:flex;flex-wrap:wrap;margin-top:2px;">${entries.join("")}</div>`;
         }
       }
 
       entry.innerHTML = `
-        <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;">
-          <span style="color:#fff;font-weight:900;font-size:12px;letter-spacing:1px;">${TOOL_NAME_MAP[tool.toUpperCase()] || tool.toUpperCase().replace("BROWSER_", "")}</span>
-          <span style="color:#ff00ff;font-weight:bold;animation:bb-blink 0.5s infinite;">></span>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span style="color:#2563eb;font-weight:700;font-size:11px;">${TOOL_NAME_MAP[tool.toUpperCase()] || tool.toUpperCase().replace("BROWSER_", "")}</span>
         </div>
         ${paramText}
       `;
@@ -610,16 +464,16 @@ function showSciFiOverlay(tool?: string, params?: Record<string, any>) {
       logContainer.appendChild(entry);
       requestAnimationFrame(() => {
         entry.style.opacity = "1";
-        entry.style.transform = "translateX(0)";
+        entry.style.transform = "translateY(0)";
       });
-      if (logContainer.childNodes.length > 5) {
+      if (logContainer.childNodes.length > 3) {
         logContainer.removeChild(logContainer.firstChild!);
       }
     }
     const statusText = document.getElementById("bb-status-text");
     if (statusText) {
       const translated = TOOL_NAME_MAP[tool.toUpperCase()] || tool.toUpperCase().replace("BROWSER_", "");
-      statusText.innerText = `AGENT: ${translated}`;
+      statusText.innerText = `Browser Bridge：${translated}`;
     }
   }
 }
@@ -628,6 +482,7 @@ function hideSciFiOverlay() {
   const overlay = document.getElementById("browser-bridge-agent-overlay");
   if (overlay) {
     overlay.style.opacity = "0";
+    overlay.style.transform = "translateY(-6px)";
     setTimeout(() => {
       if (activeOperations === 0) {
         overlay.style.display = "none";

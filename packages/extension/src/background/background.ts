@@ -392,7 +392,7 @@ async function openUrl(url: string): Promise<BrowserTab> {
   }
   await assertUrlAllowed(url);
   const tab = await chrome.tabs.create({ url, active: true });
-  return normalizeTab(tab);
+  return normalizeTab(await waitForTabUrl(tab.id, url));
 }
 
 async function openIncognito(url: string): Promise<BrowserTab> {
@@ -411,7 +411,7 @@ async function openIncognito(url: string): Promise<BrowserTab> {
   if (!tab || tab.id === undefined) {
     throw new Error("INTERNAL_ERROR: 无法创建隐身标签页");
   }
-  return normalizeTab(tab);
+  return normalizeTab(await waitForTabUrl(tab.id, url));
 }
 
 async function activateTab(tabId: number): Promise<BrowserTab> {
@@ -1680,8 +1680,9 @@ async function newTab(request: BridgeRequest): Promise<BrowserTab> {
   if (url) await assertUrlAllowed(url);
   
   const tab = await chrome.tabs.create({ url, active: true });
-  await appendAuditLog({ tool: "browser_new_tab", url: tab.url, ok: true });
-  return normalizeTab(tab);
+  const readyTab = url && tab.id ? await waitForTabUrl(tab.id, url) : tab;
+  await appendAuditLog({ tool: "browser_new_tab", url: readyTab.url, ok: true });
+  return normalizeTab(readyTab);
 }
 
 async function newContext(request: BridgeRequest): Promise<BrowserTab> {
@@ -1818,6 +1819,38 @@ function normalizeTab(tab: chrome.tabs.Tab): BrowserTab {
     title: tab.title,
     url: tab.url
   };
+}
+
+async function waitForTabUrl(tabId: number | undefined, expectedUrl: string): Promise<chrome.tabs.Tab> {
+  if (!tabId) {
+    throw new Error("TAB_NOT_FOUND: 标签页没有 ID");
+  }
+
+  const deadline = Date.now() + 10_000;
+  const expected = new URL(expectedUrl);
+
+  while (Date.now() < deadline) {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.url) {
+      try {
+        const current = new URL(tab.url);
+        if (current.origin === expected.origin || tab.status === "complete") {
+          return tab;
+        }
+      } catch {
+        if (tab.status === "complete") {
+          return tab;
+        }
+      }
+    }
+    await delay(100);
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  if (!tab.url) {
+    throw new Error("ACTION_TIMEOUT: 标签页 URL 在 10000ms 内不可用");
+  }
+  return tab;
 }
 
 function parseStepAction(value: unknown): BrowserStepAction {

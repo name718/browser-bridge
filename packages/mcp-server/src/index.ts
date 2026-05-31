@@ -7,6 +7,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { DaemonBridgeClient } from "./bridge/daemon-client.js";
 import { createBrowserTools } from "./tools/browser-tools.js";
+import { createQaTools } from "./qa/qa-tools.js";
 import { Logger } from "./logger/logger.js";
 import { sanitizeForLog } from "./security/sanitize.js";
 
@@ -14,7 +15,10 @@ const logger = new Logger("mcp-server");
 const bridgePort = Number(process.env.BROWSER_BRIDGE_PORT ?? 17321);
 const apiPort = Number(process.env.BROWSER_BRIDGE_API_PORT ?? 17320);
 const bridge = new DaemonBridgeClient(bridgePort, apiPort);
-const tools = createBrowserTools(bridge);
+const tools = [
+  ...createBrowserTools(bridge),
+  ...createQaTools(bridge)
+];
 const toolMap = new Map(tools.map((tool) => [tool.name, tool]));
 
 let activated = false;

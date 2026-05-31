@@ -8,7 +8,10 @@ build/
 coverage/
 .turbo/
 .vite/
+.pnpm-store/
 *.tsbuildinfo
+.browser-bridge/
+**/.browser-bridge/
 !release/
 !release/*.zip
 .gemini
