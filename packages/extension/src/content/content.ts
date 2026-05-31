@@ -54,25 +54,22 @@ const HIGH_RISK_TEXT_PATTERNS = [
 let activeOperations = 0;
 const recentLogs: Array<{ type: string; message: string }> = [];
 let isRecording = false;
+let lastRecordedUrl = location.href;
+let inputRecordTimer: number | undefined;
+let scrollRecordTimer: number | undefined;
+let lastScrollX = window.scrollX;
+let lastScrollY = window.scrollY;
 
 // Session Recording functionality
 document.addEventListener("click", (event) => {
   if (!isRecording) return;
   const target = event.target as HTMLElement;
   if (!target) return;
-  
-  // Try to generate a selector or use text
-  const text = getElementText(target);
-  const selector = buildSelectorHint(target);
-  
-  chrome.runtime.sendMessage({
-    type: "browser_bridge_record_step",
-    step: {
-      action: "click",
-      text: text || undefined,
-      selector: text ? undefined : selector,
-      url: location.href
-    }
+
+  const input = target.closest("input[type='checkbox'], input[type='radio']") as HTMLInputElement | null;
+  recordStep({
+    action: input ? (input.checked ? "check" : "uncheck") : "click",
+    ...getRecordedTarget(target)
   });
 }, true);
 
@@ -80,24 +77,142 @@ document.addEventListener("change", (event) => {
   if (!isRecording) return;
   const target = event.target as HTMLElement;
   if (!target) return;
-  
-  const value = getElementValue(target);
-  const placeholder = getPlaceholder(target);
-  const ariaLabel = target.getAttribute("aria-label");
-  const selector = buildSelectorHint(target);
-  
+
+  const action = target instanceof HTMLSelectElement ? "select" : "type";
+  recordStep({
+    action,
+    ...getRecordedTarget(target),
+    value: shouldMaskValue(target) ? undefined : getElementValue(target),
+    masked: shouldMaskValue(target) || undefined
+  });
+}, true);
+
+document.addEventListener("input", (event) => {
+  if (!isRecording) return;
+  const target = event.target as HTMLElement;
+  if (!target || !(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target.isContentEditable)) return;
+  if (target instanceof HTMLInputElement && ["checkbox", "radio", "file"].includes(target.type)) return;
+
+  if (inputRecordTimer) window.clearTimeout(inputRecordTimer);
+  inputRecordTimer = window.setTimeout(() => {
+    recordStep({
+      action: "type",
+      ...getRecordedTarget(target),
+      value: shouldMaskValue(target) ? undefined : getElementValue(target),
+      masked: shouldMaskValue(target) || undefined
+    });
+  }, 450);
+}, true);
+
+document.addEventListener("keydown", (event) => {
+  if (!isRecording) return;
+  if (!["Enter", "Escape", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+  recordStep({
+    action: "pressKey",
+    key: event.key,
+    ...getRecordedTarget(event.target as HTMLElement)
+  });
+}, true);
+
+document.addEventListener("submit", (event) => {
+  if (!isRecording) return;
+  recordStep({
+    action: "submit",
+    ...getRecordedTarget(event.target as HTMLElement)
+  });
+}, true);
+
+window.addEventListener("scroll", () => {
+  if (!isRecording) return;
+  if (scrollRecordTimer) window.clearTimeout(scrollRecordTimer);
+  scrollRecordTimer = window.setTimeout(() => {
+    const dx = window.scrollX - lastScrollX;
+    const dy = window.scrollY - lastScrollY;
+    lastScrollX = window.scrollX;
+    lastScrollY = window.scrollY;
+    if (Math.abs(dx) < 80 && Math.abs(dy) < 80) return;
+    recordStep({
+      action: "scroll",
+      direction: Math.abs(dy) >= Math.abs(dx) ? (dy > 0 ? "down" : "up") : (dx > 0 ? "right" : "left"),
+      amount: Math.round(Math.max(Math.abs(dx), Math.abs(dy)))
+    });
+  }, 300);
+}, true);
+
+window.setInterval(() => {
+  if (!isRecording || location.href === lastRecordedUrl) return;
+  lastRecordedUrl = location.href;
+  recordStep({
+    action: "waitFor",
+    text: document.title || undefined
+  });
+}, 500);
+
+function recordStep(step: Record<string, unknown>): void {
   chrome.runtime.sendMessage({
     type: "browser_bridge_record_step",
     step: {
-      action: "type",
-      value,
-      placeholder: placeholder || undefined,
-      ariaLabel: ariaLabel || undefined,
-      selector: (!placeholder && !ariaLabel) ? selector : undefined,
-      url: location.href
+      id: crypto.randomUUID(),
+      timestamp: Date.now(),
+      url: location.href,
+      title: document.title,
+      ...step
     }
   });
-}, true);
+}
+
+function getRecordedTarget(target: HTMLElement | null): Record<string, unknown> {
+  if (!target) return {};
+  const element = target.closest(ACTIONABLE_SELECTOR) as HTMLElement | null ?? target;
+  const rect = element.getBoundingClientRect();
+  const text = getElementText(element);
+  const label = getAssociatedLabel(element);
+  const ariaLabel = element.getAttribute("aria-label") || undefined;
+  const placeholder = getPlaceholder(element) || undefined;
+  const testId = element.getAttribute("data-testid")
+    || element.getAttribute("data-test")
+    || element.getAttribute("data-cy")
+    || undefined;
+
+  return {
+    text: text || label || undefined,
+    role: element.getAttribute("role") || inferRole(element),
+    ariaLabel,
+    placeholder,
+    testId,
+    selector: testId ? undefined : buildSelectorHint(element),
+    selectorHint: buildSelectorHint(element),
+    nearText: getNearText(element),
+    rect: {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    }
+  };
+}
+
+function getAssociatedLabel(element: HTMLElement): string {
+  const id = element.id;
+  if (id) {
+    const label = document.querySelector(`label[for="${cssEscape(id)}"]`);
+    if (label?.textContent) return normalizeText(label.textContent);
+  }
+  const parentLabel = element.closest("label");
+  return parentLabel?.textContent ? normalizeText(parentLabel.textContent) : "";
+}
+
+function getNearText(element: HTMLElement): string | undefined {
+  const parent = element.closest("label, .form-item, .form-group, [class*='form'], [class*='field']") ?? element.parentElement;
+  const text = parent?.textContent ? normalizeText(parent.textContent) : "";
+  return text && text.length <= 120 ? text : undefined;
+}
+
+function shouldMaskValue(element: HTMLElement): boolean {
+  const combined = `${getPlaceholder(element)} ${element.getAttribute("aria-label") ?? ""} ${getAssociatedLabel(element)}`;
+  return element instanceof HTMLInputElement && element.type === "password"
+    || /password|密码|token|secret|验证码|verification/i.test(combined);
+}
 
 // Capture recent console logs for diagnostics
 const originalConsoleError = console.error;
