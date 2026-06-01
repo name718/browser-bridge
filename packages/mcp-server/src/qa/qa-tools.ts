@@ -519,12 +519,14 @@ function makeSmartReplaySteps(steps: BrowserStep[]): BrowserStep[] {
     if (!["click", "type", "hover", "clear", "waitFor"].includes(step.action)) {
       return step;
     }
+    // Smart mode adds 'strict: false' to allow fuzzy matching and self-healing
     const query = step.query ?? step.text ?? step.placeholder ?? step.ariaLabel ?? step.selector;
     return {
       ...step,
       query,
+      strict: false, // Enable fuzzy matching/self-healing in the locator engine
       visibleOnly: step.visibleOnly ?? true,
-      timeoutMs: step.timeoutMs ?? 8_000
+      timeoutMs: step.timeoutMs ?? 10_000
     };
   });
 }

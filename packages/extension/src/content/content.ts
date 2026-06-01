@@ -1134,7 +1134,10 @@ async function resolveActTarget(
   confidence: number;
   reasons: string[];
 }> {
-  if (stringParam(params, "elementId") || stringParam(params, "selector")) {
+  const elementId = stringParam(params, "elementId");
+  const selector = stringParam(params, "selector");
+
+  if (elementId || selector) {
     const element = await findTargetWithRetry(params, { allowText: action !== "type" && action !== "clear" });
     return {
       element,
@@ -1144,23 +1147,46 @@ async function resolveActTarget(
     };
   }
 
-  const match = findBestScoredElement(params);
-  if (!match) {
-    throw new Error("ELEMENT_NOT_FOUND: 未找到元素");
+  const results = scoreElements(params);
+  const bestMatches = results.filter((match) => match.score > 0).sort((a, b) => b.score - a.score);
+  
+  if (bestMatches.length === 0) {
+    throw new Error("ELEMENT_NOT_FOUND: 未找到匹配的元素");
   }
 
-  const confidence = Math.min(1, Number(match.score.toFixed(2)));
+  const best = bestMatches[0];
+  const confidence = Math.min(1, Number(best.score.toFixed(2)));
   const threshold = numberParam(params, "confidenceThreshold") ?? defaultActThreshold(action);
+
   if (confidence < threshold) {
     throw new Error(`ELEMENT_NOT_FOUND: 最高候选置信度 ${confidence} 低于阈值 ${threshold}`);
   }
 
+  // Strict Mode: Check for ambiguity among high-confidence matches
+  const strictMode = params.strict !== false;
+  if (strictMode && bestMatches.length > 1) {
+    const secondBest = bestMatches[1];
+    // If the difference in score is very small, it's ambiguous
+    if (best.score - secondBest.score < 0.05 && secondBest.score > threshold) {
+      const bestDesc = getElementDescription(best.element);
+      const secondDesc = getElementDescription(secondBest.element);
+      throw new Error(`AMBIGUOUS_TARGET: 找到多个相似的匹配目标，请提供更精确的描述。\n1. ${bestDesc}\n2. ${secondDesc}`);
+    }
+  }
+
   return {
-    element: match.element,
-    elementId: ensureElementId(match.element, 0),
+    element: best.element,
+    elementId: ensureElementId(best.element, 0),
     confidence,
-    reasons: match.reasons
+    reasons: best.reasons
   };
+}
+
+function getElementDescription(el: HTMLElement): string {
+  const role = el.getAttribute("role") || inferRole(el);
+  const name = getAccessibilityName(el);
+  const tag = el.tagName.toLowerCase();
+  return `[${role}] ${name ? `"${name}"` : tag}${el.id ? ` #${el.id}` : ""}`;
 }
 
 function normalizeActParams(
@@ -1263,73 +1289,44 @@ function findTarget(params: Record<string, unknown>, options: { allowText?: bool
 
   let element: Element | null = null;
   if (elementId) {
-    element = document.querySelector(`[${ELEMENT_ATTR}="${cssEscape(elementId)}"]`);
-    // Fallback to temp ID if not found and elementId looks like a number
+    element = findInDeepScope(`[${ELEMENT_ATTR}="${cssEscape(elementId)}"]`);
     if (!element && /^\d+$/.test(elementId)) {
-      element = document.querySelector(`[data-bb-temp-id="${cssEscape(elementId)}"]`);
+      element = findInDeepScope(`[data-bb-temp-id="${cssEscape(elementId)}"]`);
     }
   }
 
-  // Playwright-style selector support
   if (!element && selector) {
     element = resolveSelector(selector);
   }
 
-  if (!element && query) {
-    element = findBestElement({ ...params, text: text ?? query });
-  }
-  if (!element && text && options.allowText !== false) {
-    element = findByText(text);
-  }
-  if (!element && ariaLabel) {
-    element = findByAttribute("aria-label", ariaLabel);
-  }
-  if (!element && placeholder) {
-    element = findByAttribute("placeholder", placeholder);
-  }
-  if (!element && href) {
-    element = findByHref(href);
-  }
-  if (!element && role) {
-    element = findByRole(role, options.allowText === false ? undefined : text);
-  }
-  if (!element) {
-    element = findBestElement(params);
+  if (!element && (query || text || role || ariaLabel || placeholder || href)) {
+    const matches = scoreElements(params);
+    if (matches.length > 0 && matches[0].score > 0.1) {
+      element = matches[0].element;
+    }
   }
 
   if (!element || !(element instanceof HTMLElement)) {
-    throw new Error("ELEMENT_NOT_FOUND: 未找到元素");
+    throw new Error("ELEMENT_NOT_FOUND: 无法精确定位目标元素，建议使用 browser_find 查找候选。");
   }
 
   return element;
 }
 
-/**
- * 解析 Playwright 风格的选择器
- * 支持: text=, xpath=, role=, css=, id=, data-testid=
- */
 function resolveSelector(selector: string): HTMLElement | null {
   try {
-    // Support numeric ID directly from visual overlay
     if (/^\d+$/.test(selector)) {
-      return document.querySelector(`[data-bb-temp-id="${cssEscape(selector)}"]`) as HTMLElement | null;
+      return findInDeepScope(`[data-bb-temp-id="${cssEscape(selector)}"]`);
     }
     if (selector.startsWith("text=")) {
       return findByText(selector.slice(5));
     }
     if (selector.startsWith("xpath=")) {
-      const result = document.evaluate(
-        selector.slice(6),
-        document,
-        null,
-        XPathResult.FIRST_ORDERED_NODE_TYPE,
-        null
-      );
+      const result = document.evaluate(selector.slice(6), document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
       const node = result.singleNodeValue;
       return node instanceof HTMLElement ? node : null;
     }
     if (selector.startsWith("role=")) {
-      // 简化版 role 选择器: role=button[name="Submit"]
       const match = selector.match(/^role=([^\[]+)(?:\[name=(?:"([^"]+)"|'([^']+)')\])?$/);
       if (match) {
         const role = match[1];
@@ -1341,16 +1338,34 @@ function resolveSelector(selector: string): HTMLElement | null {
       return document.getElementById(selector.slice(3));
     }
     if (selector.startsWith("data-testid=")) {
-      return document.querySelector(`[data-testid="${cssEscape(selector.slice(12))}"]`) as HTMLElement | null;
+      return findInDeepScope(`[data-testid="${cssEscape(selector.slice(12))}"]`);
     }
 
-    // 默认作为 CSS 选择器
     const cleanSelector = selector.startsWith("css=") ? selector.slice(4) : selector;
-    return document.querySelector(cleanSelector) as HTMLElement | null;
+    return findInDeepScope(cleanSelector);
   } catch (error) {
-    console.warn("[BrowserBridge] 选择器解析失败:", selector, error);
     return null;
   }
+}
+
+function findInDeepScope(selector: string): HTMLElement | null {
+  const walk = (root: Document | ShadowRoot | Element): HTMLElement | null => {
+    const el = root.querySelector(selector);
+    if (el instanceof HTMLElement) return el;
+    
+    // Check shadow roots of children
+    const children = root instanceof Document ? [document.documentElement] : Array.from(root.children);
+    for (const child of children) {
+      if (child.shadowRoot) {
+        const found = walk(child.shadowRoot);
+        if (found) return found;
+      }
+      const foundInChild = walk(child);
+      if (foundInChild) return foundInChild;
+    }
+    return null;
+  };
+  return walk(document);
 }
 
 function findBestElement(params: Record<string, unknown>): HTMLElement | null {
@@ -1382,51 +1397,65 @@ function scoreElements(params: Record<string, unknown>): Array<{
   const viewportOnly = params.viewportOnly === true;
 
   return getActionableElements({ visibleOnly, viewportOnly }).map((element) => {
-    const elementText = normalizeText(getElementText(element) ?? "");
+    const accName = normalizeText(getAccessibilityName(element));
     const elementRole = normalizeText(element.getAttribute("role") || inferRole(element));
     const elementAria = normalizeText(element.getAttribute("aria-label") ?? "");
-    const elementTitle = normalizeText(element.getAttribute("title") ?? "");
     const elementPlaceholder = normalizeText(getPlaceholder(element) ?? "");
     const elementValue = normalizeText(getElementValue(element) ?? "");
     const elementHref = element instanceof HTMLAnchorElement ? element.href : undefined;
     const context = normalizeText(getNearbyText(element));
+    
     let score = 0;
     const reasons: string[] = [];
 
+    // Semantic matching (highest priority)
     if (query) {
-      score += scoreTextField(query, elementText, 0.62, "文本", reasons);
-      score += scoreTextField(query, elementAria, 0.58, "aria-label", reasons);
-      score += scoreTextField(query, elementPlaceholder, 0.56, "placeholder", reasons);
-      score += scoreTextField(query, elementTitle, 0.46, "title", reasons);
-      score += scoreTextField(query, elementValue, 0.28, "value", reasons);
-      score += scoreTextField(query, context, 0.22, "附近文本", reasons);
+      // Prioritize exact accessibility name match
+      if (accName === query) {
+        score += 0.8;
+        reasons.push("语义名称精确匹配");
+      } else if (accName.includes(query)) {
+        score += 0.6;
+        reasons.push("语义名称包含匹配");
+      } else {
+        // Fallback to other fields
+        score += scoreTextField(query, elementAria, 0.4, "aria-label", reasons);
+        score += scoreTextField(query, elementPlaceholder, 0.35, "placeholder", reasons);
+        score += scoreTextField(query, elementValue, 0.25, "值", reasons);
+        score += scoreTextField(query, context, 0.15, "附近文本", reasons);
+      }
     }
 
     if (role && elementRole === role) {
-      score += 0.22;
-      reasons.push("role 精确匹配");
+      score += 0.25;
+      reasons.push("Role 匹配");
+      // Boost if role matches and query matches accName
+      if (query && accName.includes(query)) score += 0.15;
     }
-    if (ariaLabel) {
-      score += scoreTextField(ariaLabel, elementAria, 0.5, "aria-label", reasons);
+
+    if (ariaLabel && elementAria.includes(ariaLabel)) {
+      score += 0.4;
+      reasons.push("ARIA Label 匹配");
     }
-    if (placeholder) {
-      score += scoreTextField(placeholder, elementPlaceholder, 0.5, "placeholder", reasons);
+
+    if (placeholder && elementPlaceholder.includes(placeholder)) {
+      score += 0.4;
+      reasons.push("Placeholder 匹配");
     }
+
     if (href && (elementHref === href || element.getAttribute("href") === href)) {
-      score += 0.5;
-      reasons.push("href 精确匹配");
+      score += 0.6;
+      reasons.push("HREF 匹配");
     }
-    if (nearText) {
-      score += scoreTextField(nearText, context, 0.24, "nearText", reasons);
+
+    if (nearText && context.includes(nearText)) {
+      score += 0.2;
+      reasons.push("上下文匹配");
     }
-    if (isInViewport(element)) {
-      score += 0.08;
-      reasons.push("当前视口");
-    }
-    if (isDisabled(element)) {
-      score -= 0.45;
-      reasons.push("已禁用降权");
-    }
+
+    // Heuristics
+    if (isInViewport(element)) score += 0.05;
+    if (isDisabled(element)) score -= 0.5;
 
     return { element, score, reasons };
   });
@@ -1566,50 +1595,52 @@ async function typeIntoElement(params: Record<string, unknown>): Promise<{ typed
   element.dispatchEvent(new Event("change", { bubbles: true }));
   return { typed: true, element: toBrowserElement(element, 0) };
 }
-async function ensureElementActionable(element: HTMLElement, timeoutMs: number = 3000): Promise<void> {
+async function ensureElementActionable(element: HTMLElement, timeoutMs: number = 4000): Promise<void> {
   const start = Date.now();
   let lastRect: DOMRect | undefined;
   let stableCount = 0;
+  let failureReason = "未知原因";
 
   while (Date.now() - start < timeoutMs) {
     if (!isVisible(element)) {
-      await delay(150);
+      failureReason = "元素不可见 (display:none, visibility:hidden 或 opacity:0)";
+      await delay(200);
       continue;
     }
 
     if (isDisabled(element)) {
-      await delay(150);
+      failureReason = "元素处于禁用状态 (disabled 或 aria-disabled)";
+      await delay(200);
       continue;
     }
 
-    // 稳定性检查 (Check if element is moving)
     const currentRect = element.getBoundingClientRect();
-    if (lastRect &&
-        Math.abs(currentRect.top - lastRect.top) < 0.5 &&
-        Math.abs(currentRect.left - lastRect.left) < 0.5 &&
-        Math.abs(currentRect.width - lastRect.width) < 0.5 &&
-        Math.abs(currentRect.height - lastRect.height) < 0.5) {
+    const isMoving = lastRect && (
+      Math.abs(currentRect.top - lastRect.top) > 0.5 ||
+      Math.abs(currentRect.left - lastRect.left) > 0.5
+    );
+
+    if (!isMoving) {
       stableCount++;
     } else {
       stableCount = 0;
+      failureReason = "元素正在移动 (正在执行动画或滚动)";
     }
     lastRect = currentRect;
 
     if (stableCount < 2) {
-      await delay(100);
+      await delay(150);
       continue;
     }
 
-    // 遮挡检查 (Obscuration check)
-    // 检查元素的中心点或四个角是否至少有一个是可点击的
+    // Obscuration check
     const points = [
       { x: currentRect.left + currentRect.width / 2, y: currentRect.top + currentRect.height / 2 },
       { x: currentRect.left + 2, y: currentRect.top + 2 },
-      { x: currentRect.right - 2, y: currentRect.top + 2 },
-      { x: currentRect.left + 2, y: currentRect.bottom - 2 },
-      { x: currentRect.right - 2, y: currentRect.bottom - 2 }
+      { x: currentRect.right - 2, y: currentRect.top + 2 }
     ];
 
+    let obscuredEl: Element | null = null;
     let isObscured = true;
     for (const point of points) {
       const topEl = document.elementFromPoint(point.x, point.y);
@@ -1617,17 +1648,19 @@ async function ensureElementActionable(element: HTMLElement, timeoutMs: number =
         isObscured = false;
         break;
       }
+      if (topEl) obscuredEl = topEl;
     }
 
     if (isObscured) {
-      // 如果完全被遮挡，等待一会再试（可能是临时的 loading 层）
-      await delay(200);
+      const desc = obscuredEl ? `${obscuredEl.tagName.toLowerCase()}${obscuredEl.className ? `.${obscuredEl.className.split(" ").join(".")}` : ""}` : "未知元素";
+      failureReason = `元素被遮挡 (顶层元素为: ${desc})`;
+      await delay(250);
       continue;
     }
 
-    return; // 准备就绪
+    return;
   }
-  throw new Error(`ACTION_TIMEOUT: 元素在 ${timeoutMs}ms 内未达到可交互状态（可能被遮挡、正在移动或不可见）`);
+  throw new Error(`ACTION_TIMEOUT: 元素在 ${timeoutMs}ms 内未达到可交互状态。原因: ${failureReason}`);
 }
 function showVisualRipple(element: HTMLElement, color: string = "#ef4444"): void {
   const rect = element.getBoundingClientRect();
@@ -2015,28 +2048,35 @@ function getActionableElements(options: {
   visibleOnly?: boolean;
   viewportOnly?: boolean;
 } = {}): HTMLElement[] {
+  const elements: HTMLElement[] = [];
   const seen = new Set<HTMLElement>();
-  const elements = Array.from(document.querySelectorAll<HTMLElement>(ACTIONABLE_SELECTOR))
-    .filter((element) => {
-      if (seen.has(element)) {
-        return false;
+
+  const walk = (root: Document | ShadowRoot | Element) => {
+    const matched = root.querySelectorAll<HTMLElement>(ACTIONABLE_SELECTOR);
+    for (const el of Array.from(matched)) {
+      if (!seen.has(el)) {
+        if (options.visibleOnly !== false && !isVisible(el)) continue;
+        if (options.viewportOnly && !isInViewport(el)) continue;
+        elements.push(el);
+        seen.add(el);
       }
-      seen.add(element);
-      if (options.visibleOnly !== false && !isVisible(element)) {
-        return false;
-      }
-      if (options.viewportOnly && !isInViewport(element)) {
-        return false;
-      }
-      return true;
-    });
+    }
+
+    const children = root instanceof Document ? [document.documentElement] : Array.from(root.children);
+    for (const child of children) {
+      if (child.shadowRoot) walk(child.shadowRoot);
+      walk(child);
+    }
+  };
+
+  if (document.body) {
+    walk(document);
+  }
 
   return elements.sort((a, b) => {
     const aViewport = isInViewport(a) ? 0 : 1;
     const bViewport = isInViewport(b) ? 0 : 1;
-    if (aViewport !== bViewport) {
-      return aViewport - bViewport;
-    }
+    if (aViewport !== bViewport) return aViewport - bViewport;
     const aRect = a.getBoundingClientRect();
     const bRect = b.getBoundingClientRect();
     return aRect.top - bRect.top || aRect.left - bRect.left;
@@ -2140,20 +2180,45 @@ function headingLevel(element: HTMLElement): number {
   return Number.isFinite(ariaLevel) && ariaLevel > 0 ? ariaLevel : 2;
 }
 
-function accessibleName(element: HTMLElement): string | undefined {
+function getAccessibilityName(element: HTMLElement): string {
+  // 1. aria-labelledby
   const labelledBy = element.getAttribute("aria-labelledby");
-  const labelledByText = labelledBy
-    ?.split(/\s+/)
-    .map((id) => document.getElementById(id)?.textContent ?? "")
-    .join(" ");
-  const name = normalizeText(
-    labelledByText ||
-    element.getAttribute("aria-label") ||
-    element.getAttribute("title") ||
-    element.querySelector("h1,h2,h3,h4,h5,h6,legend")?.textContent ||
-    ""
-  );
-  return truncate(name || undefined, 160);
+  if (labelledBy) {
+    const text = labelledBy.split(/\s+/)
+      .map(id => document.getElementById(id)?.textContent ?? "")
+      .join(" ")
+      .trim();
+    if (text) return text;
+  }
+
+  // 2. aria-label
+  const ariaLabel = element.getAttribute("aria-label");
+  if (ariaLabel?.trim()) return ariaLabel.trim();
+
+  // 3. Label for / Wrapped label
+  const label = getAssociatedLabel(element);
+  if (label) return label;
+
+  // 4. Placeholder
+  const placeholder = getPlaceholder(element);
+  if (placeholder) return placeholder;
+
+  // 5. Alt for images
+  if (element instanceof HTMLImageElement) {
+    const alt = element.getAttribute("alt");
+    if (alt) return alt;
+  }
+
+  // 6. Title
+  const title = element.getAttribute("title");
+  if (title) return title;
+
+  // 7. Text content
+  return getElementText(element) ?? "";
+}
+
+function accessibleName(element: HTMLElement): string | undefined {
+  return getAccessibilityName(element);
 }
 
 function includeElementInModel(element: HTMLElement, options: {

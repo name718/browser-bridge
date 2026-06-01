@@ -141,45 +141,135 @@ export function renderReplayViewer(result: QaRunResult, replay: QaReplayFile): s
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${escapeHtml(result.summary.title)} Replay</title>
+  <title>${escapeHtml(result.summary.title)} Trace Viewer</title>
   <style>
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#f8fafc; color:#172033; }
-    main { display:grid; grid-template-columns:280px 1fr 360px; min-height:100vh; }
-    aside, section { padding:18px; border-right:1px solid #e5e7eb; overflow:auto; }
-    button { width:100%; text-align:left; border:1px solid #e5e7eb; background:#fff; border-radius:8px; padding:10px; margin-bottom:8px; cursor:pointer; }
-    button.active { border-color:#2563eb; box-shadow:0 0 0 2px rgba(37,99,235,.15); }
-    .step { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:12px; margin-bottom:8px; }
-    .detail { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:14px; }
-    img { max-width:100%; border-radius:8px; border:1px solid #e5e7eb; }
-    pre { white-space:pre-wrap; word-break:break-word; background:#f1f5f9; padding:10px; border-radius:8px; }
-    @media (max-width: 980px) { main { grid-template-columns:1fr; } aside, section { border-right:0; border-bottom:1px solid #e5e7eb; } }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#f1f5f9; color:#1e293b; height: 100vh; overflow: hidden; }
+    main { display:grid; grid-template-columns:320px 1fr; height: 100vh; }
+    aside { border-right:1px solid #e2e8f0; background:#fff; display:flex; flex-direction:column; }
+    .aside-header { padding: 16px; border-bottom: 1px solid #f1f5f9; }
+    .aside-content { flex: 1; overflow-y: auto; padding: 12px; }
+    .content { display: flex; flex-direction: column; overflow: hidden; background: #f8fafc; }
+    .trace-container { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; overflow: hidden; }
+    .trace-pane { display: flex; flex-direction: column; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
+    .pane-header { padding: 8px 12px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-size: 12px; font-weight: 600; color: #64748b; }
+    .pane-content { flex: 1; overflow: auto; display: flex; align-items: flex-start; justify-content: center; background: #f1f5f9; position: relative; }
+    .pane-content img { max-width: 100%; height: auto; }
+    .action-marker { position: absolute; width: 24px; height: 24px; border: 3px solid #ef4444; border-radius: 50%; background: rgba(239, 68, 68, 0.2); transform: translate(-50%, -50%); pointer-events: none; box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.1); animation: pulse 2s infinite; }
+    @keyframes pulse { 0% { transform: translate(-50%, -50%) scale(1); opacity: 1; } 50% { transform: translate(-50%, -50%) scale(1.4); opacity: 0.5; } 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; } }
+    
+    .case-btn { width:100%; text-align:left; border:1px solid transparent; background:#fff; border-radius:6px; padding:12px; margin-bottom:8px; cursor:pointer; transition: all 0.2s; }
+    .case-btn:hover { background: #f8fafc; }
+    .case-btn.active { border-color:#2563eb; background: #eff6ff; color: #1e40af; }
+    .step-item { padding: 10px 12px; border-radius: 6px; margin-bottom: 4px; cursor: pointer; font-size: 13px; border-left: 3px solid transparent; }
+    .step-item:hover { background: #f1f5f9; }
+    .step-item.active { background: #fff; border-left-color: #2563eb; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    .step-num { font-weight: 700; color: #64748b; margin-right: 8px; }
+    .inspector { height: 240px; border-top: 1px solid #e2e8f0; background: #fff; padding: 16px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; }
+    .inspector h4 { margin-top: 0; margin-bottom: 8px; font-size: 14px; }
+    pre { margin: 0; color: #334155; }
+    .status-tag { font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: 700; text-transform: uppercase; margin-left: 8px; }
+    .status-passed { background: #dcfce7; color: #166534; }
+    .status-failed { background: #fee2e2; color: #991b1b; }
   </style>
 </head>
 <body>
   <main>
-    <aside><h2>Cases</h2><div id="cases"></div></aside>
-    <section><h2>Steps</h2><div id="steps"></div></section>
-    <section><h2>Detail</h2><div id="detail" class="detail"></div></section>
+    <aside>
+      <div class="aside-header">
+        <h3 style="margin:0; font-size:16px;">QA Trace Viewer</h3>
+        <div id="case-selector" style="margin-top:12px;"></div>
+      </div>
+      <div class="aside-content" id="step-list"></div>
+      <div class="inspector" id="inspector">
+        <h4>Step Data</h4>
+        <pre id="json-view">Select a step to see details</pre>
+      </div>
+    </aside>
+    <div class="content">
+      <div class="trace-container">
+        <div class="trace-pane">
+          <div class="pane-header">BEFORE ACTION</div>
+          <div class="pane-content" id="before-view"></div>
+        </div>
+        <div class="trace-pane">
+          <div class="pane-header">AFTER ACTION</div>
+          <div class="pane-content" id="after-view"></div>
+        </div>
+      </div>
+    </div>
   </main>
   <script>
     const data = ${data};
-    let currentCase = data.replay.cases[0]?.id;
-    let currentStep = 0;
-    const describe = ${describeStep.toString()};
+    let currentCaseId = data.replay.cases[0]?.id;
+    let currentStepIdx = 0;
+
     function render() {
-      const cases = document.getElementById('cases');
-      const steps = document.getElementById('steps');
-      const detail = document.getElementById('detail');
-      const selected = data.replay.cases.find(c => c.id === currentCase) || data.replay.cases[0];
-      const resultCase = data.result.cases.find(c => c.id === selected?.id);
-      cases.innerHTML = data.replay.cases.map(c => '<button class="' + (c.id === currentCase ? 'active' : '') + '" data-case="' + c.id + '">' + c.title + '</button>').join('');
-      steps.innerHTML = (selected?.steps || []).map((s, i) => '<div class="step" data-step="' + i + '"><b>' + (i + 1) + '. ' + s.action + '</b><div>' + describe(s) + '</div></div>').join('');
-      const step = selected?.steps?.[currentStep];
-      const shot = resultCase?.artifacts?.screenshot?.path ? resultCase.artifacts.screenshot.path.split('/').slice(-2).join('/') : '';
-      detail.innerHTML = '<h3>' + (selected?.title || '') + '</h3>' + (step ? '<pre>' + JSON.stringify(step, null, 2) + '</pre>' : '') + (shot ? '<img src="' + shot + '">' : '');
-      cases.querySelectorAll('button').forEach(btn => btn.onclick = () => { currentCase = btn.dataset.case; currentStep = 0; render(); });
-      steps.querySelectorAll('.step').forEach(el => el.onclick = () => { currentStep = Number(el.dataset.step || 0); render(); });
+      const caseSelector = document.getElementById('case-selector');
+      const stepList = document.getElementById('step-list');
+      const beforeView = document.getElementById('before-view');
+      const afterView = document.getElementById('after-view');
+      const jsonView = document.getElementById('json-view');
+
+      const selectedReplayCase = data.replay.cases.find(c => c.id === currentCaseId);
+      const selectedResultCase = data.result.cases.find(c => c.id === currentCaseId);
+
+      // Render Case Selector
+      caseSelector.innerHTML = data.replay.cases.map(c => {
+        const res = data.result.cases.find(rc => rc.id === c.id);
+        const statusClass = res?.status === 'passed' ? 'status-passed' : 'status-failed';
+        return \`<button class="case-btn \${c.id === currentCaseId ? 'active' : ''}" onclick="selectCase('\${c.id}')">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-weight:600;">\${c.title}</span>
+            <span class="status-tag \${statusClass}">\${res?.status || 'PENDING'}</span>
+          </div>
+        </button>\`;
+      }).join('');
+
+      // Render Steps
+      if (selectedReplayCase) {
+        stepList.innerHTML = selectedReplayCase.steps.map((s, i) => {
+          const resStep = selectedResultCase?.data?.results?.[i];
+          const hasTrace = !!resStep?.data?.trace;
+          return \`<div class="step-item \${i === currentStepIdx ? 'active' : ''}" onclick="selectStep(\${i})">
+            <span class="step-num">\${i + 1}</span>
+            <span>\${s.action} \${hasTrace ? '📸' : ''}</span>
+            <div style="font-size:11px; color:#94a3b8; margin-top:2px;">\${s.text || s.selector || ''}</div>
+          </div>\`;
+        }).join('');
+
+        const stepResult = selectedResultCase?.data?.results?.[currentStepIdx];
+        const trace = stepResult?.data?.trace;
+
+        jsonView.innerText = JSON.stringify({
+          step: selectedReplayCase.steps[currentStepIdx],
+          result: stepResult
+        }, null, 2);
+
+        if (trace?.before) {
+          beforeView.innerHTML = \`<img src="\${trace.before.dataUrl}">\`;
+          // If we have coordinates in result, draw a marker
+          const target = stepResult?.data?.matched?.rect || stepResult?.data?.element?.rect;
+          if (target) {
+            const marker = document.createElement('div');
+            marker.className = 'action-marker';
+            marker.style.left = target.x + (target.width / 2) + 'px';
+            marker.style.top = target.y + (target.height / 2) + 'px';
+            beforeView.appendChild(marker);
+          }
+        } else {
+          beforeView.innerHTML = '<div style="color:#94a3b8; padding:40px;">No before trace available</div>';
+        }
+
+        if (trace?.after) {
+          afterView.innerHTML = \`<img src="\${trace.after.dataUrl}">\`;
+        } else {
+          afterView.innerHTML = '<div style="color:#94a3b8; padding:40px;">No after trace available</div>';
+        }
+      }
     }
+
+    window.selectCase = (id) => { currentCaseId = id; currentStepIdx = 0; render(); };
+    window.selectStep = (idx) => { currentStepIdx = idx; render(); };
     render();
   </script>
 </body>

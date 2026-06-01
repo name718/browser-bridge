@@ -108,21 +108,30 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
+const networkRoutes = new Map<string, {
+  responseCode: number;
+  responseBody: string;
+  contentType: string;
+  headers?: Record<string, string>;
+}>();
+
 async function handleBridgeRequest(request: BridgeRequest): Promise<BridgeResponse> {
   try {
     const data = await dispatchRequest(request);
     return { id: request.id, ok: true, data };
-  } catch (error) {
+  } catch (error: any) {
     const message = error instanceof Error ? error.message : String(error);
     const [code, detail] = message.includes(": ")
       ? message.split(/: (.*)/s, 2)
       : ["INTERNAL_ERROR", message];
+
     return {
       id: request.id,
       ok: false,
       error: {
         code: code as BridgeErrorCode,
-        message: detail || message
+        message: detail || message,
+        details: error.details
       }
     };
   }
@@ -219,34 +228,55 @@ async function runSteps(request: BridgeRequest): Promise<BrowserRunStepsResult> 
   if (!steps?.length) {
     throw new Error("INVALID_PARAMS: steps 参数必填");
   }
-  if (steps.length > 50) {
-    throw new Error("INVALID_PARAMS: steps 最多支持 50 步");
+
+  // Phase 4: Handle declarative routes if provided
+  if (isRecord(params.routes)) {
+    Object.entries(params.routes).forEach(([pattern, config]) => {
+      if (isRecord(config)) {
+        networkRoutes.set(pattern, {
+          responseCode: Number(config.responseCode ?? 200),
+          responseBody: String(config.responseBody ?? ""),
+          contentType: String(config.contentType ?? "application/json"),
+          headers: config.headers as Record<string, string>
+        });
+      }
+    });
+    // Enable fetching in background for these routes
+    void enableNetworkRoutingGlobally();
   }
 
   let currentTabId = request.tabId ?? numberParam(params, "tabId");
   const stopOnError = params.stopOnError !== false;
   const defaultDelayMs = numberParam(params, "delayMs") ?? 0;
-  const screenshotOnError = params.screenshotOnError === true;
+  const trace = params.trace !== false;
   const results: BrowserStepResult[] = [];
 
   for (const [index, rawStep] of steps.entries()) {
-    if (!isRecord(rawStep)) {
-      const result = makeStepError(index, "sleep", undefined, "INVALID_PARAMS", "步骤必须是对象", 0, currentTabId);
-      results.push(result);
-      if (stopOnError) {
-        return { ok: false, stoppedAt: index, tabId: currentTabId, results };
-      }
-      continue;
-    }
+    if (!isRecord(rawStep)) continue;
 
     const startedAt = Date.now();
     let action: BrowserStepAction = "sleep";
     const description = stringParam(rawStep, "description");
+
     try {
       action = parseStepAction(rawStep.action);
       const step = rawStep as BrowserStep;
+
+      // Phase 3: Before action trace
+      let beforeSnapshot: any = undefined;
+      if (trace && ["click", "type", "hover", "clear", "pressKey", "fillForm"].includes(action)) {
+        beforeSnapshot = await captureInternalSnapshot(currentTabId);
+      }
+
       const data = await runStep(step, currentTabId);
       currentTabId = extractTabId(data) ?? numberParam(rawStep, "tabId") ?? currentTabId;
+
+      // Phase 3: After action trace
+      let afterSnapshot: any = undefined;
+      if (trace && beforeSnapshot) {
+        afterSnapshot = await captureInternalSnapshot(currentTabId);
+      }
+
       results.push({
         index,
         action,
@@ -254,35 +284,77 @@ async function runSteps(request: BridgeRequest): Promise<BrowserRunStepsResult> 
         ok: true,
         elapsedMs: Date.now() - startedAt,
         tabId: currentTabId,
-        data: sanitizeStepData(action, data)
+        data: {
+          ...(sanitizeStepData(action, data) as Record<string, unknown>),
+          trace: beforeSnapshot ? { before: beforeSnapshot, after: afterSnapshot } : undefined
+        }
       });
 
       const delayMs = numberParam(rawStep, "delayMs") ?? defaultDelayMs;
-      if (delayMs > 0) {
-        await delay(delayMs);
-      }
+      if (delayMs > 0) await delay(delayMs);
     } catch (error) {
       const { code, message } = normalizeError(error);
-      const errorScreenshot = screenshotOnError
-        ? await takeErrorScreenshot(currentTabId)
-        : undefined;
-      results.push(makeStepError(
-        index,
-        action,
-        description,
-        code,
-        message,
-        Date.now() - startedAt,
-        currentTabId,
-        errorScreenshot
-      ));
-      if (stopOnError) {
-        return { ok: false, stoppedAt: index, tabId: currentTabId, results };
-      }
+      const errorScreenshot = await takeErrorScreenshot(currentTabId);
+      results.push(makeStepError(index, action, description, code, message, Date.now() - startedAt, currentTabId, errorScreenshot));
+      if (stopOnError) return { ok: false, stoppedAt: index, tabId: currentTabId, results };
     }
   }
 
   return { ok: results.every((result) => result.ok), tabId: currentTabId, results };
+}
+
+async function captureInternalSnapshot(tabId: number | undefined): Promise<any> {
+  try {
+    const id = tabId || (await getActiveTab()).id;
+    const tab = await chrome.tabs.get(id);
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png", quality: 50 });
+    return { dataUrl, url: tab.url, title: tab.title };
+  } catch {
+    return undefined;
+  }
+}
+
+let isGlobalRoutingEnabled = false;
+async function enableNetworkRoutingGlobally() {
+  if (isGlobalRoutingEnabled) return;
+  isGlobalRoutingEnabled = true;
+
+  chrome.debugger.onEvent.addListener(async (source, method, params: any) => {
+    if (method === "Fetch.requestPaused") {
+      const { requestId, request } = params;
+      let matched = false;
+      for (const [pattern, config] of networkRoutes.entries()) {
+        if (request.url.includes(pattern)) {
+          matched = true;
+          const responseHeaders = Object.entries(config.headers ?? {}).map(([name, value]) => ({ name, value }));
+          if (!responseHeaders.find(h => h.name.toLowerCase() === "content-type")) {
+            responseHeaders.push({ name: "Content-Type", value: config.contentType });
+          }
+          await chrome.debugger.sendCommand(source, "Fetch.fulfillRequest", {
+            requestId,
+            responseCode: config.responseCode,
+            responseHeaders,
+            body: stringToBase64(config.responseBody)
+          });
+          break;
+        }
+      }
+      if (!matched) {
+        await chrome.debugger.sendCommand(source, "Fetch.continueRequest", { requestId });
+      }
+    }
+  });
+
+  // This is a simplified version; real global routing needs better tab management
+  const tabs = await chrome.tabs.query({});
+  for (const tab of tabs) {
+    if (tab.id && tab.url && !tab.url.startsWith("chrome")) {
+      try {
+        await chrome.debugger.attach({ tabId: tab.id }, "1.3");
+        await chrome.debugger.sendCommand({ tabId: tab.id }, "Fetch.enable", { patterns: [{ urlPattern: "*" }] });
+      } catch { /* ignore */ }
+    }
+  }
 }
 
 async function runStep(step: BrowserStep, currentTabId?: number): Promise<unknown> {
@@ -495,9 +567,9 @@ async function sendToContentScript(request: BridgeRequest): Promise<unknown> {
     }, { frameId: 0 });
 
     if (!response?.ok) {
-      const code = response?.error?.code ?? "INTERNAL_ERROR";
-      const message = response?.error?.message ?? "页面脚本请求失败";
-      throw new Error(`${code}: ${message}`);
+      const error = new Error(`${response?.error?.code ?? "INTERNAL_ERROR"}: ${response?.error?.message ?? "页面脚本请求失败"}`);
+      (error as any).details = response?.error?.diagnostics;
+      throw error;
     }
 
     await appendAuditLog({ tool: request.tool, url: tab.url, ok: true });
