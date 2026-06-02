@@ -1,0 +1,4 @@
+interface:
+  display_name: "Browser Bridge AI QA"
+  short_description: "Run staged QA from Cooper PRD to browser execution and HTML report"
+  default_prompt: "Use Browser Bridge AI QA to analyze a Cooper PRD, confirm impact, generate semantic test cases, execute approved browser tests, and produce an HTML report with screenshots and console evidence."

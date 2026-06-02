@@ -98,6 +98,8 @@ const qaRunSchema = z.object({
   timeoutMs: z.number().int().positive().optional(),
   screenshotOnError: z.boolean().optional(),
   captureConsole: z.boolean().optional(),
+  failOnConsoleError: z.boolean().optional(),
+  failOnUncaughtException: z.boolean().optional(),
   captureNetwork: z.boolean().optional(),
   recordReplay: z.boolean().optional()
 }).refine((value) => Boolean(value.cases?.length || value.steps?.length), {
@@ -168,6 +170,8 @@ export function createQaTools(bridge: BrowserToolBridge): BrowserToolDefinition[
         timeoutMs: { type: "number" },
         screenshotOnError: { type: "boolean" },
         captureConsole: { type: "boolean" },
+        failOnConsoleError: { type: "boolean" },
+        failOnUncaughtException: { type: "boolean" },
         captureNetwork: { type: "boolean" },
         recordReplay: { type: "boolean" }
       }),
@@ -230,6 +234,8 @@ async function runQa(bridge: BrowserToolBridge, input: QaRunInput): Promise<QaRu
       timeoutMs: input.timeoutMs,
       screenshotOnError: input.screenshotOnError,
       captureConsole: input.captureConsole,
+      failOnConsoleError: input.failOnConsoleError,
+      failOnUncaughtException: input.failOnUncaughtException,
       captureNetwork: input.captureNetwork,
       screenshotsDir,
       logsDir
@@ -280,6 +286,8 @@ async function runQaCase(
     timeoutMs?: number;
     screenshotOnError?: boolean;
     captureConsole?: boolean;
+    failOnConsoleError?: boolean;
+    failOnUncaughtException?: boolean;
     captureNetwork?: boolean;
     screenshotsDir: string;
     logsDir: string;
@@ -289,6 +297,7 @@ async function runQaCase(
   let runResult: BrowserRunStepsResult | undefined;
   let error: QaCaseResult["error"];
   let consolePath: string | undefined;
+  let consoleSummary: QaCaseResult["artifacts"]["consoleSummary"];
   let networkPath: string | undefined;
 
   try {
@@ -305,7 +314,11 @@ async function runQaCase(
 
   if (options.captureConsole === true) {
     try {
-      const consoleResult = await bridge.call("browser_console_monitor", { durationMs: 500 }, { timeoutMs: 2_500 });
+      const consoleResult = await bridge.call("browser_console_monitor", { durationMs: 1000 }, { timeoutMs: 3_500 });
+      consoleSummary = summarizeConsole(consoleResult, {
+        failOnConsoleError: options.failOnConsoleError,
+        failOnUncaughtException: options.failOnUncaughtException
+      });
       consolePath = await writeJson(join(options.logsDir, `${testCase.id}-console.json`), consoleResult);
     } catch {
       // Console capture is evidence only; do not change the case result.
@@ -322,7 +335,14 @@ async function runQaCase(
   }
 
   const screenshot = await captureEvidenceScreenshot(bridge, join(options.screenshotsDir, `${testCase.id}.png`));
-  const status = error ? "blocked" : runResult?.ok === false ? "failed" : "passed";
+  const consoleError = consoleSummary?.failed
+    ? {
+      code: "CONSOLE_ERROR",
+      message: `Console 检查失败：error ${consoleSummary.errorCount}，exception ${consoleSummary.exceptionCount}`
+    }
+    : undefined;
+  const finalError = error ?? consoleError;
+  const status = finalError && !consoleError ? "blocked" : (runResult?.ok === false || consoleError ? "failed" : "passed");
 
   return {
     id: testCase.id,
@@ -333,13 +353,58 @@ async function runQaCase(
     expected: testCase.expected,
     steps: testCase.steps,
     runResult,
-    error,
+    error: finalError,
     artifacts: {
       screenshot,
       console: consolePath,
+      consoleSummary,
       network: networkPath
     }
   };
+}
+
+function summarizeConsole(
+  consoleResult: unknown,
+  options: { failOnConsoleError?: boolean; failOnUncaughtException?: boolean }
+): QaCaseResult["artifacts"]["consoleSummary"] {
+  const logs = isRecord(consoleResult) && Array.isArray(consoleResult.logs)
+    ? consoleResult.logs.filter(isRecord)
+    : [];
+
+  const entries = logs.map((entry) => {
+    const message = consoleMessage(entry);
+    return {
+      type: consoleEntryType(entry, message),
+      message,
+      timestamp: entry.timestamp
+    };
+  });
+  const errorCount = entries.filter((entry) => entry.type === "error").length;
+  const warningCount = entries.filter((entry) => entry.type === "warning" || entry.type === "warn").length;
+  const exceptionCount = entries.filter((entry) => entry.type === "exception" || /exception|uncaught/i.test(entry.message)).length;
+  const failed = (options.failOnConsoleError === true && errorCount > 0)
+    || (options.failOnUncaughtException === true && exceptionCount > 0);
+
+  return {
+    errorCount,
+    warningCount,
+    exceptionCount,
+    failed,
+    entries
+  };
+}
+
+function consoleMessage(entry: Record<string, unknown>): string {
+  if (typeof entry.exception === "string") return entry.exception;
+  if (typeof entry.text === "string") return entry.text;
+  if (Array.isArray(entry.args)) return entry.args.map((arg) => String(arg)).join(" ");
+  return JSON.stringify(entry);
+}
+
+function consoleEntryType(entry: Record<string, unknown>, message: string): string {
+  if (typeof entry.exception === "string") return "exception";
+  if (/exception|uncaught/i.test(message)) return "exception";
+  return typeof entry.type === "string" ? entry.type : "unknown";
 }
 
 async function captureEvidenceScreenshot(
@@ -556,6 +621,10 @@ function schema(properties: Record<string, unknown>, required: string[] = []): R
     required,
     additionalProperties: false
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function defaultWorkspaceDir(): string {

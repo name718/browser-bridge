@@ -73,6 +73,8 @@ export function renderHtml(result: QaRunResult): string {
       ${testCase.expected.length ? `<p class="expected">${escapeHtml(testCase.expected.join("；"))}</p>` : ""}
       ${testCase.error ? `<p class="error">${escapeHtml(`${testCase.error.code}: ${testCase.error.message}`)}</p>` : ""}
       <ol>${testCase.steps.map((step) => `<li>${escapeHtml(describeStep(step))}</li>`).join("")}</ol>
+      ${renderScreenshot(result.paths.runDir, testCase.artifacts.screenshot?.path)}
+      ${renderConsoleSummary(testCase.artifacts.consoleSummary)}
       <div class="artifacts">
         ${testCase.artifacts.screenshot?.path ? `<a href="${escapeHtml(relativePath(result.paths.runDir, testCase.artifacts.screenshot.path))}">截图</a>` : ""}
         ${testCase.artifacts.console ? `<a href="${escapeHtml(relativePath(result.paths.runDir, testCase.artifacts.console))}">Console</a>` : ""}
@@ -105,6 +107,14 @@ export function renderHtml(result: QaRunResult): string {
     .case.failed header b, .case.blocked header b { color: #b91c1c; }
     .expected { color: #334155; }
     .error { color: #b91c1c; background: #fef2f2; padding: 8px; border-radius: 6px; }
+    figure { margin: 14px 0; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; background: #f8fafc; }
+    figure img { display: block; width: 100%; max-height: 520px; object-fit: contain; background: #fff; }
+    figcaption { padding: 8px 10px; color: #64748b; font-size: 12px; border-top: 1px solid #e5e7eb; }
+    .console { margin: 12px 0; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
+    .console h4 { margin: 0; padding: 10px 12px; background: #f8fafc; font-size: 14px; }
+    .console .counts { padding: 8px 12px; color: #334155; font-size: 13px; }
+    .console pre { margin: 0; padding: 10px 12px; background: #111827; color: #e5e7eb; overflow: auto; max-height: 220px; }
+    .console.failed h4 { color: #b91c1c; }
     ol { padding-left: 22px; color: #334155; }
     li { margin: 4px 0; }
     .artifacts a { display: inline-block; margin-right: 10px; color: #2563eb; }
@@ -304,6 +314,27 @@ function describeStep(step: Record<string, unknown>): string {
   const value = step.value ? `，输入 ${String(step.value)}` : "";
   const contains = step.contains ? `，断言 ${String(step.contains)}` : "";
   return `${action}${target ? `：${String(target)}` : ""}${value}${contains}`;
+}
+
+function renderScreenshot(base: string, path: string | undefined): string {
+  if (!path) return "";
+  const src = escapeHtml(relativePath(base, path));
+  return `<figure><img src="${src}" alt="测试截图"><figcaption>测试截图证据</figcaption></figure>`;
+}
+
+function renderConsoleSummary(summary: QaRunResult["cases"][number]["artifacts"]["consoleSummary"]): string {
+  if (!summary) return "";
+  const entries = summary.entries
+    .slice(0, 8)
+    .map((entry) => `[${entry.type}] ${entry.message}`)
+    .join("\n");
+  return `
+    <section class="console ${summary.failed ? "failed" : ""}">
+      <h4>Console 检查</h4>
+      <div class="counts">error ${summary.errorCount} · warning ${summary.warningCount} · exception ${summary.exceptionCount}</div>
+      ${entries ? `<pre>${escapeHtml(entries)}</pre>` : ""}
+    </section>
+  `;
 }
 
 function escapeHtml(value: string): string {

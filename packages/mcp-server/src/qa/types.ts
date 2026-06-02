@@ -25,6 +25,8 @@ export type QaRunInput = {
   timeoutMs?: number;
   screenshotOnError?: boolean;
   captureConsole?: boolean;
+  failOnConsoleError?: boolean;
+  failOnUncaughtException?: boolean;
   captureNetwork?: boolean;
   recordReplay?: boolean;
   prdPath?: string;
@@ -39,6 +41,18 @@ export type QaStepEvidence = {
   url?: unknown;
   title?: unknown;
   mimeType?: unknown;
+};
+
+export type QaConsoleSummary = {
+  errorCount: number;
+  warningCount: number;
+  exceptionCount: number;
+  failed: boolean;
+  entries: Array<{
+    type: string;
+    message: string;
+    timestamp?: unknown;
+  }>;
 };
 
 export type QaCaseResult = {
@@ -57,6 +71,7 @@ export type QaCaseResult = {
   artifacts: {
     screenshot?: QaStepEvidence;
     console?: string;
+    consoleSummary?: QaConsoleSummary;
     network?: string;
   };
 };
