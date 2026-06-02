@@ -1014,18 +1014,19 @@ async function screenObserve(request: BridgeRequest): Promise<Record<string, unk
   const tab = await chrome.tabs.get(tabId);
   await assertUrlAllowed(tab.url);
 
+  const viewport = await getViewportInfo(tabId);
+  
   const result = await captureScreenshot(tab, {
     ...request,
     tool: "browser_screenshot",
     params: {
       format: params.format,
       quality: params.quality,
-      mode: typeof params.scale === "number" ? "cdp" : "visible",
+      mode: typeof params.scale === "number" || params.mode === "cdp" ? "cdp" : "visible",
       scale: params.scale
     }
   });
 
-  const viewport = await getViewportInfo(tabId);
   const withGrid = params.withGrid === true;
   const gridSize = getPositiveNumber(params.gridSize) ?? 100;
   const dataUrl = withGrid && typeof result.dataUrl === "string"
@@ -1373,6 +1374,15 @@ async function getViewportInfo(tabId: number): Promise<{
   height: number;
   scrollX: number;
   scrollY: number;
+  visualViewport: {
+    offsetLeft: number;
+    offsetTop: number;
+    pageLeft: number;
+    pageTop: number;
+    width: number;
+    height: number;
+    scale: number;
+  };
   devicePixelRatio: number;
 }> {
   const results = await chrome.scripting.executeScript({
@@ -1382,6 +1392,15 @@ async function getViewportInfo(tabId: number): Promise<{
       height: window.innerHeight,
       scrollX: window.scrollX,
       scrollY: window.scrollY,
+      visualViewport: {
+        offsetLeft: window.visualViewport?.offsetLeft ?? 0,
+        offsetTop: window.visualViewport?.offsetTop ?? 0,
+        pageLeft: window.visualViewport?.pageLeft ?? window.scrollX,
+        pageTop: window.visualViewport?.pageTop ?? window.scrollY,
+        width: window.visualViewport?.width ?? window.innerWidth,
+        height: window.visualViewport?.height ?? window.innerHeight,
+        scale: window.visualViewport?.scale ?? 1
+      },
       devicePixelRatio: window.devicePixelRatio || 1
     })
   });
@@ -1389,13 +1408,7 @@ async function getViewportInfo(tabId: number): Promise<{
   if (!isRecord(value)) {
     throw new Error("INTERNAL_ERROR: 无法读取 viewport 信息");
   }
-  return {
-    width: Number(value.width),
-    height: Number(value.height),
-    scrollX: Number(value.scrollX),
-    scrollY: Number(value.scrollY),
-    devicePixelRatio: Number(value.devicePixelRatio) || 1
-  };
+  return value as any;
 }
 
 async function addGridOverlay(tabId: number, dataUrl: string, gridSize: number): Promise<string> {
@@ -1556,6 +1569,26 @@ async function evaluateScript(request: BridgeRequest): Promise<Record<string, un
 
   if (!tab.url || /^(chrome|chrome-extension|about|edge|brave):/.test(tab.url)) {
     throw new Error("UNSUPPORTED_PAGE: 当前页面不支持执行脚本");
+  }
+
+  // Use CDP for more powerful evaluation if requested or if needed
+  if (params.mode === "cdp") {
+    return withDebugger(tabId, async () => {
+      const result = await sendDebuggerCommand(tabId, "Runtime.evaluate", {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+        userGesture: true
+      });
+      await appendAuditLog({ tool: "browser_evaluate", url: tab.url, ok: true });
+      return {
+        tabId,
+        url: tab.url,
+        title: tab.title,
+        expression,
+        result: (result as any).result
+      };
+    });
   }
 
   try {
@@ -1721,33 +1754,51 @@ function simplifyAXTree(nodes: any[]): string {
     const value = node.value?.value || "";
     const description = node.description?.value || "";
     
-    // 更激进的过滤：忽略无意义的容器且无实质内容
+    // Attributes
+    const isChecked = node.properties?.find((p: any) => p.name === "checked")?.value?.value;
+    const isPressed = node.properties?.find((p: any) => p.name === "pressed")?.value?.value;
+    const isExpanded = node.properties?.find((p: any) => p.name === "expanded")?.value?.value;
+    const isFocused = node.properties?.find((p: any) => p.name === "focused")?.value?.value;
+    const level = node.properties?.find((p: any) => p.name === "level")?.value?.value;
+
+    // Semantic filtering: skip generic containers if they have no name/description and don't contribute to structure
     const isGeneric = [
       "GenericContainer", "Box", "Section", "WebArea", "RootWebArea", 
-      "none", "presentation", "group", "StaticText"
+      "none", "presentation", "group", "StaticText", "paragraph", "listitem", "list"
     ].includes(role);
     
-    if (isGeneric && !name && !value && !description) {
-      let childrenOutput = "";
-      if (node.childIds) {
-        for (const childId of node.childIds) {
-          childrenOutput += processNode(childId, depth); // 不增加深度，拉平层级
-        }
-      }
-      return childrenOutput;
-    }
-
+    let line = "";
     const indent = "  ".repeat(depth);
-    let line = `${indent}${role}`;
-    if (name) line += ` "${name}"`;
-    if (value) line += ` val="${value}"`;
-    if (description) line += ` desc="${description}"`;
-    line += ` [${nodeId}]\n`;
+
+    if (!isGeneric || name || value || description) {
+      // Create a semantic representation
+      let prefix = "";
+      if (role.includes("heading")) prefix = "#".repeat(level || 3) + " ";
+      else if (role === "button") prefix = "[Btn] ";
+      else if (role === "link") prefix = "[Link] ";
+      else if (role === "checkbox") prefix = isChecked ? "[x] " : "[ ] ";
+      else if (role === "radio") prefix = isChecked ? "(x) " : "( ) ";
+      else if (role === "textbox" || role === "searchbox") prefix = "[Input] ";
+      
+      line = `${indent}${prefix}${role}`;
+      if (name) line += ` "${name}"`;
+      if (value) line += ` val="${value}"`;
+      if (description) line += ` desc="${description}"`;
+      
+      const states = [];
+      if (isFocused) states.push("focused");
+      if (isExpanded === true) states.push("expanded");
+      if (isExpanded === false) states.push("collapsed");
+      if (isPressed) states.push("pressed");
+      if (states.length > 0) line += ` (${states.join(", ")})`;
+      
+      line += ` [${nodeId}]\n`;
+    }
 
     let children = "";
     if (node.childIds) {
       for (const childId of node.childIds) {
-        children += processNode(childId, depth + 1);
+        children += processNode(childId, line ? depth + 1 : depth);
       }
     }
 

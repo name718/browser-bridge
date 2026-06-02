@@ -35,16 +35,25 @@ export function cleanRecordedSteps(steps: RecordedStep[]): RecordedStep[] {
     const normalized = normalizeRecordedStep(step);
     const previous = result[result.length - 1];
 
+    // 合并连续的输入操作
     if (previous && previous.action === "type" && normalized.action === "type" && sameTarget(previous, normalized)) {
       result[result.length - 1] = { ...previous, ...normalized };
       continue;
     }
 
+    // 优化：合并点击输入框后立即输入的行为，这是 Agent 常用的模式
+    if (previous && previous.action === "click" && normalized.action === "type" && sameTarget(previous, normalized)) {
+      result[result.length - 1] = { ...normalized }; // 直接替换为 type，因为 type 包含点击动作
+      continue;
+    }
+
+    // 合并连续滚动
     if (previous && previous.action === "scroll" && normalized.action === "scroll" && previous.direction === normalized.direction) {
       previous.amount = (previous.amount ?? 0) + (normalized.amount ?? 0);
       continue;
     }
 
+    // 过滤掉没有目标的无效点击
     if (normalized.action === "click" && !normalized.text && !normalized.selector && !normalized.ariaLabel && !normalized.placeholder && !normalized.testId) {
       continue;
     }
@@ -55,7 +64,9 @@ export function cleanRecordedSteps(steps: RecordedStep[]): RecordedStep[] {
 }
 
 function normalizeRecordedStep(step: RecordedStep): RecordedStep {
-  const action = step.action === "change" || step.action === "input" ? "type" : step.action;
+  let action = step.action;
+  if (action === "change" || action === "input") action = "type";
+  
   return {
     ...step,
     action,
@@ -69,11 +80,22 @@ function recordedToBrowserStep(step: RecordedStep): BrowserStep | undefined {
   if (step.action === "open" && step.url) return { action: "open", url: step.url };
   if (step.action === "click") return { action: "click", ...target };
   if (step.action === "type") return { action: "type", ...target, value: step.value ?? "", replace: true };
-  if (step.action === "select") return { action: "type", ...target, value: step.value ?? "", replace: true };
+  
+  // 对于 select，我们优先尝试 selectOption，因为它更稳定
+  if (step.action === "select") {
+    return { 
+      action: "selectOption", 
+      label: step.nearText || step.ariaLabel || step.placeholder, 
+      option: step.value 
+    };
+  }
+  
   if (step.action === "check" || step.action === "uncheck") return { action: "click", ...target };
   if (step.action === "pressKey" && step.key) return { action: "pressKey", key: step.key };
   if (step.action === "scroll") return { action: "scroll", direction: step.direction ?? "down", amount: step.amount };
   if (step.action === "waitFor") return { action: "waitFor", ...target, text: step.text };
+  if (step.action === "submit") return { action: "pressKey", key: "Enter", ...target };
+  
   return undefined;
 }
 

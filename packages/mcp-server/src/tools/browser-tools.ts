@@ -2,7 +2,8 @@ import { z } from "zod";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { type BridgeRequest, type BrowserStatus } from "@majuntao-1/browser-bridge-shared";
+import { recordedStepsToCase } from "../qa/recorder.js";
+import { type BridgeRequest, type BrowserStatus, type RecordedStep } from "@majuntao-1/browser-bridge-shared";
 
 export type BrowserToolBridge = {
   getStatus: () => BrowserStatus | Promise<BrowserStatus>;
@@ -1019,19 +1020,23 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_evaluate",
-      description: "在宿主页面的 window 上下文中执行自定义 JavaScript 表达式并返回结果。可用于读取 window.__vm__、检查全局变量、调用页面方法等。表达式在页面 MAIN world 中执行，拥有完整访问权限。",
+      description: "在宿主页面的 window 上下文中执行自定义 JavaScript 表达式并返回结果。可用于读取 window.__vm__、检查全局变量、调用页面方法等。表达式在页面 MAIN world 中执行，拥有完整访问权限。传 mode='cdp' 可使用更强大的 CDP 模式，支持异步等待和更复杂的对象返回。",
       inputSchema: schema({
         tabId: { type: "number" },
-        expression: { type: "string" }
+        expression: { type: "string" },
+        mode: { type: "string", enum: ["default", "cdp"] }
       }, ["expression"]),
       handler: async (args) => {
-        const parsed = optionalTabId.extend({ expression: z.string().min(1) }).parse(args ?? {});
+        const parsed = optionalTabId.extend({
+          expression: z.string().min(1),
+          mode: z.enum(["default", "cdp"]).optional()
+        }).parse(args ?? {});
         return bridge.call("browser_evaluate", parsed, { tabId: parsed.tabId });
       }
     },
     {
       name: "browser_smart_act",
-      description: "增强版浏览器操作（推荐）：自动尝试多种定位策略（语义、选择器、视觉），并在失败时自动进行视觉自愈。支持点击 (click)、输入 (type)、悬停 (hover)、清除 (clear)、等待 (waitFor) 和文本断言 (assertText)。相比 browser_act 更慢但更稳定，适用于复杂、动态或难以定位的页面。",
+      description: "增强版浏览器操作（推荐）：自动尝试多种定位策略（语义、选择器、视觉），并在失败时自动进行视觉自愈。支持点击 (click)、输入 (type)、悬停 (hover)、清除 (clear)、等待 (waitFor) 和文本断言 (assertText)。相比 browser_act 更慢但更稳定，适用于复杂、动态或难以定位的页面。如果 DOM 定位失败，它会返回当前页面的截图，此时请你（AI 模型）根据截图识别目标并使用 browser_screen_click 提供精确坐标。",
       inputSchema: schema({
         tabId: { type: "number" },
         action: {
@@ -1055,10 +1060,41 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
         confidenceThreshold: { type: "number" },
         timeoutMs: { type: "number" }
       }, ["action"]),
-      handler: (args) => bridge.call("browser_smart_act", args as Record<string, unknown>, {
-        tabId: (args as any).tabId,
-        timeoutMs: (args as any).timeoutMs
-      })
+      handler: async (args) => {
+        const tabId = (args as any).tabId;
+        try {
+          return await bridge.call("browser_smart_act", args as Record<string, unknown>, {
+            tabId,
+            timeoutMs: (args as any).timeoutMs
+          });
+        } catch (error: any) {
+          // 核心逻辑：当 DOM 定位分值低或未找到元素时，自动开启“视觉地基” (Visual Grounding) 模式
+          if (error.message.includes("ELEMENT_NOT_FOUND") || error.message.includes("AMBIGUOUS_TARGET")) {
+            try {
+              // 自动截图，为视觉模型提供地基
+              const screenshot = await bridge.call<Record<string, unknown>>("browser_screenshot", { 
+                tabId,
+                mode: "cdp",
+                scale: 1 
+              });
+              
+              // 包装响应，包含截图和引导指令，形成闭环
+              return {
+                ok: false,
+                error: `DOM_POSITIONING_FAILED: 无法精确定位 "${(args as any).query || (args as any).target || '目标'}".`,
+                visualGrounding: {
+                  screenshot,
+                  instruction: `DOM 定位失败。请分析上方截图，找到目标 "${(args as any).query || (args as any).target}" 的视觉位置，并调用 browser_screen_click(x, y) 执行点击。坐标系为截图上的 CSS 像素坐标。`,
+                  viewport: (screenshot as any).viewport
+                }
+              };
+            } catch (ssError) {
+              throw error; // 截图也失败则抛出原始错误
+            }
+          }
+          throw error;
+        }
+      }
     },
     {
       name: "browser_cdp",
@@ -1484,10 +1520,37 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_get_recorded_steps",
-      description: "获取最近录制的用户操作步骤。返回 JSON 格式的步骤列表，可用于生成自动化脚本。",
+      description: "获取最近录制的用户操作步骤。返回原始步骤列表。",
       inputSchema: schema({}),
       handler: async () => {
         return bridge.call("browser_get_recorded_steps", {});
+      }
+    },
+    {
+      name: "browser_generate_script",
+      description: "【自动化核心】将最近录制的用户操作转换为可直接运行的 browser_run_steps 脚本。它会自动清洗冗余操作（如重复滚动、输入中间态）、合并步骤并添加必要的断言和截图。生成的 JSON 可以直接作为 browser_run_steps 的输入。",
+      inputSchema: schema({
+        title: { type: "string" }
+      }),
+      handler: async (args) => {
+        const parsed = z.object({ title: z.string().optional() }).parse(args ?? {});
+        const steps = await bridge.call<RecordedStep[]>("browser_get_recorded_steps", {});
+        if (!steps || steps.length === 0) {
+          throw new Error("NO_STEPS_RECORDED: 当前没有录制的步骤。请先调用 browser_toggle_recording(enabled=true) 并在页面上进行操作。");
+        }
+        
+        const qaCase = recordedStepsToCase(steps, { title: parsed.title });
+        return {
+          ok: true,
+          title: qaCase.title,
+          stepsCount: qaCase.steps.length,
+          payload: {
+            steps: qaCase.steps,
+            stopOnError: true,
+            delayMs: 500
+          },
+          instruction: "你可以复制上面的 payload.steps 数组到 browser_run_steps 中执行自动化流程。"
+        };
       }
     }
   ];

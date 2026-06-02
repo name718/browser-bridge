@@ -1836,10 +1836,9 @@ function scoreElements(params: Record<string, unknown>): Array<{
   const visibleOnly = params.visibleOnly !== false;
   const viewportOnly = params.viewportOnly === true;
 
-  // Pre-calculate query length and simplified version for partial matches
-  const queryClean = query.toLowerCase().replace(/\s+/g, "");
+  const queryLower = query.toLowerCase();
+  const queryClean = queryLower.replace(/\s+/g, "");
 
-  // 使用 rect 缓存，避免 isVisible/isInViewport/sort 重复调用 getBoundingClientRect
   const rectCache = new Map<HTMLElement, DOMRect>();
 
   return getActionableElements({ visibleOnly, viewportOnly, rectCache }).map((element) => {
@@ -1850,32 +1849,64 @@ function scoreElements(params: Record<string, unknown>): Array<{
     const elementValue = normalizeText(getElementValue(element) ?? "");
     const elementHref = element instanceof HTMLAnchorElement ? element.href : undefined;
     const context = normalizeText(getNearbyText(element));
+    const rect = rectCache.get(element) || element.getBoundingClientRect();
     
     let score = 0;
     const reasons: string[] = [];
 
-    // Semantic matching (highest priority)
+    // 1. 语义匹配 (Semantic Matching)
     if (query) {
       const accNameClean = accName.toLowerCase().replace(/\s+/g, "");
-      
-      // Prioritize exact accessibility name match
       if (accNameClean === queryClean) {
-        score += 0.85;
-        reasons.push("语义名称精确匹配");
-      } else if (accNameClean.includes(queryClean) || queryClean.includes(accNameClean)) {
-        const ratio = Math.min(accNameClean.length, queryClean.length) / Math.max(accNameClean.length, queryClean.length);
-        score += 0.5 + (0.2 * ratio);
-        reasons.push("语义名称包含匹配");
+        score += 0.8;
+        reasons.push("名称精确匹配");
+      } else if (accNameClean.includes(queryClean)) {
+        score += 0.5;
+        reasons.push("名称包含匹配");
       } else {
-        // Fallback to other fields
-        score += scoreTextField(query, elementAria, 0.45, "aria-label", reasons);
-        score += scoreTextField(query, elementPlaceholder, 0.4, "placeholder", reasons);
+        score += scoreTextField(query, elementAria, 0.4, "aria-label", reasons);
+        score += scoreTextField(query, elementPlaceholder, 0.35, "placeholder", reasons);
         score += scoreTextField(query, elementValue, 0.3, "值", reasons);
-        
-        // Deep text check: if the element contains the text in any child
-        if (element.textContent && normalizeText(element.textContent).includes(query)) {
-          score += 0.2;
-          reasons.push("子元素文本包含");
+      }
+    }
+
+    // 2. 图像/图标特征匹配 (Icon/Image Feature Mock)
+    // Tabbit 核心：即使没文字，图标语义也能对上
+    if (query && score < 0.4) {
+      const className = (element.className || "").toString();
+      const innerHtml = element.innerHTML;
+      const iconKeywords = ["icon", "btn", "svg", "img", "search", "close", "add", "edit", "delete", "save", "submit"];
+      
+      // 检查类名或内部 HTML 是否包含 query 相关的图标特征
+      if (className.toLowerCase().includes(queryLower) || innerHtml.toLowerCase().includes(queryLower)) {
+        score += 0.35;
+        reasons.push("图标/图像特征匹配");
+      }
+    }
+
+    // 3. 视觉权重 (Visual Importance)
+    // Tabbit 核心：大的、显眼的元素权重更高
+    const area = rect.width * rect.height;
+    if (area > 2000) { // 较大元素（如 50x40）
+      score += 0.05;
+      if (area > 8000) score += 0.05; // 显著元素
+    }
+    
+    // 居中权重：屏幕中心的元素更可能是目标
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const distToCenter = Math.sqrt(Math.pow(centerX - window.innerWidth / 2, 2) + Math.pow(centerY - window.innerHeight / 2, 2));
+    if (distToCenter < 300) score += 0.05;
+
+    // 4. 语义继承 (Semantic Inheritance)
+    // 如果父元素有 label，子元素（如按钮、输入框）继承该权重
+    if (query && score < 0.5) {
+      const parent = element.parentElement;
+      if (parent) {
+        const parentText = normalizeText(parent.innerText || "");
+        if (parentText.includes(query)) {
+          score += 0.25;
+          reasons.push("父容器语义继承");
         }
       }
     }
@@ -1883,52 +1914,14 @@ function scoreElements(params: Record<string, unknown>): Array<{
     if (role && elementRole === role) {
       score += 0.3;
       reasons.push("Role 匹配");
-      if (query && accName.includes(query)) score += 0.2;
-    }
-
-    if (ariaLabel && elementAria.includes(ariaLabel)) {
-      score += 0.45;
-      reasons.push("ARIA Label 匹配");
-    }
-
-    if (placeholder && elementPlaceholder.includes(placeholder)) {
-      score += 0.45;
-      reasons.push("Placeholder 匹配");
-    }
-
-    if (href && (elementHref === href || element.getAttribute("href") === href)) {
-      score += 0.65;
-      reasons.push("HREF 匹配");
     }
 
     if (nearText && context.includes(nearText)) {
-      score += 0.25;
+      score += 0.2;
       reasons.push("上下文匹配");
     }
 
-    // Heuristics for interactive elements
-    if (element instanceof HTMLButtonElement || element.getAttribute("role") === "button") {
-      score += 0.05;
-    }
-
-    if (isInViewportCached(element, rectCache)) score += 0.05;
-    if (isDisabled(element)) score -= 0.6;
-
-    // Small boost for common Chinese patterns if they match
-    if (query && /[\u4e00-\u9fa5]/.test(query) && accName.includes(query)) {
-      score += 0.1;
-    }
-
-    // \u4e2d\u6587\u540c\u4e49\u8bcd\u5339\u914d\u52a0\u5206\uff1a\u89e3\u51b3"\u786e\u5b9a"vs"\u786e\u8ba4"vs"OK" \u7b49\u7b49\u4ef7\u95ee\u9898
-    if (query && score < 0.5) {
-      const synonymBoost = getSynonymBoost(query, accName)
-        ?? getSynonymBoost(query, elementAria)
-        ?? getSynonymBoost(query, element.textContent ?? "");
-      if (synonymBoost) {
-        score += synonymBoost.boost;
-        reasons.push(synonymBoost.reason);
-      }
-    }
+    if (isDisabled(element)) score -= 0.8;
 
     return { element, score, reasons };
   });
