@@ -39,7 +39,8 @@ export class DaemonBridgeClient {
         params,
         tabId: options?.tabId,
         timeoutMs: options?.timeoutMs
-      })
+      }),
+      timeoutMs: options?.timeoutMs ? options.timeoutMs + 5000 : undefined
     });
     return result.data;
   }

@@ -51,6 +51,7 @@ export type BrowserPageModel = {
   outline: BrowserPageModelHeading[];
   regions: BrowserPageModelRegion[];
   interactives: BrowserElement[];
+  floatingOptions?: BrowserElement[];
   forms: BrowserPageModelForm[];
   tables: BrowserPageModelTable[];
   messages: BrowserPageModelMessage[];
@@ -281,6 +282,54 @@ export type ScreenshotParams = {
   scale?: number;
 };
 
+export type BrowserScreenObserveParams = {
+  tabId?: number;
+  format?: "png" | "jpeg";
+  quality?: number;
+  withGrid?: boolean;
+  gridSize?: number;
+  scale?: number;
+};
+
+export type BrowserScreenPoint = {
+  x: number;
+  y: number;
+};
+
+export type BrowserScreenClickParams = BrowserScreenPoint & {
+  tabId?: number;
+  button?: "left" | "middle" | "right";
+  clickCount?: number;
+  delayMs?: number;
+};
+
+export type BrowserScreenDragParams = {
+  tabId?: number;
+  from: BrowserScreenPoint;
+  to: BrowserScreenPoint;
+  button?: "left" | "middle" | "right";
+  steps?: number;
+  durationMs?: number;
+};
+
+export type BrowserScreenTypeParams = {
+  tabId?: number;
+  text: string;
+};
+
+export type BrowserScreenScrollParams = {
+  tabId?: number;
+  x?: number;
+  y?: number;
+  deltaX?: number;
+  deltaY?: number;
+};
+
+export type BrowserScreenPressParams = {
+  tabId?: number;
+  key: string;
+};
+
 export type PdfParams = {
   tabId?: number;
   landscape?: boolean;
@@ -363,6 +412,7 @@ export type BrowserStepAction =
   | "click"
   | "hover"
   | "type"
+  | "selectOption"
   | "fillForm"
   | "clear"
   | "scroll"
@@ -373,6 +423,12 @@ export type BrowserStepAction =
   | "pageModel"
   | "snapshot"
   | "screenshot"
+  | "screenObserve"
+  | "screenClick"
+  | "screenType"
+  | "screenDrag"
+  | "screenScroll"
+  | "screenPress"
   | "pdf"
   | "sleep";
 
@@ -395,6 +451,9 @@ export type BrowserStep = BrowserStepTarget & {
   target?: BrowserStepTarget;
   url?: string;
   value?: string;
+  label?: string;
+  option?: string;
+  exact?: boolean;
   fields?: BrowserFormField[];
   replace?: boolean;
   direction?: "up" | "down" | "left" | "right";
@@ -413,6 +472,18 @@ export type BrowserStep = BrowserStepTarget & {
   maxTableRows?: number;
   format?: "png" | "jpeg";
   quality?: number;
+  withGrid?: boolean;
+  gridSize?: number;
+  x?: number;
+  y?: number;
+  from?: BrowserScreenPoint;
+  to?: BrowserScreenPoint;
+  button?: "left" | "middle" | "right";
+  clickCount?: number;
+  steps?: number;
+  durationMs?: number;
+  deltaX?: number;
+  deltaY?: number;
   landscape?: boolean;
   printBackground?: boolean;
   scale?: number;

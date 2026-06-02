@@ -13,7 +13,9 @@ import {
   assertActionAllowed,
   assertUrlAllowed,
   getActionRisk,
-  getSecurityConfig
+  getSecurityConfig,
+  getSessionTrustAgentFully,
+  setSessionTrustAgentFully
 } from "./security.js";
 import { appendAuditLog, getAuditLog } from "./audit.js";
 
@@ -144,7 +146,10 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
     case "browser_list_tabs":
       return listTabs();
     case "browser_open_url":
-      return openUrl(String(request.params?.url ?? ""));
+      return openUrl(String(request.params?.url ?? ""), {
+        waitUntil: request.params?.waitUntil === "commit" ? "commit" : "ready",
+        timeoutMs: typeof request.params?.timeoutMs === "number" ? request.params.timeoutMs : undefined
+      });
     case "browser_open_incognito":
       return openIncognito(String(request.params?.url ?? ""));
     case "browser_activate_tab":
@@ -161,8 +166,9 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return sendToContentScript(request);
     case "browser_use":
       const use = request.params?.use !== false;
+      setSessionTrustAgentFully(use && request.params?.trustAgentFully === true);
       await broadcastAgentSessionStatus(use);
-      return { ok: true, isAgentSessionActive };
+      return { ok: true, isAgentSessionActive, trustAgentFully: getSessionTrustAgentFully() };
     case "browser_get_ax_tree":
       return getAXTree(request);
     case "browser_observe":
@@ -181,6 +187,8 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return capturePdf(request);
     case "browser_evaluate":
       return evaluateScript(request);
+    case "browser_smart_act":
+      return smartAct(request);
     case "browser_cdp":
       return executeCdp(request);
     case "browser_cdp_session":
@@ -205,6 +213,20 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return toggleRecording(request);
     case "browser_get_recorded_steps":
       return getRecordedSteps();
+    case "browser_screen_observe":
+    case "browser_visual_observe":
+      return screenObserve(request);
+    case "browser_visual_click_text":
+    case "browser_visual_select":
+    case "browser_visual_task":
+    case "browser_visual_resolve_text":
+      return runVisualMode(request);
+    case "browser_screen_click":
+    case "browser_screen_type":
+    case "browser_screen_drag":
+    case "browser_screen_scroll":
+    case "browser_screen_press":
+      return runScreenInput(request);
     case "browser_screenshot":
     case "browser_click":
     case "browser_find_and_click":
@@ -216,9 +238,35 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
     case "browser_clear":
     case "browser_scroll":
     case "browser_wait_for":
+    case "browser_select_option":
       return sendToContentScript(request);
     default:
       throw new Error(`INTERNAL_ERROR: 不支持的工具 ${request.tool}`);
+  }
+}
+
+async function withDebugger<T>(tabId: number, task: (debuggee: chrome.debugger.Debuggee) => Promise<T>): Promise<T> {
+  const debuggee = { tabId };
+  let alreadyAttached = false;
+  
+  try {
+    await chrome.debugger.attach(debuggee, "1.3");
+  } catch (error: any) {
+    if (error?.message?.includes("already attached") || error?.message?.includes("Another debugger")) {
+      alreadyAttached = true;
+    } else {
+      throw error;
+    }
+  }
+
+  try {
+    return await task(debuggee);
+  } finally {
+    if (!alreadyAttached) {
+      try {
+        await chrome.debugger.detach(debuggee);
+      } catch { /* ignore */ }
+    }
   }
 }
 
@@ -229,78 +277,75 @@ async function runSteps(request: BridgeRequest): Promise<BrowserRunStepsResult> 
     throw new Error("INVALID_PARAMS: steps 参数必填");
   }
 
-  // Phase 4: Handle declarative routes if provided
-  if (isRecord(params.routes)) {
-    Object.entries(params.routes).forEach(([pattern, config]) => {
-      if (isRecord(config)) {
-        networkRoutes.set(pattern, {
-          responseCode: Number(config.responseCode ?? 200),
-          responseBody: String(config.responseBody ?? ""),
-          contentType: String(config.contentType ?? "application/json"),
-          headers: config.headers as Record<string, string>
-        });
-      }
-    });
-    // Enable fetching in background for these routes
-    void enableNetworkRoutingGlobally();
-  }
+  let currentTabId = request.tabId ?? numberParam(params, "tabId") ?? (await getActiveTab()).id;
+  
+  // Use a persistent debugger for the entire sequence if any step needs it
+  const needsDebugger = steps.some(s => 
+    isRecord(s) && ["screenClick", "screenType", "screenDrag", "screenScroll", "screenPress", "screenshot", "pdf"].includes(String(s.action))
+  );
 
-  let currentTabId = request.tabId ?? numberParam(params, "tabId");
-  const stopOnError = params.stopOnError !== false;
-  const defaultDelayMs = numberParam(params, "delayMs") ?? 0;
-  const trace = params.trace !== false;
-  const results: BrowserStepResult[] = [];
+  const executeSequence = async (debuggee?: chrome.debugger.Debuggee) => {
+    const stopOnError = params.stopOnError !== false;
+    const defaultDelayMs = numberParam(params, "delayMs") ?? 0;
+    const trace = params.trace === true; // 默认关闭 tracing，避免每个 step 双截图的巨大开销
+    const results: BrowserStepResult[] = [];
 
-  for (const [index, rawStep] of steps.entries()) {
-    if (!isRecord(rawStep)) continue;
+    for (const [index, rawStep] of steps.entries()) {
+      if (!isRecord(rawStep)) continue;
 
-    const startedAt = Date.now();
-    let action: BrowserStepAction = "sleep";
-    const description = stringParam(rawStep, "description");
+      const startedAt = Date.now();
+      let action: BrowserStepAction = "sleep";
+      const description = stringParam(rawStep, "description");
 
-    try {
-      action = parseStepAction(rawStep.action);
-      const step = rawStep as BrowserStep;
+      try {
+        action = parseStepAction(rawStep.action);
+        const step = rawStep as BrowserStep;
 
-      // Phase 3: Before action trace
-      let beforeSnapshot: any = undefined;
-      if (trace && ["click", "type", "hover", "clear", "pressKey", "fillForm"].includes(action)) {
-        beforeSnapshot = await captureInternalSnapshot(currentTabId);
-      }
-
-      const data = await runStep(step, currentTabId);
-      currentTabId = extractTabId(data) ?? numberParam(rawStep, "tabId") ?? currentTabId;
-
-      // Phase 3: After action trace
-      let afterSnapshot: any = undefined;
-      if (trace && beforeSnapshot) {
-        afterSnapshot = await captureInternalSnapshot(currentTabId);
-      }
-
-      results.push({
-        index,
-        action,
-        description,
-        ok: true,
-        elapsedMs: Date.now() - startedAt,
-        tabId: currentTabId,
-        data: {
-          ...(sanitizeStepData(action, data) as Record<string, unknown>),
-          trace: beforeSnapshot ? { before: beforeSnapshot, after: afterSnapshot } : undefined
+        // Before action trace
+        let beforeSnapshot: any = undefined;
+        if (trace && ["click", "type", "hover", "clear", "pressKey", "fillForm", "screenClick", "screenType", "screenDrag", "screenScroll", "screenPress"].includes(action)) {
+          beforeSnapshot = await captureInternalSnapshot(currentTabId);
         }
-      });
 
-      const delayMs = numberParam(rawStep, "delayMs") ?? defaultDelayMs;
-      if (delayMs > 0) await delay(delayMs);
-    } catch (error) {
-      const { code, message } = normalizeError(error);
-      const errorScreenshot = await takeErrorScreenshot(currentTabId);
-      results.push(makeStepError(index, action, description, code, message, Date.now() - startedAt, currentTabId, errorScreenshot));
-      if (stopOnError) return { ok: false, stoppedAt: index, tabId: currentTabId, results };
+        const data = await runStep(step, currentTabId);
+        currentTabId = extractTabId(data) ?? numberParam(rawStep, "tabId") ?? currentTabId;
+
+        // After action trace
+        let afterSnapshot: any = undefined;
+        if (trace && beforeSnapshot) {
+          afterSnapshot = await captureInternalSnapshot(currentTabId);
+        }
+
+        results.push({
+          index,
+          action,
+          description,
+          ok: true,
+          elapsedMs: Date.now() - startedAt,
+          tabId: currentTabId,
+          data: {
+            ...(sanitizeStepData(action, data) as Record<string, unknown>),
+            trace: beforeSnapshot ? { before: beforeSnapshot, after: afterSnapshot } : undefined
+          }
+        });
+
+        const delayMs = numberParam(rawStep, "delayMs") ?? defaultDelayMs;
+        if (delayMs > 0) await delay(delayMs);
+      } catch (error) {
+        const { code, message } = normalizeError(error);
+        const errorScreenshot = await takeErrorScreenshot(currentTabId);
+        results.push(makeStepError(index, action, description, code, message, Date.now() - startedAt, currentTabId, errorScreenshot));
+        if (stopOnError) return { ok: false, stoppedAt: index, tabId: currentTabId, results };
+      }
     }
-  }
+    return { ok: results.every((result) => result.ok), tabId: currentTabId, results };
+  };
 
-  return { ok: results.every((result) => result.ok), tabId: currentTabId, results };
+  if (needsDebugger && currentTabId) {
+    return withDebugger(currentTabId, () => executeSequence());
+  } else {
+    return executeSequence();
+  }
 }
 
 async function captureInternalSnapshot(tabId: number | undefined): Promise<any> {
@@ -363,7 +408,7 @@ async function runStep(step: BrowserStep, currentTabId?: number): Promise<unknow
       if (!step.url) {
         throw new Error("INVALID_PARAMS: open 步骤需要 url");
       }
-      return openUrl(step.url);
+      return openUrl(step.url, { waitUntil: "commit", timeoutMs: step.timeoutMs ?? 3000 });
     case "activateTab":
       return activateTab(requiredTabId(step, currentTabId));
     case "click":
@@ -375,6 +420,13 @@ async function runStep(step: BrowserStep, currentTabId?: number): Promise<unknow
         ...targetParams(step),
         text: step.value ?? step.text,
         replace: step.replace
+      }));
+    case "selectOption":
+      return sendToContentScript(stepRequest("browser_select_option", step, currentTabId, {
+        label: step.label ?? step.text ?? step.query,
+        option: step.option ?? step.value,
+        exact: step.exact,
+        timeoutMs: step.timeoutMs
       }));
     case "fillForm":
       return sendToContentScript(stepRequest("browser_fill_form", step, currentTabId, {
@@ -417,6 +469,45 @@ async function runStep(step: BrowserStep, currentTabId?: number): Promise<unknow
         format: step.format,
         quality: step.quality
       }));
+    case "screenObserve":
+      return screenObserve(stepRequest("browser_screen_observe", step, currentTabId, {
+        format: step.format,
+        quality: step.quality,
+        withGrid: step.withGrid,
+        gridSize: step.gridSize,
+        scale: step.scale
+      }));
+    case "screenClick":
+      return runScreenInput(stepRequest("browser_screen_click", step, currentTabId, {
+        x: step.x,
+        y: step.y,
+        button: step.button,
+        clickCount: step.clickCount,
+        delayMs: step.delayMs
+      }));
+    case "screenType":
+      return runScreenInput(stepRequest("browser_screen_type", step, currentTabId, {
+        text: step.value ?? step.text
+      }));
+    case "screenDrag":
+      return runScreenInput(stepRequest("browser_screen_drag", step, currentTabId, {
+        from: step.from,
+        to: step.to,
+        button: step.button,
+        steps: step.steps,
+        durationMs: step.durationMs
+      }));
+    case "screenScroll":
+      return runScreenInput(stepRequest("browser_screen_scroll", step, currentTabId, {
+        x: step.x,
+        y: step.y,
+        deltaX: step.deltaX,
+        deltaY: step.deltaY
+      }));
+    case "screenPress":
+      return runScreenInput(stepRequest("browser_screen_press", step, currentTabId, {
+        key: step.key
+      }));
     case "pdf":
       return capturePdf({
         id: crypto.randomUUID(),
@@ -458,13 +549,20 @@ async function listTabs(): Promise<BrowserTab[]> {
   return tabs.filter((tab) => tab.id).map(normalizeTab);
 }
 
-async function openUrl(url: string): Promise<BrowserTab> {
+async function openUrl(
+  url: string,
+  options: { waitUntil?: "commit" | "ready"; timeoutMs?: number } = {}
+): Promise<BrowserTab> {
   if (!url) {
     throw new Error("INVALID_PARAMS: url 参数必填");
   }
   await assertUrlAllowed(url);
   const tab = await chrome.tabs.create({ url, active: true });
-  return normalizeTab(await waitForTabUrl(tab.id, url));
+  if (options.waitUntil === "commit") {
+    void waitForTabUrl(tab.id, url, { timeoutMs: options.timeoutMs ?? 3000 }).catch(() => undefined);
+    return normalizeTab(tab);
+  }
+  return normalizeTab(await waitForTabUrl(tab.id, url, { timeoutMs: options.timeoutMs }));
 }
 
 async function openIncognito(url: string): Promise<BrowserTab> {
@@ -500,6 +598,7 @@ async function activateTab(tabId: number): Promise<BrowserTab> {
   return normalizeTab(tab);
 }
 
+/** 向 content script 发送请求，失败时自动注入 content script 并重试一次 */
 async function sendToContentScript(request: BridgeRequest): Promise<unknown> {
   const requestedTabId = request.tabId ?? Number(request.params?.tabId);
   const tabId = requestedTabId || (await getActiveTab()).id;
@@ -516,57 +615,81 @@ async function sendToContentScript(request: BridgeRequest): Promise<unknown> {
     return captureScreenshot(tab, request);
   }
 
-  try {
-    await ensureContentScript(tabId);
-    
-    // 如果是搜索/操作类工具，主 frame 找不到时尝试其他 frame
-    const isSearchOrAct = [
-      "browser_click", "browser_type", "browser_hover", "browser_find", 
-      "browser_act", "browser_find_and_click", "browser_find_and_type", "browser_clear"
-    ].includes(request.tool);
+  const buildMessage = () => ({
+    type: "browser_bridge_request",
+    request: {
+      ...request,
+      tabId,
+      params: {
+        ...(isRecord(request.params) ? request.params : {}),
+        __confirmedHighRisk: confirmedHighRisk
+      }
+    }
+  });
 
-    if (isSearchOrAct) {
+  // 搜索/操作类工具需要多 frame 搜索
+  const isSearchOrAct = [
+    "browser_click", "browser_type", "browser_hover", "browser_find",
+    "browser_act", "browser_find_and_click", "browser_find_and_type", "browser_select_option", "browser_clear"
+  ].includes(request.tool);
+
+  /** 发送消息到指定 frame，返回 response 或 null（表示未找到） */
+  const sendToFrame = async (frameId?: number): Promise<{ response: any; frameId?: number } | null> => {
+    try {
+      const msg = buildMessage();
+      const response = frameId !== undefined
+        ? await chrome.tabs.sendMessage(tabId, msg, { frameId })
+        : await chrome.tabs.sendMessage(tabId, msg);
+      if (response?.ok) return { response, frameId };
+    } catch { /* content script 可能未注入，后续统一处理 */ }
+    return null;
+  };
+
+  try {
+    // 优化：去掉 ensureContentScript ping，直接发送，失败时再注入
+
+    // 多 frame 并行搜索（优化：Promise.race 取最快的成功结果）
+    if (isSearchOrAct && chrome.webNavigation?.getAllFrames) {
       const frames = await chrome.webNavigation.getAllFrames({ tabId });
       if (frames && frames.length > 1) {
-        for (const frame of frames) {
-          try {
-            const response = await chrome.tabs.sendMessage(tabId, {
-              type: "browser_bridge_request",
-              request: {
-                ...request,
-                tabId,
-                params: {
-                  ...(isRecord(request.params) ? request.params : {}),
-                  __confirmedHighRisk: confirmedHighRisk
-                }
-              }
-            }, { frameId: frame.frameId });
+        // 并行发送到所有 frame，取第一个成功的
+        const framePromises = frames.map(frame => sendToFrame(frame.frameId));
+        const results = await Promise.allSettled(framePromises);
 
-            if (response?.ok) {
-              await appendAuditLog({ tool: request.tool, url: tab.url, ok: true });
-              return response.data;
-            }
-          } catch {
-            continue; 
+        for (const result of results) {
+          if (result.status === "fulfilled" && result.value?.response) {
+            const { response } = result.value;
+            await appendAuditLog({ tool: request.tool, url: tab.url, ok: true });
+            return response.data;
           }
         }
+
+        // 所有 frame 都失败，尝试注入 content script 后重试主 frame
+        await ensureContentScript(tabId);
+        const retryResult = await sendToFrame(0);
+        if (retryResult?.response) {
+          await appendAuditLog({ tool: request.tool, url: tab.url, ok: true });
+          return retryResult.response.data;
+        }
+
         throw new Error("ELEMENT_NOT_FOUND: 在所有 Frame 中均未找到目标元素");
       }
     }
 
-    const response = await chrome.tabs.sendMessage(tabId, {
-      type: "browser_bridge_request",
-      request: {
-        ...request,
-        tabId,
-        params: {
-          ...(isRecord(request.params) ? request.params : {}),
-          __confirmedHighRisk: confirmedHighRisk
-        }
-      }
-    }, { frameId: 0 });
+    // 单 frame：直接发送，失败时注入 content script 后重试
+    let result = await sendToFrame(0);
+    if (!result) {
+      await ensureContentScript(tabId);
+      result = await sendToFrame(0);
+    }
 
-    if (!response?.ok) {
+    if (!result?.response) {
+      throw new Error("CONTENT_SCRIPT_NOT_READY: 页面脚本请求失败");
+    }
+
+    const { response } = result;
+
+    if (!response.ok) {
       const error = new Error(`${response?.error?.code ?? "INTERNAL_ERROR"}: ${response?.error?.message ?? "页面脚本请求失败"}`);
       (error as any).details = response?.error?.diagnostics;
       throw error;
@@ -632,6 +755,11 @@ async function captureScreenshot(
   const quality = typeof params.quality === "number" ? params.quality : undefined;
   const overlay = params.overlay === true;
 
+  // 截图前隐藏状态蒙层，避免干扰 Agent 视觉判断
+  try {
+    await chrome.tabs.sendMessage(tab.id, { type: "browser_bridge_hide_status" });
+  } catch { /* ignore */ }
+
   if (overlay) {
     try {
       await chrome.tabs.sendMessage(tab.id, { type: "browser_bridge_draw_overlay" });
@@ -668,6 +796,10 @@ async function captureScreenshot(
         await chrome.tabs.sendMessage(tab.id, { type: "browser_bridge_remove_overlay" });
       } catch { /* ignore */ }
     }
+    // 恢复状态蒙层
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: "browser_bridge_show_status" });
+    } catch { /* ignore */ }
   }
 }
 
@@ -693,6 +825,11 @@ async function captureCdpScreenshot(
   if (tab.windowId) {
     await chrome.windows.update(tab.windowId, { focused: true });
   }
+
+  // 截图前隐藏状态蒙层
+  try {
+    await chrome.tabs.sendMessage(tab.id, { type: "browser_bridge_hide_status" });
+  } catch { /* ignore */ }
 
   try {
     chrome.debugger.attach(debuggee, "1.3");
@@ -764,6 +901,10 @@ async function captureCdpScreenshot(
     } catch {
       // ignore detach errors
     }
+    // 恢复状态蒙层
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: "browser_bridge_show_status" });
+    } catch { /* ignore */ }
   }
 }
 
@@ -839,6 +980,10 @@ async function capturePdf(request: BridgeRequest): Promise<Record<string, unknow
     } catch {
       // ignore detach errors
     }
+    // 恢复状态蒙层
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: "browser_bridge_show_status" });
+    } catch { /* ignore */ }
   }
 }
 
@@ -856,6 +1001,540 @@ function sendDebuggerCommand(
       }
     });
   });
+}
+
+async function screenObserve(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) {
+    throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  await assertUrlAllowed(tab.url);
+
+  const result = await captureScreenshot(tab, {
+    ...request,
+    tool: "browser_screenshot",
+    params: {
+      format: params.format,
+      quality: params.quality,
+      mode: typeof params.scale === "number" ? "cdp" : "visible",
+      scale: params.scale
+    }
+  });
+
+  const viewport = await getViewportInfo(tabId);
+  const withGrid = params.withGrid === true;
+  const gridSize = getPositiveNumber(params.gridSize) ?? 100;
+  const dataUrl = withGrid && typeof result.dataUrl === "string"
+    ? await addGridOverlay(tabId, result.dataUrl, gridSize)
+    : result.dataUrl;
+
+  await appendAuditLog({ tool: "browser_screen_observe", url: tab.url, ok: true });
+
+  return {
+    ...result,
+    dataUrl,
+    viewport,
+    coordinateSystem: "viewport-css-pixels",
+    withGrid,
+    gridSize: withGrid ? gridSize : undefined,
+    targets: request.tool === "browser_visual_observe" || params.includeTargets === true
+      ? await getVisualTargets(tabId, params)
+      : undefined
+  };
+}
+
+async function getVisualTargets(tabId: number, params: Record<string, unknown>): Promise<unknown> {
+  try {
+    await ensureContentScript(tabId);
+    const response = await chrome.tabs.sendMessage(tabId, {
+      type: "browser_bridge_request",
+      request: {
+        id: crypto.randomUUID(),
+        tool: "browser_visual_observe",
+        tabId,
+        params: {
+          maxTargets: typeof params.maxTargets === "number" ? params.maxTargets : 120
+        }
+      }
+    }, { frameId: 0 });
+    return response?.ok ? response.data?.targets : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function runScreenInput(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) {
+    throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  await assertUrlAllowed(tab.url);
+
+  if (!tab.url || /^(chrome|chrome-extension|about|edge|brave):/.test(tab.url)) {
+    throw new Error("UNSUPPORTED_PAGE: 当前页面不支持视觉坐标操作");
+  }
+
+  await chrome.tabs.update(tabId, { active: true });
+  if (tab.windowId) {
+    await chrome.windows.update(tab.windowId, { focused: true });
+  }
+
+  const debuggee = { tabId };
+  try {
+    chrome.debugger.attach(debuggee, "1.3");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("Another debugger") || message.includes("already attached")) {
+      throw new Error("DEBUGGER_BUSY: 目标标签页已有 DevTools 打开，请关闭后重试");
+    }
+    throw new Error(`INTERNAL_ERROR: 附加调试器失败: ${message}`);
+  }
+
+  try {
+    switch (request.tool) {
+      case "browser_screen_click":
+        await dispatchScreenClick(tabId, params);
+        break;
+      case "browser_screen_type":
+        await dispatchScreenType(tabId, params);
+        break;
+      case "browser_screen_drag":
+        await dispatchScreenDrag(tabId, params);
+        break;
+      case "browser_screen_scroll":
+        await dispatchScreenScroll(tabId, params);
+        break;
+      case "browser_screen_press":
+        await dispatchScreenPress(tabId, params);
+        break;
+      default:
+        throw new Error(`INVALID_PARAMS: 不支持的视觉操作 ${request.tool}`);
+    }
+
+    await appendAuditLog({ tool: request.tool, url: tab.url, ok: true });
+    return {
+      ok: true,
+      tabId,
+      url: tab.url,
+      title: tab.title,
+      tool: request.tool,
+      coordinateSystem: "viewport-css-pixels"
+    };
+  } catch (error) {
+    await appendAuditLog({
+      tool: request.tool,
+      url: tab.url,
+      ok: false,
+      errorCode: error instanceof Error ? error.message.split(":", 1)[0] : "INTERNAL_ERROR"
+    });
+    throw error;
+  } finally {
+    try {
+      chrome.debugger.detach(debuggee);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+async function runVisualMode(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const params = isRecord(request.params) ? request.params : {};
+  const requestedTabId = request.tabId ?? Number(params.tabId);
+  const tabId = requestedTabId || (await getActiveTab()).id;
+  if (!tabId) {
+    throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  await assertUrlAllowed(tab.url);
+  await ensureContentScript(tabId);
+
+  const contentResponse = await chrome.tabs.sendMessage(tabId, {
+    type: "browser_bridge_request",
+    request: {
+      ...request,
+      tabId,
+      params
+    }
+  }, { frameId: 0 });
+
+  if (!contentResponse?.ok) {
+    throw new Error(`${contentResponse?.error?.code ?? "INTERNAL_ERROR"}: ${contentResponse?.error?.message ?? "视觉任务失败"}`);
+  }
+
+  const plan = contentResponse.data;
+  if (!isRecord(plan)) {
+    throw new Error("INTERNAL_ERROR: 视觉任务返回格式无效");
+  }
+
+  const actions = Array.isArray(plan.actions) ? plan.actions.filter(isRecord) : [];
+  const executed: unknown[] = [];
+  
+  return withDebugger(tabId, async (debuggee) => {
+    for (const action of actions) {
+      const tool = action.tool;
+      if (tool === "browser_screen_click") {
+        if (action.x === "__resolve_after_open__" || action.y === "__resolve_after_open__") {
+          const resolved = await resolveVisualTextTarget(tabId, {
+            text: typeof action.option === "string" ? action.option : String(action.text ?? ""),
+            exact: action.exact !== false,
+            timeoutMs: typeof action.timeoutMs === "number" ? action.timeoutMs : 5000
+          });
+          action.x = resolved.x;
+          action.y = resolved.y;
+          action.resolved = resolved;
+        }
+        await dispatchScreenClick(tabId, {
+          x: action.x,
+          y: action.y,
+          delayMs: action.delayMs
+        });
+        executed.push(action);
+        if (typeof action.afterDelayMs === "number" && action.afterDelayMs > 0) {
+          await delay(action.afterDelayMs);
+        }
+        continue;
+      }
+      throw new Error(`INVALID_PARAMS: 不支持的视觉动作 ${String(tool)}`);
+    }
+
+    await appendAuditLog({ tool: request.tool, url: tab.url, ok: true });
+    return {
+      ok: true,
+      tabId,
+      url: tab.url,
+      title: tab.title,
+      tool: request.tool,
+      coordinateSystem: "viewport-css-pixels",
+      plan,
+      executed
+    };
+  });
+}
+
+async function resolveVisualTextTarget(
+  tabId: number,
+  options: { text: string; exact: boolean; timeoutMs: number }
+): Promise<{ x: number; y: number; matched?: unknown }> {
+  const deadline = Date.now() + options.timeoutMs;
+  let lastError = "";
+  while (Date.now() <= deadline) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, {
+        type: "browser_bridge_request",
+        request: {
+          id: crypto.randomUUID(),
+          tool: "browser_visual_resolve_text",
+          tabId,
+          params: {
+            text: options.text,
+            exact: options.exact,
+            prefer: "bottom"
+          }
+        }
+      }, { frameId: 0 });
+      if (response?.ok && isRecord(response.data) && isRecord(response.data.matched)) {
+        const center = response.data.matched.center;
+        if (isRecord(center) && typeof center.x === "number" && typeof center.y === "number") {
+          return { x: center.x, y: center.y, matched: response.data.matched };
+        }
+      }
+      lastError = response?.error?.message ?? "未找到目标";
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await delay(100);
+  }
+  throw new Error(`ELEMENT_NOT_FOUND: 视觉模式未找到文本「${options.text}」: ${lastError}`);
+}
+
+async function dispatchScreenClick(tabId: number, params: Record<string, unknown>): Promise<void> {
+  const x = requiredNumber(params.x, "x");
+  const y = requiredNumber(params.y, "y");
+  const button = screenMouseButton(params.button);
+  const clickCount = typeof params.clickCount === "number" ? Math.max(1, Math.min(3, Math.round(params.clickCount))) : 1;
+  const delayMs = typeof params.delayMs === "number" ? Math.max(0, params.delayMs) : 50;
+
+  await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x,
+    y,
+    button: "none"
+  });
+  await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x,
+    y,
+    button,
+    clickCount
+  });
+  if (delayMs > 0) await delay(delayMs);
+  await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x,
+    y,
+    button,
+    clickCount
+  });
+}
+
+async function dispatchScreenDrag(tabId: number, params: Record<string, unknown>): Promise<void> {
+  const from = requiredPoint(params.from, "from");
+  const to = requiredPoint(params.to, "to");
+  const button = screenMouseButton(params.button);
+  const steps = typeof params.steps === "number" ? Math.max(1, Math.min(120, Math.round(params.steps))) : 20;
+  const durationMs = typeof params.durationMs === "number" ? Math.max(0, params.durationMs) : 300;
+  const stepDelay = steps > 0 ? durationMs / steps : 0;
+
+  await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: from.x,
+    y: from.y,
+    button: "none"
+  });
+  await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: from.x,
+    y: from.y,
+    button,
+    clickCount: 1
+  });
+
+  for (let index = 1; index <= steps; index++) {
+    const progress = index / steps;
+    await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: from.x + (to.x - from.x) * progress,
+      y: from.y + (to.y - from.y) * progress,
+      button
+    });
+    if (stepDelay > 0) await delay(stepDelay);
+  }
+
+  await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: to.x,
+    y: to.y,
+    button,
+    clickCount: 1
+  });
+}
+
+async function dispatchScreenType(tabId: number, params: Record<string, unknown>): Promise<void> {
+  const text = typeof params.text === "string" ? params.text : undefined;
+  if (text === undefined) {
+    throw new Error("INVALID_PARAMS: text 参数必填");
+  }
+  await sendDebuggerCommand(tabId, "Input.insertText", { text });
+}
+
+async function dispatchScreenScroll(tabId: number, params: Record<string, unknown>): Promise<void> {
+  const viewport = await getViewportInfo(tabId);
+  const x = typeof params.x === "number" ? params.x : viewport.width / 2;
+  const y = typeof params.y === "number" ? params.y : viewport.height / 2;
+  const deltaX = typeof params.deltaX === "number" ? params.deltaX : 0;
+  const deltaY = typeof params.deltaY === "number" ? params.deltaY : 600;
+
+  await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseWheel",
+    x,
+    y,
+    deltaX,
+    deltaY
+  });
+}
+
+async function dispatchScreenPress(tabId: number, params: Record<string, unknown>): Promise<void> {
+  const key = typeof params.key === "string" ? params.key : "";
+  if (!key) {
+    throw new Error("INVALID_PARAMS: key 参数必填");
+  }
+  const keyInfo = keyToCdpInfo(key);
+  await sendDebuggerCommand(tabId, "Input.dispatchKeyEvent", {
+    type: "keyDown",
+    ...keyInfo
+  });
+  await sendDebuggerCommand(tabId, "Input.dispatchKeyEvent", {
+    type: "keyUp",
+    ...keyInfo
+  });
+}
+
+async function getViewportInfo(tabId: number): Promise<{
+  width: number;
+  height: number;
+  scrollX: number;
+  scrollY: number;
+  devicePixelRatio: number;
+}> {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => ({
+      width: window.innerWidth,
+      height: window.innerHeight,
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+      devicePixelRatio: window.devicePixelRatio || 1
+    })
+  });
+  const value = results[0]?.result;
+  if (!isRecord(value)) {
+    throw new Error("INTERNAL_ERROR: 无法读取 viewport 信息");
+  }
+  return {
+    width: Number(value.width),
+    height: Number(value.height),
+    scrollX: Number(value.scrollX),
+    scrollY: Number(value.scrollY),
+    devicePixelRatio: Number(value.devicePixelRatio) || 1
+  };
+}
+
+async function addGridOverlay(tabId: number, dataUrl: string, gridSize: number): Promise<string> {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: async (source: string, size: number) => {
+      const image = new Image();
+      image.src = source;
+      await image.decode();
+
+      const ratio = image.width / window.innerWidth;
+      const canvas = document.createElement("canvas");
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const context = canvas.getContext("2d");
+      if (!context) return source;
+
+      context.drawImage(image, 0, 0);
+      context.save();
+      context.scale(ratio, ratio);
+      context.strokeStyle = "rgba(0, 128, 255, 0.65)";
+      context.fillStyle = "rgba(0, 96, 160, 0.92)";
+      context.lineWidth = 1 / ratio;
+      context.font = "12px sans-serif";
+
+      for (let x = 0; x <= window.innerWidth; x += size) {
+        context.beginPath();
+        context.moveTo(x, 0);
+        context.lineTo(x, window.innerHeight);
+        context.stroke();
+        context.fillText(String(x), x + 3, 14);
+      }
+
+      for (let y = 0; y <= window.innerHeight; y += size) {
+        context.beginPath();
+        context.moveTo(0, y);
+        context.lineTo(window.innerWidth, y);
+        context.stroke();
+        context.fillText(String(y), 3, y + 14);
+      }
+
+      context.restore();
+      return canvas.toDataURL(source.startsWith("data:image/jpeg") ? "image/jpeg" : "image/png");
+    },
+    args: [dataUrl, gridSize]
+  });
+
+  return typeof results[0]?.result === "string" ? results[0].result : dataUrl;
+}
+
+function requiredNumber(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`INVALID_PARAMS: ${name} 参数必填且必须是数字`);
+  }
+  return value;
+}
+
+function requiredPoint(value: unknown, name: string): { x: number; y: number } {
+  if (!isRecord(value)) {
+    throw new Error(`INVALID_PARAMS: ${name} 参数必填`);
+  }
+  return {
+    x: requiredNumber(value.x, `${name}.x`),
+    y: requiredNumber(value.y, `${name}.y`)
+  };
+}
+
+function screenMouseButton(value: unknown): "left" | "middle" | "right" {
+  return value === "middle" || value === "right" ? value : "left";
+}
+
+function keyToCdpInfo(key: string): Record<string, unknown> {
+  const special: Record<string, { code: string; windowsVirtualKeyCode: number }> = {
+    Enter: { code: "Enter", windowsVirtualKeyCode: 13 },
+    Escape: { code: "Escape", windowsVirtualKeyCode: 27 },
+    Tab: { code: "Tab", windowsVirtualKeyCode: 9 },
+    Backspace: { code: "Backspace", windowsVirtualKeyCode: 8 },
+    Delete: { code: "Delete", windowsVirtualKeyCode: 46 },
+    ArrowUp: { code: "ArrowUp", windowsVirtualKeyCode: 38 },
+    ArrowDown: { code: "ArrowDown", windowsVirtualKeyCode: 40 },
+    ArrowLeft: { code: "ArrowLeft", windowsVirtualKeyCode: 37 },
+    ArrowRight: { code: "ArrowRight", windowsVirtualKeyCode: 39 },
+    Space: { code: "Space", windowsVirtualKeyCode: 32 }
+  };
+  const mapped = special[key];
+  if (mapped) {
+    return { key, code: mapped.code, windowsVirtualKeyCode: mapped.windowsVirtualKeyCode };
+  }
+  if (key.length === 1) {
+    return {
+      key,
+      text: key,
+      unmodifiedText: key,
+      code: /^[a-z]$/i.test(key) ? `Key${key.toUpperCase()}` : undefined,
+      windowsVirtualKeyCode: key.toUpperCase().charCodeAt(0)
+    };
+  }
+  return { key, code: key };
+}
+
+async function smartAct(request: BridgeRequest): Promise<unknown> {
+  const params = isRecord(request.params) ? request.params : {};
+  const query = stringParam(params, "query") ?? stringParam(params, "text");
+  const hasSelectorHints = params.selector || params.elementId || params.role || params.ariaLabel;
+  const isVisualOnlyQuery = params.forceVisual === true;
+
+  // 策略1：有 selector/elementId/role 等精确参数 → 直接走 DOM，不需要视觉 fallback
+  if (hasSelectorHints) {
+    return sendToContentScript({ ...request, tool: "browser_act" });
+  }
+
+  // 策略2：显式要求视觉模式 → 直接走视觉
+  if (isVisualOnlyQuery && query) {
+    return runVisualMode({
+      ...request,
+      tool: "browser_visual_click_text",
+      params: { ...params, text: query, exact: params.exact === true }
+    });
+  }
+
+  // 策略3：默认尝试 DOM → 失败时视觉自愈
+  try {
+    return await sendToContentScript({ ...request, tool: "browser_act" });
+  } catch (error: any) {
+    if (error?.message?.includes("ELEMENT_NOT_FOUND") && query) {
+      console.log(`[SmartAct] DOM 定位失败，尝试视觉自愈: "${query}"`);
+      try {
+        return await runVisualMode({
+          ...request,
+          tool: "browser_visual_click_text",
+          params: { ...params, text: query, exact: params.exact === true }
+        });
+      } catch (visualError: any) {
+        console.error(`[SmartAct] 视觉自愈也失败: ${visualError.message}`);
+        throw error;
+      }
+    }
+    throw error;
+  }
 }
 
 async function evaluateScript(request: BridgeRequest): Promise<Record<string, unknown>> {
@@ -943,6 +1622,8 @@ async function getAXTree(request: BridgeRequest): Promise<Record<string, unknown
   const debuggee = { tabId };
   try {
     await chrome.debugger.attach(debuggee, "1.3");
+    // 显式开启 Accessibility 域，有助于触发树的构建
+    await chrome.debugger.sendCommand(debuggee, "Accessibility.enable", {});
     const result = await chrome.debugger.sendCommand(debuggee, "Accessibility.getFullAXTree", {});
     await appendAuditLog({ tool: "browser_get_ax_tree", url: tab.url, ok: true });
     return { tabId, url: tab.url, title: tab.title, axTree: result };
@@ -975,14 +1656,39 @@ async function observePage(request: BridgeRequest): Promise<Record<string, unkno
   const debuggee = { tabId };
   try {
     await chrome.debugger.attach(debuggee, "1.3");
-    const result = (await chrome.debugger.sendCommand(debuggee, "Accessibility.getFullAXTree", {})) as { nodes: any[] };
-    const simplified = simplifyAXTree(result.nodes);
+    await chrome.debugger.sendCommand(debuggee, "Accessibility.enable", {});
+    
+    // 给浏览器一点点时间来生成 AX 树
+    let result = (await chrome.debugger.sendCommand(debuggee, "Accessibility.getFullAXTree", {})) as { nodes: any[] };
+    let simplified = simplifyAXTree(result.nodes);
+
+    // 如果 AXTree 太简单（只有根节点），尝试等待或使用 depth: -1 强制获取
+    if (simplified.split("\n").length <= 3) {
+      await delay(200);
+      result = (await chrome.debugger.sendCommand(debuggee, "Accessibility.getFullAXTree", { depth: -1 })) as { nodes: any[] };
+      simplified = simplifyAXTree(result.nodes);
+    }
+
+    // 如果仍然为空，尝试获取 Root 节点的 Partial Tree
+    if (simplified.split("\n").length <= 2) {
+      const doc = await chrome.debugger.sendCommand(debuggee, "DOM.getDocument", { depth: 0 }) as { root: { nodeId: number } };
+      if (doc?.root?.nodeId) {
+        const partial = await chrome.debugger.sendCommand(debuggee, "Accessibility.getPartialAXTree", {
+          nodeId: doc.root.nodeId,
+          fetchRelativeTree: true
+        }) as { nodes: any[] };
+        if (partial?.nodes?.length > 0) {
+          simplified = simplifyAXTree(partial.nodes);
+        }
+      }
+    }
+
     await appendAuditLog({ tool: "browser_observe", url: tab.url, ok: true });
     return {
       tabId,
       url: tab.url,
       title: tab.title,
-      axTree: simplified
+      axTree: simplified || "AXTree 为空或过于简单。这通常是因为页面非标准或正在动态加载。建议优先使用 browser_visual_observe (坐标级) 或 browser_get_page_model (DOM 级) 观察页面内容。"
     };
   } catch (error) {
     await appendAuditLog({
@@ -1893,12 +2599,17 @@ function normalizeTab(tab: chrome.tabs.Tab): BrowserTab {
   };
 }
 
-async function waitForTabUrl(tabId: number | undefined, expectedUrl: string): Promise<chrome.tabs.Tab> {
+async function waitForTabUrl(
+  tabId: number | undefined,
+  expectedUrl: string,
+  options: { timeoutMs?: number } = {}
+): Promise<chrome.tabs.Tab> {
   if (!tabId) {
     throw new Error("TAB_NOT_FOUND: 标签页没有 ID");
   }
 
-  const deadline = Date.now() + 10_000;
+  const timeoutMs = options.timeoutMs ?? 10_000;
+  const deadline = Date.now() + timeoutMs;
   const expected = new URL(expectedUrl);
 
   while (Date.now() < deadline) {
@@ -1920,7 +2631,7 @@ async function waitForTabUrl(tabId: number | undefined, expectedUrl: string): Pr
 
   const tab = await chrome.tabs.get(tabId);
   if (!tab.url) {
-    throw new Error("ACTION_TIMEOUT: 标签页 URL 在 10000ms 内不可用");
+    throw new Error(`ACTION_TIMEOUT: 标签页 URL 在 ${timeoutMs}ms 内不可用`);
   }
   return tab;
 }
@@ -1932,6 +2643,7 @@ function parseStepAction(value: unknown): BrowserStepAction {
     "click",
     "hover",
     "type",
+    "selectOption",
     "fillForm",
     "clear",
     "scroll",
@@ -1942,6 +2654,12 @@ function parseStepAction(value: unknown): BrowserStepAction {
     "pageModel",
     "snapshot",
     "screenshot",
+    "screenObserve",
+    "screenClick",
+    "screenType",
+    "screenDrag",
+    "screenScroll",
+    "screenPress",
     "pdf",
     "sleep"
   ];
@@ -2006,13 +2724,17 @@ function extractTabId(data: unknown): number | undefined {
 }
 
 function sanitizeStepData(action: BrowserStepAction, data: unknown): unknown {
-  if (action === "screenshot" && isRecord(data)) {
+  if ((action === "screenshot" || action === "screenObserve") && isRecord(data)) {
     return {
       tabId: data.tabId,
       url: data.url,
       title: data.title,
       mimeType: data.mimeType,
-      dataUrlLength: typeof data.dataUrl === "string" ? data.dataUrl.length : undefined
+      dataUrlLength: typeof data.dataUrl === "string" ? data.dataUrl.length : undefined,
+      viewport: data.viewport,
+      coordinateSystem: data.coordinateSystem,
+      withGrid: data.withGrid,
+      gridSize: data.gridSize
     };
   }
   if (action === "pdf" && isRecord(data)) {
@@ -2115,6 +2837,7 @@ async function getPopupStatus(): Promise<Record<string, unknown>> {
     recordedCount: recordedSteps.length,
     lastError: lastBridgeError,
     readyState: offscreenStatus.readyState,
+    trustAgentFully: getSessionTrustAgentFully(),
     security,
     audit
   };

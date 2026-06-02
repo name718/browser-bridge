@@ -46,6 +46,13 @@ const typeSchema = optionalTabId.extend({
   timeoutMs: z.number().int().positive().optional()
 });
 
+const selectOptionSchema = optionalTabId.extend({
+  label: z.string().min(1),
+  option: z.string().min(1),
+  exact: z.boolean().optional(),
+  timeoutMs: z.number().int().positive().optional()
+});
+
 const clearSchema = optionalTabId.extend({
   query: z.string().optional(),
   elementId: z.string().optional(),
@@ -59,7 +66,9 @@ const clearSchema = optionalTabId.extend({
 });
 
 const openUrlSchema = z.object({
-  url: z.string().url()
+  url: z.string().url(),
+  timeoutMs: z.number().int().positive().optional(),
+  waitUntil: z.enum(["commit", "ready"]).optional()
 });
 
 const activateTabSchema = z.object({
@@ -151,6 +160,74 @@ const screenshotSchema = optionalTabId.extend({
   scale: z.number().min(0.1).max(4).optional()
 });
 
+const screenObserveSchema = optionalTabId.extend({
+  format: z.enum(["png", "jpeg"]).optional(),
+  quality: z.number().int().min(0).max(100).optional(),
+  withGrid: z.boolean().optional(),
+  gridSize: z.number().int().min(20).max(400).optional(),
+  scale: z.number().min(0.1).max(4).optional()
+});
+
+const screenClickSchema = optionalTabId.extend({
+  x: z.number(),
+  y: z.number(),
+  button: z.enum(["left", "middle", "right"]).optional(),
+  clickCount: z.number().int().min(1).max(3).optional(),
+  delayMs: z.number().int().nonnegative().max(2000).optional()
+});
+
+const screenTypeSchema = optionalTabId.extend({
+  text: z.string()
+});
+
+const screenPointSchema = z.object({
+  x: z.number(),
+  y: z.number()
+});
+
+const screenDragSchema = optionalTabId.extend({
+  from: screenPointSchema,
+  to: screenPointSchema,
+  button: z.enum(["left", "middle", "right"]).optional(),
+  steps: z.number().int().min(1).max(120).optional(),
+  durationMs: z.number().int().nonnegative().max(10000).optional()
+});
+
+const screenScrollSchema = optionalTabId.extend({
+  x: z.number().optional(),
+  y: z.number().optional(),
+  deltaX: z.number().optional(),
+  deltaY: z.number().optional()
+});
+
+const screenPressSchema = optionalTabId.extend({
+  key: z.string().min(1)
+});
+
+const visualObserveSchema = screenObserveSchema.extend({
+  includeTargets: z.boolean().optional(),
+  maxTargets: z.number().int().positive().max(200).optional()
+});
+
+const visualClickTextSchema = optionalTabId.extend({
+  text: z.string().min(1),
+  exact: z.boolean().optional(),
+  prefer: z.enum(["top", "bottom", "left", "right", "largest", "smallest"]).optional(),
+  timeoutMs: z.number().int().positive().optional()
+});
+
+const visualSelectSchema = optionalTabId.extend({
+  label: z.string().min(1),
+  option: z.string().min(1),
+  exact: z.boolean().optional(),
+  timeoutMs: z.number().int().positive().optional()
+});
+
+const visualTaskSchema = optionalTabId.extend({
+  instruction: z.string().min(1),
+  timeoutMs: z.number().int().positive().optional()
+});
+
 const pdfSchema = optionalTabId.extend({
   landscape: z.boolean().optional(),
   printBackground: z.boolean().optional(),
@@ -214,6 +291,7 @@ const runStepSchema = stepTargetSchema.extend({
     "click",
     "hover",
     "type",
+    "selectOption",
     "fillForm",
     "clear",
     "scroll",
@@ -224,6 +302,12 @@ const runStepSchema = stepTargetSchema.extend({
     "pageModel",
     "snapshot",
     "screenshot",
+    "screenObserve",
+    "screenClick",
+    "screenType",
+    "screenDrag",
+    "screenScroll",
+    "screenPress",
     "pdf",
     "sleep"
   ]),
@@ -232,6 +316,9 @@ const runStepSchema = stepTargetSchema.extend({
   target: stepTargetSchema.optional(),
   url: z.string().url().optional(),
   value: z.string().optional(),
+  option: z.string().optional(),
+  label: z.string().optional(),
+  exact: z.boolean().optional(),
   fields: z.array(formFieldSchema).optional(),
   replace: z.boolean().optional(),
   direction: z.enum(["up", "down", "left", "right"]).optional(),
@@ -250,6 +337,18 @@ const runStepSchema = stepTargetSchema.extend({
   maxTableRows: z.number().int().min(0).max(30).optional(),
   format: z.enum(["png", "jpeg"]).optional(),
   quality: z.number().int().min(0).max(100).optional(),
+  withGrid: z.boolean().optional(),
+  gridSize: z.number().int().min(20).max(400).optional(),
+  x: z.number().optional(),
+  y: z.number().optional(),
+  from: screenPointSchema.optional(),
+  to: screenPointSchema.optional(),
+  button: z.enum(["left", "middle", "right"]).optional(),
+  clickCount: z.number().int().min(1).max(3).optional(),
+  steps: z.number().int().min(1).max(120).optional(),
+  durationMs: z.number().int().nonnegative().max(10000).optional(),
+  deltaX: z.number().optional(),
+  deltaY: z.number().optional(),
   landscape: z.boolean().optional(),
   printBackground: z.boolean().optional(),
   scale: z.number().min(0.1).max(2).optional(),
@@ -316,7 +415,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_observe",
-      description: "【推荐】获取当前页面的简化无障碍树（Text-based AOM）。相比完整 AXTree，它以更直观的缩进文本形式返回，极大节省 Token，是 AI 观察页面结构的首选工具。",
+      description: "【推荐】获取当前页面的简化无障碍树（Text-based AOM）。如果返回结果过于简单或为空，说明该页面非标准或正在加载，请务必尝试 browser_visual_observe 或直接使用 browser_visual_task 操作。",
       inputSchema: schema({
         tabId: { type: "number" }
       }),
@@ -501,6 +600,24 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
       }
     },
     {
+      name: "browser_select_option",
+      description: "【推荐优先使用】按表单标签选择下拉项。适合 Ant Design/Arco/Element 等自定义 Select。如果页面结构复杂导致本工具失效，请尝试使用 browser_visual_task。系统默认超时 60s。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        label: { type: "string" },
+        option: { type: "string" },
+        exact: { type: "boolean" },
+        timeoutMs: { type: "number" }
+      }, ["label", "option"]),
+      handler: async (args) => {
+        const parsed = selectOptionSchema.parse(args ?? {});
+        return bridge.call("browser_select_option", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: parsed.timeoutMs ?? 60000
+        });
+      }
+    },
+    {
       name: "browser_fill_form",
       description: "一次性填写多个表单字段，插件在浏览器端逐个查找和写入，减少多次 tool call。",
       inputSchema: schema({
@@ -612,6 +729,179 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
       handler: async (args) => {
         const parsed = screenshotSchema.parse(args ?? {});
         return bridge.call("browser_screenshot", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_screen_observe",
+      description: "视觉优先观察当前标签页。返回可视区域截图、viewport 尺寸、DPR 和坐标系信息；坐标统一为 viewport CSS pixels。可开启 withGrid 叠加坐标网格，适合 Canvas、设计器和可视化平台操作前定位。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        format: { type: "string", enum: ["png", "jpeg"] },
+        quality: { type: "number" },
+        withGrid: { type: "boolean" },
+        gridSize: { type: "number" },
+        scale: { type: "number" }
+      }),
+      handler: async (args) => {
+        const parsed = screenObserveSchema.parse(args ?? {});
+        return bridge.call("browser_screen_observe", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_screen_click",
+      description: "按 viewport CSS pixel 坐标点击当前标签页。适合 Canvas、WebGL、设计器画布、复杂浮层等 DOM 定位不可靠的场景。建议先用 browser_screen_observe 看截图和坐标。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        x: { type: "number" },
+        y: { type: "number" },
+        button: { type: "string", enum: ["left", "middle", "right"] },
+        clickCount: { type: "number" },
+        delayMs: { type: "number" }
+      }, ["x", "y"]),
+      handler: async (args) => {
+        const parsed = screenClickSchema.parse(args ?? {});
+        return bridge.call("browser_screen_click", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: (parsed.delayMs ?? 0) + 5000
+        });
+      }
+    },
+    {
+      name: "browser_screen_type",
+      description: "向当前焦点按 CDP 输入文本。通常先用 browser_screen_click 点中输入区域或画布文本编辑点，再调用本工具。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        text: { type: "string" }
+      }, ["text"]),
+      handler: async (args) => {
+        const parsed = screenTypeSchema.parse(args ?? {});
+        return bridge.call("browser_screen_type", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_screen_drag",
+      description: "按 viewport CSS pixel 坐标拖拽。适合拖动画布节点、设计器组件、范围选择、滑块等视觉操作。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        from: {
+          type: "object",
+          properties: { x: { type: "number" }, y: { type: "number" } },
+          required: ["x", "y"],
+          additionalProperties: false
+        },
+        to: {
+          type: "object",
+          properties: { x: { type: "number" }, y: { type: "number" } },
+          required: ["x", "y"],
+          additionalProperties: false
+        },
+        button: { type: "string", enum: ["left", "middle", "right"] },
+        steps: { type: "number" },
+        durationMs: { type: "number" }
+      }, ["from", "to"]),
+      handler: async (args) => {
+        const parsed = screenDragSchema.parse(args ?? {});
+        return bridge.call("browser_screen_drag", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: (parsed.durationMs ?? 300) + 5000
+        });
+      }
+    },
+    {
+      name: "browser_screen_scroll",
+      description: "按 CDP 发送鼠标滚轮事件。x/y 是滚动发生位置，deltaX/deltaY 是滚动量；不传坐标时默认在视口中心滚动。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        x: { type: "number" },
+        y: { type: "number" },
+        deltaX: { type: "number" },
+        deltaY: { type: "number" }
+      }),
+      handler: async (args) => {
+        const parsed = screenScrollSchema.parse(args ?? {});
+        return bridge.call("browser_screen_scroll", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_screen_press",
+      description: "按 CDP 向页面发送按键，例如 Enter、Escape、Tab、ArrowDown、Backspace。适合视觉操作后的键盘确认或快捷键。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        key: { type: "string" }
+      }, ["key"]),
+      handler: async (args) => {
+        const parsed = screenPressSchema.parse(args ?? {});
+        return bridge.call("browser_screen_press", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_visual_observe",
+      description: "【Visual Mode 入口】像 Computer Use 一样观察当前浏览器可视区域：返回截图、坐标系、viewport 和可见文本/控件候选目标。处理 Canvas、设计器、复杂浮层、自定义下拉时优先使用本工具，而不是 page_model/CDP。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        format: { type: "string", enum: ["png", "jpeg"] },
+        quality: { type: "number" },
+        withGrid: { type: "boolean" },
+        gridSize: { type: "number" },
+        scale: { type: "number" },
+        includeTargets: { type: "boolean" },
+        maxTargets: { type: "number" }
+      }),
+      handler: async (args) => {
+        const parsed = visualObserveSchema.parse(args ?? {});
+        return bridge.call("browser_visual_observe", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_visual_click_text",
+      description: "【Visual Mode】按当前屏幕上可见文本点击目标，内部会定位文本/控件候选并用坐标点击。适合点击“查询”“保存”“运力开放平台”等屏幕上看得见的目标，避免手动坐标和 CDP 试探。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        text: { type: "string" },
+        exact: { type: "boolean" },
+        prefer: { type: "string", enum: ["top", "bottom", "left", "right", "largest", "smallest"] },
+        timeoutMs: { type: "number" }
+      }, ["text"]),
+      handler: async (args) => {
+        const parsed = visualClickTextSchema.parse(args ?? {});
+        return bridge.call("browser_visual_click_text", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: parsed.timeoutMs
+        });
+      }
+    },
+    {
+      name: "browser_visual_select",
+      description: "【Visual Mode】按视觉流程选择下拉：先在屏幕上找到 label 附近的下拉控件并坐标点击，再等待并点击屏幕上的 option 文本。适合“选择业务类型为运力开放平台”这类任务。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        label: { type: "string" },
+        option: { type: "string" },
+        exact: { type: "boolean" },
+        timeoutMs: { type: "number" }
+      }, ["label", "option"]),
+      handler: async (args) => {
+        const parsed = visualSelectSchema.parse(args ?? {});
+        return bridge.call("browser_visual_select", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: parsed.timeoutMs
+        });
+      }
+    },
+    {
+      name: "browser_visual_task",
+      description: "【推荐优先使用】执行简单视觉任务闭环（如：点击、输入、选择）。当前支持中文指令中的“选择<字段>为<选项>”和“点击<文本>”，内部使用截图/视觉候选/坐标点击，不走 page_model/CDP 调试链路，更稳定且抗干扰。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        instruction: { type: "string" },
+        timeoutMs: { type: "number" }
+      }, ["instruction"]),
+      handler: async (args) => {
+        const parsed = visualTaskSchema.parse(args ?? {});
+        return bridge.call("browser_visual_task", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: parsed.timeoutMs ?? 60000
+        });
       }
     },
     {
@@ -740,6 +1030,37 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
       }
     },
     {
+      name: "browser_smart_act",
+      description: "增强版浏览器操作（推荐）：自动尝试多种定位策略（语义、选择器、视觉），并在失败时自动进行视觉自愈。支持点击 (click)、输入 (type)、悬停 (hover)、清除 (clear)、等待 (waitFor) 和文本断言 (assertText)。相比 browser_act 更慢但更稳定，适用于复杂、动态或难以定位的页面。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        action: {
+          type: "string",
+          enum: ["click", "type", "hover", "clear", "waitFor", "assertText"]
+        },
+        target: { type: "string" },
+        query: { type: "string" },
+        text: { type: "string" },
+        value: { type: "string" },
+        role: { type: "string" },
+        ariaLabel: { type: "string" },
+        placeholder: { type: "string" },
+        href: { type: "string" },
+        selector: { type: "string" },
+        elementId: { type: "string" },
+        nearText: { type: "string" },
+        replace: { type: "boolean" },
+        visibleOnly: { type: "boolean" },
+        viewportOnly: { type: "boolean" },
+        confidenceThreshold: { type: "number" },
+        timeoutMs: { type: "number" }
+      }, ["action"]),
+      handler: (args) => bridge.call("browser_smart_act", args as Record<string, unknown>, {
+        tabId: (args as any).tabId,
+        timeoutMs: (args as any).timeoutMs
+      })
+    },
+    {
       name: "browser_cdp",
       description: "在浏览器端发送一次性 CDP (Chrome DevTools Protocol) 命令并返回结果。可用于获取 Performance 指标、DOM 树、网络详情等深度数据。method 格式为 'Domain.method'，如 'Performance.getMetrics'、'DOM.getDocument'、'Runtime.evaluate'。",
       inputSchema: schema({
@@ -860,9 +1181,18 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_open_url",
-      description: "在新的 Chrome 标签页中打开 URL。",
-      inputSchema: schema({ url: { type: "string" } }, ["url"]),
-      handler: async (args) => bridge.call("browser_open_url", openUrlSchema.parse(args ?? {}))
+      description: "在新的 Chrome 标签页中打开 URL。内网 SPA/认证跳转较慢时建议 waitUntil='commit'，页面开始导航即返回，后续用 visual 工具等待控件。",
+      inputSchema: schema({
+        url: { type: "string" },
+        timeoutMs: { type: "number" },
+        waitUntil: { type: "string", enum: ["commit", "ready"] }
+      }, ["url"]),
+      handler: async (args) => {
+        const parsed = openUrlSchema.parse(args ?? {});
+        return bridge.call("browser_open_url", parsed, {
+          timeoutMs: parsed.timeoutMs ?? (parsed.waitUntil === "commit" ? 5000 : 15000)
+        });
+      }
     },
     {
       name: "browser_open_incognito",
@@ -926,7 +1256,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_wait_for",
-      description: "等待匹配选择器或可见文本的元素出现。",
+      description: "等待匹配选择器或可见文本的元素出现。默认超时 30s。",
       inputSchema: schema({
         tabId: { type: "number" },
         query: { type: "string" },
@@ -942,13 +1272,13 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
         const parsed = waitForSchema.parse(args ?? {});
         return bridge.call("browser_wait_for", parsed, {
           tabId: parsed.tabId,
-          timeoutMs: parsed.timeoutMs
+          timeoutMs: parsed.timeoutMs ?? 30000
         });
       }
     },
     {
       name: "browser_run_steps",
-      description: "按顺序执行结构化浏览器操作步骤。支持 open、click、hover、type、clear、scroll、waitFor、pressKey、assertText、getText、pageModel、snapshot、screenshot、pdf、sleep 等动作。",
+      description: "按顺序执行结构化浏览器操作步骤。支持 open、click、hover、type、selectOption、clear、scroll、waitFor、pressKey、assertText、getText、pageModel、snapshot、screenshot、pdf、sleep 等动作。表单下拉选择优先使用 selectOption，不要拆成点击下拉再读模型。",
       inputSchema: schema({
         tabId: { type: "number" },
         stopOnError: { type: "boolean" },
@@ -962,7 +1292,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
             properties: {
               action: {
                 type: "string",
-                enum: ["open", "activateTab", "click", "hover", "type", "fillForm", "clear", "scroll", "waitFor", "pressKey", "assertText", "getText", "pageModel", "snapshot", "screenshot", "pdf", "sleep"]
+                enum: ["open", "activateTab", "click", "hover", "type", "selectOption", "fillForm", "clear", "scroll", "waitFor", "pressKey", "assertText", "getText", "pageModel", "snapshot", "screenshot", "screenObserve", "screenClick", "screenType", "screenDrag", "screenScroll", "screenPress", "pdf", "sleep"]
               },
               description: { type: "string" },
               tabId: { type: "number" },
@@ -973,6 +1303,9 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
               },
               url: { type: "string" },
               value: { type: "string" },
+              label: { type: "string" },
+              option: { type: "string" },
+              exact: { type: "boolean" },
               fields: {
                 type: "array",
                 items: {
@@ -1002,6 +1335,28 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
               maxTableRows: { type: "number" },
               format: { type: "string", enum: ["png", "jpeg"] },
               quality: { type: "number" },
+              withGrid: { type: "boolean" },
+              gridSize: { type: "number" },
+              x: { type: "number" },
+              y: { type: "number" },
+              from: {
+                type: "object",
+                properties: { x: { type: "number" }, y: { type: "number" } },
+                required: ["x", "y"],
+                additionalProperties: false
+              },
+              to: {
+                type: "object",
+                properties: { x: { type: "number" }, y: { type: "number" } },
+                required: ["x", "y"],
+                additionalProperties: false
+              },
+              button: { type: "string", enum: ["left", "middle", "right"] },
+              clickCount: { type: "number" },
+              steps: { type: "number" },
+              durationMs: { type: "number" },
+              deltaX: { type: "number" },
+              deltaY: { type: "number" },
               landscape: { type: "boolean" },
               printBackground: { type: "boolean" },
               scale: { type: "number" },
@@ -1024,7 +1379,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
         const parsed = runStepsSchema.parse(args ?? {});
         return bridge.call("browser_run_steps", parsed, {
           tabId: parsed.tabId,
-          timeoutMs: parsed.timeoutMs
+          timeoutMs: parsed.timeoutMs ?? Math.max(30_000, parsed.steps.length * 8_000)
         });
       }
     },

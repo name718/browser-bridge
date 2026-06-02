@@ -5,6 +5,7 @@ type PopupStatus = {
   recordedCount?: number;
   lastError?: string;
   readyState?: string;
+  trustAgentFully?: boolean;
   security?: {
     allowlist: string[];
     denylist: string[];
@@ -64,8 +65,8 @@ function renderStatus(status: PopupStatus): void {
   setValueIfIdle(bridgeUrl, status?.bridgeUrl ?? "ws://127.0.0.1:17321");
   setValueIfIdle(allowlist, status?.security?.allowlist.join("\n") ?? "http://*\nhttps://*");
   setValueIfIdle(denylist, status?.security?.denylist.join("\n") ?? "");
-  blockRisk.checked = status?.security?.blockHighRiskActions ?? true;
-  screenshotEnabled.checked = status?.security?.screenshotEnabled ?? true;
+  setCheckedIfIdle(blockRisk, status?.security?.blockHighRiskActions ?? true);
+  setCheckedIfIdle(screenshotEnabled, status?.security?.screenshotEnabled ?? true);
   dot.classList.toggle("connected", Boolean(status?.connected));
   auditLog.replaceChildren(...(status?.audit?.entries ?? []).map(renderAuditItem));
 }
@@ -95,7 +96,16 @@ document.querySelector("#bridge-form")?.addEventListener("submit", (event) => {
 
 document.querySelector("#security-form")?.addEventListener("submit", (event) => {
   event.preventDefault();
+  saveSecuritySettings();
+});
 
+for (const selector of ["#block-risk", "#screenshot-enabled"]) {
+  document.querySelector(selector)?.addEventListener("change", () => {
+    saveSecuritySettings({ quiet: true });
+  });
+}
+
+function saveSecuritySettings(options: { quiet?: boolean } = {}): void {
   const allowlist = document.querySelector<HTMLTextAreaElement>("#allowlist");
   const denylist = document.querySelector<HTMLTextAreaElement>("#denylist");
   const blockRisk = document.querySelector<HTMLInputElement>("#block-risk");
@@ -115,12 +125,16 @@ document.querySelector("#security-form")?.addEventListener("submit", (event) => 
       screenshotEnabled: screenshotEnabled.checked
     }
   }, () => {
+    refreshStatus();
+    if (options.quiet) {
+      return;
+    }
     saveStatus.textContent = "已保存";
     window.setTimeout(() => {
       saveStatus.textContent = "";
     }, 1500);
   });
-});
+}
 
 document.querySelector("#toggle-record")?.addEventListener("click", () => {
   const toggleRecord = document.querySelector("#toggle-record");
@@ -155,6 +169,12 @@ function setValueIfIdle(element: HTMLInputElement | HTMLTextAreaElement, value: 
   }
 }
 
+function setCheckedIfIdle(element: HTMLInputElement, checked: boolean): void {
+  if (document.activeElement !== element) {
+    element.checked = checked;
+  }
+}
+
 function renderAuditItem(entry: NonNullable<PopupStatus["audit"]>["entries"][number]): HTMLLIElement {
   const item = document.createElement("li");
   const time = new Date(entry.at).toLocaleTimeString();
@@ -168,7 +188,7 @@ function renderDiagnostics(status?: PopupStatus): string {
     return "无法读取插件状态，请打开 chrome://extensions 查看错误。";
   }
   if (status.connected) {
-    return `连接状态：${status.readyState ?? "OPEN"}`;
+    return `连接状态：${status.readyState ?? "OPEN"}${status.trustAgentFully ? "；本次会话完全信任 Agent" : ""}`;
   }
   const state = status.readyState ? `连接状态：${status.readyState}` : "连接状态：未知";
   return status.lastError ? `${state}；${status.lastError}` : state;

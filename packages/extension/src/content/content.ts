@@ -23,8 +23,29 @@ const ACTIONABLE_SELECTOR = [
   "[role='checkbox']",
   "[role='radio']",
   "[role='textbox']",
+  "[class*='select-selector']",
+  "[class*='Select-selector']",
+  "[class*='select-selection']",
+  "[class*='Select-selection']",
+  "[class*='select-trigger']",
+  "[class*='Select-trigger']",
   "[onclick]",
   "[contenteditable='true']"
+].join(",");
+
+const FLOATING_OPTION_SELECTOR = [
+  "[role='option']",
+  "[role='menuitem']",
+  "[role='treeitem']",
+  ".ant-select-item-option",
+  ".arco-select-option",
+  ".el-select-dropdown__item",
+  "[class*='dropdown'] [class*='item']",
+  "[class*='Dropdown'] [class*='item']",
+  "[class*='popup'] [class*='item']",
+  "[class*='Popup'] [class*='item']",
+  "[class*='option']",
+  "[class*='Option']"
 ].join(",");
 
 const HIGH_RISK_TEXT_PATTERNS = [
@@ -230,6 +251,20 @@ console.warn = (...args) => {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "browser_bridge_ping") {
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === "browser_bridge_hide_status") {
+    const overlay = document.getElementById("browser-bridge-agent-overlay");
+    if (overlay) overlay.style.visibility = "hidden";
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === "browser_bridge_show_status") {
+    const overlay = document.getElementById("browser-bridge-agent-overlay");
+    if (overlay) overlay.style.visibility = "visible";
     sendResponse({ ok: true });
     return true;
   }
@@ -451,9 +486,9 @@ function showSciFiOverlay(tool?: string, params?: Record<string, any>) {
     overlay.id = "browser-bridge-agent-overlay";
     overlay.style.cssText = `
       position: fixed;
-      top: 16px;
-      right: 16px;
-      width: min(320px, calc(100vw - 32px));
+      top: 8px;
+      right: 8px;
+      width: 240px;
       pointer-events: none;
       z-index: 2147483647;
       font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
@@ -464,13 +499,13 @@ function showSciFiOverlay(tool?: string, params?: Record<string, any>) {
     container.style.cssText = `
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 4px;
       color: #0f172a;
-      background: rgba(255, 255, 255, 0.96);
-      border: 1px solid rgba(15, 23, 42, 0.12);
-      border-radius: 8px;
-      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
-      padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid rgba(15, 23, 42, 0.1);
+      border-radius: 6px;
+      box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
+      padding: 6px 10px;
       overflow: hidden;
     `;
 
@@ -498,9 +533,9 @@ function showSciFiOverlay(tool?: string, params?: Record<string, any>) {
     statusText.id = "bb-status-text";
     statusText.style.cssText = `
       color: #0f172a;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 700;
-      line-height: 1.35;
+      line-height: 1.3;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -514,10 +549,10 @@ function showSciFiOverlay(tool?: string, params?: Record<string, any>) {
     logContainer.id = "bb-log-container";
     logContainer.style.cssText = `
       font-family: 'JetBrains Mono', 'Fira Code', monospace;
-      font-size: 11px;
+      font-size: 10px;
       color: #475569;
-      line-height: 1.45;
-      max-height: 84px;
+      line-height: 1.4;
+      max-height: 56px;
       overflow: hidden;
     `;
 
@@ -581,7 +616,7 @@ function showSciFiOverlay(tool?: string, params?: Record<string, any>) {
         entry.style.opacity = "1";
         entry.style.transform = "translateY(0)";
       });
-      if (logContainer.childNodes.length > 3) {
+      if (logContainer.childNodes.length > 2) {
         logContainer.removeChild(logContainer.firstChild!);
       }
     }
@@ -636,6 +671,8 @@ async function handleRequest(request: BridgeRequest): Promise<unknown> {
     case "browser_type":
     case "browser_find_and_type":
       return typeIntoElement(request.params ?? {});
+    case "browser_select_option":
+      return selectOption(request.params ?? {}, request.timeoutMs);
     case "browser_fill_form":
       return fillForm(request.params ?? {});
     case "browser_clear":
@@ -646,6 +683,16 @@ async function handleRequest(request: BridgeRequest): Promise<unknown> {
       return pressKey(request.params ?? {});
     case "browser_wait_for":
       return waitForElement(request.params ?? {}, request.timeoutMs);
+    case "browser_visual_observe":
+      return visualObserve(request.params ?? {});
+    case "browser_visual_click_text":
+      return visualClickText(request.params ?? {}, request.timeoutMs);
+    case "browser_visual_select":
+      return visualSelect(request.params ?? {}, request.timeoutMs);
+    case "browser_visual_task":
+      return visualTask(request.params ?? {}, request.timeoutMs);
+    case "browser_visual_resolve_text":
+      return visualClickText(request.params ?? {}, request.timeoutMs);
     default:
       throw new Error(`INTERNAL_ERROR: 不支持的页面工具 ${request.tool}`);
   }
@@ -653,6 +700,324 @@ async function handleRequest(request: BridgeRequest): Promise<unknown> {
 
 function getSelectedText(): { text: string } {
   return { text: window.getSelection()?.toString() ?? "" };
+}
+
+function visualObserve(params: Record<string, unknown>): {
+  url: string;
+  title: string;
+  viewport: { width: number; height: number; scrollX: number; scrollY: number };
+  targets: VisualTarget[];
+} {
+  const maxTargets = Math.min(numberParam(params, "maxTargets") ?? 120, 200);
+  return {
+    url: location.href,
+    title: document.title,
+    viewport: {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      scrollX: window.scrollX,
+      scrollY: window.scrollY
+    },
+    targets: getVisualTargets().slice(0, maxTargets)
+  };
+}
+
+type VisualTarget = {
+  text?: string;
+  role: string;
+  tagName: string;
+  elementId: string;
+  rect: { x: number; y: number; width: number; height: number };
+  center: { x: number; y: number };
+  source: "interactive" | "option" | "text";
+};
+
+function visualClickText(params: Record<string, unknown>, requestTimeoutMs?: number): {
+  matched: VisualTarget;
+  actions: Array<Record<string, unknown>>;
+} {
+  const text = stringParam(params, "text");
+  if (!text) {
+    throw new Error("INVALID_PARAMS: text 参数必填");
+  }
+  const target = findVisualTargetByText(text, {
+    exact: params.exact === true,
+    prefer: stringParam(params, "prefer"),
+    timeoutMs: numberParam(params, "timeoutMs") ?? requestTimeoutMs
+  });
+  return {
+    matched: target,
+    actions: [{
+      tool: "browser_screen_click",
+      x: target.center.x,
+      y: target.center.y,
+      delayMs: 60,
+      afterDelayMs: 200,
+      reason: `点击可见文本「${text}」`
+    }]
+  };
+}
+
+function visualSelect(params: Record<string, unknown>, requestTimeoutMs?: number): {
+  label: string;
+  option: string;
+  matched: VisualTarget;
+  actions: Array<Record<string, unknown>>;
+} {
+  const label = stringParam(params, "label");
+  const option = stringParam(params, "option");
+  if (!label || !option) {
+    throw new Error("INVALID_PARAMS: label 和 option 参数必填");
+  }
+
+  const timeoutMs = numberParam(params, "timeoutMs") ?? requestTimeoutMs ?? 5000;
+  const controlTarget = findVisualSelectControlByLabel(label);
+  if (!controlTarget) {
+    throw new Error(`ELEMENT_NOT_FOUND: 未找到标签「${label}」附近的可视下拉控件`);
+  }
+
+  return {
+    label,
+    option,
+    matched: controlTarget,
+    actions: [
+      {
+        tool: "browser_screen_click",
+        x: controlTarget.center.x,
+        y: controlTarget.center.y,
+        delayMs: 60,
+        afterDelayMs: 250,
+        reason: `展开「${label}」下拉`
+      },
+      {
+        tool: "browser_screen_click",
+        x: "__resolve_after_open__",
+        y: "__resolve_after_open__",
+        label,
+        option,
+        exact: params.exact !== false,
+        timeoutMs,
+        reason: `点击选项「${option}」`
+      }
+    ]
+  };
+}
+
+function visualTask(params: Record<string, unknown>, requestTimeoutMs?: number): {
+  instruction: string;
+  actions: Array<Record<string, unknown>>;
+  parsed: unknown;
+} {
+  const instruction = stringParam(params, "instruction");
+  if (!instruction) {
+    throw new Error("INVALID_PARAMS: instruction 参数必填");
+  }
+
+  const selectMatches = [...instruction.matchAll(/(?:选择|设置|选中|将|把)?\s*([^，,。；;]+?)\s*(?:为|=|选择为)\s*([^，,。；;]+?)(?=(?:，|,|。|；|;|然后|并|$))/g)];
+  const clickMatches = [...instruction.matchAll(/(?:点击|点)\s*([^，,。；;]+?)(?=(?:，|,|。|；|;|然后|并|$))/g)];
+  const actions: Array<Record<string, unknown>> = [];
+  const parsed: Array<Record<string, string>> = [];
+
+  for (const match of selectMatches) {
+    const label = normalizeInstructionSlot(match[1]);
+    const option = normalizeInstructionSlot(match[2]);
+    if (!label || !option) continue;
+    const plan = visualSelect({ label, option, timeoutMs: requestTimeoutMs }, requestTimeoutMs);
+    actions.push(...plan.actions);
+    parsed.push({ action: "select", label, option });
+  }
+
+  for (const match of clickMatches) {
+    const text = normalizeInstructionSlot(match[1]);
+    if (!text) continue;
+    const plan = visualClickText({ text, timeoutMs: requestTimeoutMs }, requestTimeoutMs);
+    actions.push(...plan.actions);
+    parsed.push({ action: "click", text });
+  }
+
+  if (actions.length === 0) {
+    throw new Error("INVALID_PARAMS: 当前 visual_task 只支持“选择X为Y”和“点击X”这类简单指令");
+  }
+
+  return { instruction, actions, parsed };
+}
+
+function normalizeInstructionSlot(value: string): string {
+  return normalizeText(value)
+    .replace(/^(类型|字段|筛选项|下拉框)/, "")
+    .replace(/^(业务)?/, (prefix) => prefix)
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "")
+    .trim();
+}
+
+function getVisualTargets(): VisualTarget[] {
+  const targets: VisualTarget[] = [];
+  const seen = new Set<string>();
+  const push = (element: HTMLElement, source: VisualTarget["source"]) => {
+    if (!isVisible(element) || !isInViewport(element)) return;
+    const rect = element.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return;
+    const text = getElementText(element) || getAccessibilityName(element) || getElementValue(element);
+    if (!text && source === "text") return;
+    const key = `${source}:${text ?? ""}:${Math.round(rect.x)}:${Math.round(rect.y)}:${Math.round(rect.width)}:${Math.round(rect.height)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    targets.push({
+      text: truncate(text, 160),
+      role: element.getAttribute("role") || inferRole(element),
+      tagName: element.tagName.toLowerCase(),
+      elementId: ensureElementId(element, targets.length),
+      rect: {
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height)
+      },
+      center: {
+        x: Math.round(rect.x + rect.width / 2),
+        y: Math.round(rect.y + rect.height / 2)
+      },
+      source
+    });
+  };
+
+  for (const element of getActionableElements({ visibleOnly: true, viewportOnly: true })) {
+    push(element, element.matches(FLOATING_OPTION_SELECTOR) ? "option" : "interactive");
+  }
+
+  for (const element of Array.from(document.querySelectorAll<HTMLElement>(FLOATING_OPTION_SELECTOR))) {
+    push(element, "option");
+  }
+
+  for (const element of Array.from(document.querySelectorAll<HTMLElement>("button,a,label,span,div,p,td,th"))) {
+    const text = normalizeText(element.innerText || element.textContent || "");
+    const rect = element.getBoundingClientRect();
+    if (text && text.length <= 80 && rect.width > 4 && rect.height > 4) {
+      push(element, "text");
+    }
+  }
+
+  return targets.sort((a, b) => {
+    const sourceRank = (target: VisualTarget) => target.source === "option" ? 0 : target.source === "interactive" ? 1 : 2;
+    const rankDelta = sourceRank(a) - sourceRank(b);
+    if (rankDelta !== 0) return rankDelta;
+    return a.rect.y - b.rect.y || a.rect.x - b.rect.x;
+  });
+}
+
+function findVisualTargetByText(
+  text: string,
+  options: { exact?: boolean; prefer?: string; timeoutMs?: number } = {}
+): VisualTarget {
+  const normalized = normalizeText(text);
+  const candidates = getVisualTargets()
+    .filter((target) => {
+      const targetText = normalizeText(target.text ?? "");
+      return targetText && (options.exact ? targetText === normalized : targetText.includes(normalized));
+    });
+  const best = choosePreferredVisualTarget(candidates, options.prefer);
+  if (best) return best;
+  throw new Error(`ELEMENT_NOT_FOUND: 屏幕上未找到可见文本「${text}」`);
+}
+
+function choosePreferredVisualTarget(candidates: VisualTarget[], prefer?: string): VisualTarget | undefined {
+  if (candidates.length === 0) return undefined;
+  const sorted = [...candidates];
+  switch (prefer) {
+    case "bottom":
+      sorted.sort((a, b) => b.rect.y - a.rect.y);
+      break;
+    case "left":
+      sorted.sort((a, b) => a.rect.x - b.rect.x);
+      break;
+    case "right":
+      sorted.sort((a, b) => b.rect.x - a.rect.x);
+      break;
+    case "largest":
+      sorted.sort((a, b) => b.rect.width * b.rect.height - a.rect.width * a.rect.height);
+      break;
+    case "smallest":
+      sorted.sort((a, b) => a.rect.width * a.rect.height - b.rect.width * b.rect.height);
+      break;
+    case "top":
+    default:
+      sorted.sort((a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x);
+      break;
+  }
+  return sorted[0];
+}
+
+function findVisualSelectControlByLabel(label: string): VisualTarget | null {
+  const normalizedLabel = normalizeText(label);
+  const labelElements = Array.from(document.querySelectorAll<HTMLElement>("label,span,div"))
+    .filter((element) => isVisible(element) && isInViewport(element))
+    .filter((element) => normalizeText(element.innerText || element.textContent || "").includes(normalizedLabel));
+
+  for (const labelElement of labelElements) {
+    const labelRect = labelElement.getBoundingClientRect();
+    const controls = getActionableElements({ visibleOnly: true, viewportOnly: true })
+      .filter((element) => isSelectLikeVisualControl(element))
+      .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+      .filter(({ rect }) => rect.x >= labelRect.x - 20 && rect.y >= labelRect.y - 24 && rect.y <= labelRect.y + 80)
+      .sort((a, b) => {
+        const ad = Math.abs(a.rect.y - labelRect.y) + Math.max(0, a.rect.x - labelRect.right);
+        const bd = Math.abs(b.rect.y - labelRect.y) + Math.max(0, b.rect.x - labelRect.right);
+        return ad - bd;
+      });
+
+    const control = controls[0]?.element;
+    if (control) {
+      const rect = control.getBoundingClientRect();
+      return {
+        text: getElementText(control) || getAccessibilityName(control) || label,
+        role: control.getAttribute("role") || inferRole(control),
+        tagName: control.tagName.toLowerCase(),
+        elementId: ensureElementId(control, 0),
+        rect: {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height)
+        },
+        center: {
+          x: Math.round(rect.x + rect.width / 2),
+          y: Math.round(rect.y + rect.height / 2)
+        },
+        source: "interactive"
+      };
+    }
+  }
+
+  const fallback = findControlByLabel(label);
+  if (!fallback) return null;
+  const rect = fallback.getBoundingClientRect();
+  return {
+    text: getElementText(fallback) || getAccessibilityName(fallback) || label,
+    role: fallback.getAttribute("role") || inferRole(fallback),
+    tagName: fallback.tagName.toLowerCase(),
+    elementId: ensureElementId(fallback, 0),
+    rect: {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    },
+    center: {
+      x: Math.round(rect.x + rect.width / 2),
+      y: Math.round(rect.y + rect.height / 2)
+    },
+    source: "interactive"
+  };
+}
+
+function isSelectLikeVisualControl(element: HTMLElement): boolean {
+  const role = element.getAttribute("role");
+  const className = String(element.getAttribute("class") ?? "");
+  return element instanceof HTMLSelectElement
+    || role === "combobox"
+    || element.getAttribute("aria-haspopup") === "listbox"
+    || /select|Select|dropdown|Dropdown/.test(className)
+    || (element instanceof HTMLInputElement && element.readOnly);
 }
 
 function getLinks(): { links: Array<{ text?: string; href: string; visible: boolean; rect?: DOMRectInit }> } {
@@ -786,6 +1151,7 @@ function getPageModel(params: Record<string, unknown>): BrowserPageModel {
     outline: getPageOutline({ visibleOnly, viewportOnly, limit: maxHeadings }),
     regions: getPageRegions({ visibleOnly, viewportOnly, limit: maxRegions }),
     interactives,
+    floatingOptions: getFloatingOptions({ visibleOnly, viewportOnly }),
     forms: getPageForms({ visibleOnly, viewportOnly, maxElements }),
     tables: getPageTables({ visibleOnly, viewportOnly, maxTables, maxTableRows }),
     messages: getPageMessages({ visibleOnly, viewportOnly }),
@@ -933,6 +1299,24 @@ function getPageMessages(options: {
       rect: elementRect(element)
     }))
     .filter((message) => Boolean(message.text));
+}
+
+function getFloatingOptions(options: {
+  visibleOnly: boolean;
+  viewportOnly: boolean;
+}): BrowserElement[] {
+  const seenText = new Set<string>();
+  return Array.from(document.querySelectorAll<HTMLElement>(FLOATING_OPTION_SELECTOR))
+    .filter((element) => includeElementInModel(element, options))
+    .map((element, index) => toPageModelElement(element, index))
+    .filter((element) => {
+      const key = `${element.role}:${normalizeText(element.text ?? element.ariaLabel ?? "")}:${element.rect?.x}:${element.rect?.y}`;
+      if (!element.text && !element.ariaLabel) return false;
+      if (seenText.has(key)) return false;
+      seenText.add(key);
+      return true;
+    })
+    .slice(0, 80);
 }
 
 function getVisibleText(): string {
@@ -1261,6 +1645,15 @@ async function findTargetWithRetry(
   params: Record<string, unknown>,
   options: { allowText?: boolean; timeoutMs?: number } = {}
 ): Promise<HTMLElement> {
+  // 快速路径：如果有 elementId，直接查询，不需要重试轮询
+  const elementId = stringParam(params, "elementId");
+  if (elementId) {
+    const el = document.querySelector<HTMLElement>(`[${ELEMENT_ATTR}="${cssEscape(elementId)}"]`)
+      ?? (/^\d+$/.test(elementId) ? document.querySelector<HTMLElement>(`[data-bb-temp-id="${cssEscape(elementId)}"]`) : null);
+    if (el) return el;
+    // elementId 存在但元素不存在，可能已从 DOM 移除，走全量扫描
+  }
+
   const timeoutMs = options.timeoutMs ?? numberParam(params, "timeoutMs") ?? 3000;
   const start = Date.now();
   let lastError: unknown;
@@ -1382,6 +1775,53 @@ function findBestScoredElement(params: Record<string, unknown>): {
     .sort((a, b) => b.score - a.score)[0] ?? null;
 }
 
+/** 中文同义词映射：提升中文 UI 场景的命中率 */
+const CHINESE_SYNONYMS: Record<string, string[]> = {
+  "确定": ["确认", "ok", "好", "是", "yes", "sure", "agree"],
+  "确认": ["确定", "ok", "好", "是", "yes"],
+  "取消": ["关闭", "cancel", "不", "否", "close"],
+  "提交": ["保存", "submit", "save", "发送", "send"],
+  "保存": ["提交", "save", "submit"],
+  "删除": ["移除", "remove", "delete", "清除"],
+  "移除": ["删除", "remove", "delete"],
+  "查询": ["搜索", "查找", "search", "find"],
+  "搜索": ["查询", "查找", "search", "find"],
+  "新建": ["创建", "新增", "add", "create", "new"],
+  "创建": ["新建", "新增", "add", "create"],
+  "编辑": ["修改", "edit", "modify", "update"],
+  "修改": ["编辑", "edit", "modify", "update"],
+  "刷新": ["reload", "refresh", "重新加载"],
+  "返回": ["后退", "back", "go back"],
+  "登录": ["登陆", "sign in", "log in", "login"],
+  "登出": ["退出", "sign out", "log out", "logout"],
+  "上一步": ["后退", "previous", "back"],
+  "下一步": ["继续", "next", "continue", "前进"],
+  "全选": ["select all", "check all"],
+  "导入": ["import", "上传", "upload"],
+  "导出": ["export", "下载", "download"],
+  "开启": ["启用", "打开", "enable", "turn on", "open"],
+  "关闭": ["禁用", "关掉", "disable", "turn off", "close"],
+};
+
+function getSynonymBoost(query: string, elementText: string): { boost: number; reason: string } | null {
+  if (!query || !elementText) return null;
+  const queryLower = query.toLowerCase();
+  const textLower = elementText.toLowerCase();
+
+  // 检查 query 是否在同义词表中，且 elementText 包含同义词
+  for (const [key, synonyms] of Object.entries(CHINESE_SYNONYMS)) {
+    const keyLower = key.toLowerCase();
+    if (queryLower === keyLower || synonyms.some(s => s.toLowerCase() === queryLower)) {
+      // query 匹配了某个同义词组，检查 elementText 是否包含组内任何词
+      const allTerms = [keyLower, ...synonyms.map(s => s.toLowerCase())];
+      if (allTerms.some(term => textLower.includes(term))) {
+        return { boost: 0.3, reason: `同义词匹配(${key})` };
+      }
+    }
+  }
+  return null;
+}
+
 function scoreElements(params: Record<string, unknown>): Array<{
   element: HTMLElement;
   score: number;
@@ -1396,7 +1836,13 @@ function scoreElements(params: Record<string, unknown>): Array<{
   const visibleOnly = params.visibleOnly !== false;
   const viewportOnly = params.viewportOnly === true;
 
-  return getActionableElements({ visibleOnly, viewportOnly }).map((element) => {
+  // Pre-calculate query length and simplified version for partial matches
+  const queryClean = query.toLowerCase().replace(/\s+/g, "");
+
+  // 使用 rect 缓存，避免 isVisible/isInViewport/sort 重复调用 getBoundingClientRect
+  const rectCache = new Map<HTMLElement, DOMRect>();
+
+  return getActionableElements({ visibleOnly, viewportOnly, rectCache }).map((element) => {
     const accName = normalizeText(getAccessibilityName(element));
     const elementRole = normalizeText(element.getAttribute("role") || inferRole(element));
     const elementAria = normalizeText(element.getAttribute("aria-label") ?? "");
@@ -1410,52 +1856,79 @@ function scoreElements(params: Record<string, unknown>): Array<{
 
     // Semantic matching (highest priority)
     if (query) {
+      const accNameClean = accName.toLowerCase().replace(/\s+/g, "");
+      
       // Prioritize exact accessibility name match
-      if (accName === query) {
-        score += 0.8;
+      if (accNameClean === queryClean) {
+        score += 0.85;
         reasons.push("语义名称精确匹配");
-      } else if (accName.includes(query)) {
-        score += 0.6;
+      } else if (accNameClean.includes(queryClean) || queryClean.includes(accNameClean)) {
+        const ratio = Math.min(accNameClean.length, queryClean.length) / Math.max(accNameClean.length, queryClean.length);
+        score += 0.5 + (0.2 * ratio);
         reasons.push("语义名称包含匹配");
       } else {
         // Fallback to other fields
-        score += scoreTextField(query, elementAria, 0.4, "aria-label", reasons);
-        score += scoreTextField(query, elementPlaceholder, 0.35, "placeholder", reasons);
-        score += scoreTextField(query, elementValue, 0.25, "值", reasons);
-        score += scoreTextField(query, context, 0.15, "附近文本", reasons);
+        score += scoreTextField(query, elementAria, 0.45, "aria-label", reasons);
+        score += scoreTextField(query, elementPlaceholder, 0.4, "placeholder", reasons);
+        score += scoreTextField(query, elementValue, 0.3, "值", reasons);
+        
+        // Deep text check: if the element contains the text in any child
+        if (element.textContent && normalizeText(element.textContent).includes(query)) {
+          score += 0.2;
+          reasons.push("子元素文本包含");
+        }
       }
     }
 
     if (role && elementRole === role) {
-      score += 0.25;
+      score += 0.3;
       reasons.push("Role 匹配");
-      // Boost if role matches and query matches accName
-      if (query && accName.includes(query)) score += 0.15;
+      if (query && accName.includes(query)) score += 0.2;
     }
 
     if (ariaLabel && elementAria.includes(ariaLabel)) {
-      score += 0.4;
+      score += 0.45;
       reasons.push("ARIA Label 匹配");
     }
 
     if (placeholder && elementPlaceholder.includes(placeholder)) {
-      score += 0.4;
+      score += 0.45;
       reasons.push("Placeholder 匹配");
     }
 
     if (href && (elementHref === href || element.getAttribute("href") === href)) {
-      score += 0.6;
+      score += 0.65;
       reasons.push("HREF 匹配");
     }
 
     if (nearText && context.includes(nearText)) {
-      score += 0.2;
+      score += 0.25;
       reasons.push("上下文匹配");
     }
 
-    // Heuristics
-    if (isInViewport(element)) score += 0.05;
-    if (isDisabled(element)) score -= 0.5;
+    // Heuristics for interactive elements
+    if (element instanceof HTMLButtonElement || element.getAttribute("role") === "button") {
+      score += 0.05;
+    }
+
+    if (isInViewportCached(element, rectCache)) score += 0.05;
+    if (isDisabled(element)) score -= 0.6;
+
+    // Small boost for common Chinese patterns if they match
+    if (query && /[\u4e00-\u9fa5]/.test(query) && accName.includes(query)) {
+      score += 0.1;
+    }
+
+    // \u4e2d\u6587\u540c\u4e49\u8bcd\u5339\u914d\u52a0\u5206\uff1a\u89e3\u51b3"\u786e\u5b9a"vs"\u786e\u8ba4"vs"OK" \u7b49\u7b49\u4ef7\u95ee\u9898
+    if (query && score < 0.5) {
+      const synonymBoost = getSynonymBoost(query, accName)
+        ?? getSynonymBoost(query, elementAria)
+        ?? getSynonymBoost(query, element.textContent ?? "");
+      if (synonymBoost) {
+        score += synonymBoost.boost;
+        reasons.push(synonymBoost.reason);
+      }
+    }
 
     return { element, score, reasons };
   });
@@ -1595,7 +2068,214 @@ async function typeIntoElement(params: Record<string, unknown>): Promise<{ typed
   element.dispatchEvent(new Event("change", { bubbles: true }));
   return { typed: true, element: toBrowserElement(element, 0) };
 }
+
+async function selectOption(
+  params: Record<string, unknown>,
+  requestTimeoutMs?: number
+): Promise<{ selected: boolean; control: BrowserElement; optionText: string }> {
+  const label = stringParam(params, "label");
+  const option = stringParam(params, "option");
+  if (!label || !option) {
+    throw new Error("INVALID_PARAMS: label 和 option 参数必填");
+  }
+
+  const timeoutMs = numberParam(params, "timeoutMs") ?? requestTimeoutMs ?? 5000;
+  const exact = params.exact !== false;
+  const control = findControlByLabel(label);
+  if (!control) {
+    throw new Error(`ELEMENT_NOT_FOUND: 未找到标签为「${label}」的下拉控件`);
+  }
+
+  await ensureElementActionable(control);
+  control.scrollIntoView({ block: "center", inline: "center" });
+  await delay(120);
+
+  if (control instanceof HTMLSelectElement) {
+    selectNativeOption(control, option, exact);
+    return {
+      selected: true,
+      control: toBrowserElement(control, 0),
+      optionText: option
+    };
+  }
+
+  await openSelectControl(control);
+  const optionElement = await waitForOptionElement(option, exact, timeoutMs);
+  showVisualRipple(optionElement, "#22c55e");
+  dispatchPointerEvent(optionElement, "mouseover");
+  dispatchPointerEvent(optionElement, "mousemove");
+  dispatchPointerEvent(optionElement, "mousedown");
+  optionElement.click();
+  dispatchPointerEvent(optionElement, "mouseup");
+  optionElement.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+  await delay(150);
+
+  return {
+    selected: true,
+    control: toBrowserElement(control, 0),
+    optionText: getElementText(optionElement) ?? option
+  };
+}
+
+function findControlByLabel(label: string): HTMLElement | null {
+  const normalizedLabel = normalizeText(label);
+  const labels = Array.from(document.querySelectorAll<HTMLElement>("label,[class*='label'],[class*='Label'],.ant-form-item-label,.arco-form-label-item,.el-form-item__label"));
+  const labelElement = labels.find((element) => normalizeText(element.innerText || element.textContent || "").includes(normalizedLabel));
+
+  if (labelElement) {
+    const htmlFor = labelElement.getAttribute("for");
+    if (htmlFor) {
+      const byFor = document.getElementById(htmlFor);
+      if (byFor instanceof HTMLElement) return normalizeSelectControl(byFor);
+    }
+
+    const container = labelElement.closest<HTMLElement>(
+      ".ant-form-item,.arco-form-item,.el-form-item,[class*='form-item'],[class*='FormItem'],[class*='field'],[class*='Field']"
+    ) ?? labelElement.parentElement;
+    const inContainer = container ? findSelectControlIn(container) : null;
+    if (inContainer) return inContainer;
+  }
+
+  const candidates = Array.from(document.querySelectorAll<HTMLElement>("body *"))
+    .filter((element) => isVisible(element) && normalizeText(element.innerText || element.textContent || "").includes(normalizedLabel))
+    .slice(0, 80);
+
+  for (const candidate of candidates) {
+    const container = candidate.closest<HTMLElement>(
+      ".ant-form-item,.arco-form-item,.el-form-item,[class*='form-item'],[class*='FormItem'],[class*='field'],[class*='Field'],tr,li"
+    ) ?? candidate.parentElement;
+    const control = container ? findSelectControlIn(container) : null;
+    if (control) return control;
+  }
+
+  return null;
+}
+
+function findSelectControlIn(container: HTMLElement): HTMLElement | null {
+  const selectors = [
+    "select",
+    "[role='combobox']",
+    "[aria-haspopup='listbox']",
+    ".ant-select",
+    ".arco-select",
+    ".el-select",
+    "[class*='select']",
+    "[class*='Select']",
+    "input[readonly]",
+    "input[autocomplete='off']"
+  ];
+
+  for (const selector of selectors) {
+    const elements = Array.from(container.querySelectorAll<HTMLElement>(selector))
+      .filter((element) => isVisible(element) && !isDisabled(element));
+    if (elements.length > 0) {
+      const actionable = elements.find((element) => element.matches(ACTIONABLE_SELECTOR) || element.querySelector(ACTIONABLE_SELECTOR));
+      return normalizeSelectControl(actionable ?? elements[0]);
+    }
+  }
+
+  return null;
+}
+
+function normalizeSelectControl(element: HTMLElement): HTMLElement {
+  return element.closest<HTMLElement>(".ant-select,.arco-select,.el-select,[role='combobox'],[class*='select'],[class*='Select']") ?? element;
+}
+
+function selectNativeOption(select: HTMLSelectElement, optionText: string, exact: boolean): void {
+  const normalizedOption = normalizeText(optionText);
+  const option = Array.from(select.options).find((item) => {
+    const text = normalizeText(item.textContent || item.label || item.value);
+    return exact ? text === normalizedOption : text.includes(normalizedOption);
+  });
+  if (!option) {
+    throw new Error(`ELEMENT_NOT_FOUND: 下拉选项「${optionText}」不存在`);
+  }
+  select.value = option.value;
+  select.dispatchEvent(new Event("input", { bubbles: true }));
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+async function openSelectControl(control: HTMLElement): Promise<void> {
+  showVisualRipple(control, "#22c55e");
+  const target = findClickableSelectTarget(control);
+  target.focus();
+  dispatchPointerEvent(target, "mouseover");
+  dispatchPointerEvent(target, "mousemove");
+  dispatchPointerEvent(target, "mousedown");
+  target.click();
+  dispatchPointerEvent(target, "mouseup");
+  target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+  await delay(200);
+}
+
+function findClickableSelectTarget(control: HTMLElement): HTMLElement {
+  const preferred = control.querySelector<HTMLElement>(
+    ".ant-select-selector,.arco-select-view,.el-select__wrapper,[role='combobox'],input,[class*='selector'],[class*='Selector']"
+  );
+  if (preferred && isVisible(preferred)) {
+    return preferred;
+  }
+  return control;
+}
+
+async function waitForOptionElement(optionText: string, exact: boolean, timeoutMs: number): Promise<HTMLElement> {
+  const start = Date.now();
+  let found: HTMLElement | null = null;
+  while (Date.now() - start <= timeoutMs) {
+    found = findVisibleOptionElement(optionText, exact);
+    if (found) return found;
+    await delay(100);
+  }
+  throw new Error(`ELEMENT_NOT_FOUND: 未找到可见下拉选项「${optionText}」`);
+}
+
+function findVisibleOptionElement(optionText: string, exact: boolean): HTMLElement | null {
+  const normalizedOption = normalizeText(optionText);
+  const selectors = [
+    "[role='option']",
+    ".ant-select-item-option",
+    ".arco-select-option",
+    ".el-select-dropdown__item",
+    "[class*='option']",
+    "[class*='Option']",
+    "li",
+    "div"
+  ].join(",");
+
+  const matches = Array.from(document.querySelectorAll<HTMLElement>(selectors))
+    .filter((element) => isVisible(element) && isInViewport(element))
+    .map((element) => ({ element, text: normalizeText(element.innerText || element.textContent || "") }))
+    .filter(({ text }) => text && (exact ? text === normalizedOption : text.includes(normalizedOption)));
+
+  return matches
+    .sort((a, b) => {
+      const aRole = a.element.getAttribute("role") === "option" ? 0 : 1;
+      const bRole = b.element.getAttribute("role") === "option" ? 0 : 1;
+      if (aRole !== bRole) return aRole - bRole;
+      const aRect = a.element.getBoundingClientRect();
+      const bRect = b.element.getBoundingClientRect();
+      return area(aRect) - area(bRect);
+    })[0]?.element ?? null;
+}
+
+function area(rect: DOMRect): number {
+  return Math.max(0, rect.width) * Math.max(0, rect.height);
+}
 async function ensureElementActionable(element: HTMLElement, timeoutMs: number = 4000): Promise<void> {
+  // 快速通过路径：大多数元素已经可交互，单次检查即可确认
+  const style = window.getComputedStyle(element);
+  const rect = element.getBoundingClientRect();
+  const isVisibleNow = style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity) !== 0 && rect.width > 0 && rect.height > 0;
+  const isDisabledNow = element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true";
+
+  if (isVisibleNow && !isDisabledNow) {
+    const topEl = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    if (topEl && (element === topEl || element.contains(topEl) || topEl.contains(element))) {
+      return; // 元素可见、未禁用、未被遮挡，直接通过（0ms 延迟）
+    }
+  }
+
+  // 慢速路径：进入轮询等待
   const start = Date.now();
   let lastRect: DOMRect | undefined;
   let stableCount = 0;
@@ -2047,45 +2727,97 @@ function findByRole(role: string, text?: string): HTMLElement | null {
 function getActionableElements(options: {
   visibleOnly?: boolean;
   viewportOnly?: boolean;
+  rectCache?: Map<HTMLElement, DOMRect>;
 } = {}): HTMLElement[] {
   const elements: HTMLElement[] = [];
   const seen = new Set<HTMLElement>();
+  const cache = options.rectCache;
 
-  const walk = (root: Document | ShadowRoot | Element) => {
+  const addElement = (el: HTMLElement) => {
+    if (seen.has(el)) return;
+    const rect = el.getBoundingClientRect();
+    if (cache) cache.set(el, rect);
+    if (rect.width <= 0 || rect.height <= 0) return;
+    if (options.visibleOnly !== false) {
+      const style = window.getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return;
+    }
+    if (options.viewportOnly && (rect.bottom < 0 || rect.right < 0 || rect.top > window.innerHeight || rect.left > window.innerWidth)) return;
+    elements.push(el);
+    seen.add(el);
+  };
+
+  // Shadow DOM walk：查询可交互元素 + 仅递归有 shadowRoot 的子节点
+  // 使用 children 遍历而非 querySelectorAll("*")，避免全量 DOM 扫描的性能开销
+  const walkShadowRoots = (root: Document | ShadowRoot) => {
     const matched = root.querySelectorAll<HTMLElement>(ACTIONABLE_SELECTOR);
     for (const el of Array.from(matched)) {
-      if (!seen.has(el)) {
-        if (options.visibleOnly !== false && !isVisible(el)) continue;
-        if (options.viewportOnly && !isInViewport(el)) continue;
-        elements.push(el);
-        seen.add(el);
+      addElement(el);
+    }
+    // 只遍历直接子节点的 shadowRoot，避免 querySelectorAll("*") 的巨大开销
+    const container = root instanceof Document ? document.documentElement : root;
+    for (let i = 0; i < container.children.length; i++) {
+      const child = container.children[i] as HTMLElement;
+      if (child.shadowRoot) {
+        walkShadowRoots(child.shadowRoot);
+      }
+      // 递归子节点以找到更深层的 shadowRoot
+      if (child.children.length > 0) {
+        walkChildrenForShadows(child);
       }
     }
+  };
 
-    const children = root instanceof Document ? [document.documentElement] : Array.from(root.children);
-    for (const child of children) {
-      if (child.shadowRoot) walk(child.shadowRoot);
-      walk(child);
+  const walkChildrenForShadows = (parent: Element) => {
+    for (let i = 0; i < parent.children.length; i++) {
+      const child = parent.children[i] as HTMLElement;
+      if (child.shadowRoot) {
+        walkShadowRoots(child.shadowRoot);
+      }
+      if (child.children.length > 0) {
+        walkChildrenForShadows(child);
+      }
     }
   };
 
   if (document.body) {
-    walk(document);
+    walkShadowRoots(document);
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>(FLOATING_OPTION_SELECTOR))) {
+      const text = normalizeText(el.innerText || el.textContent || "");
+      if (text) addElement(el);
+    }
   }
 
+  // 排序：用缓存的 rect 避免重复 getBoundingClientRect 调用
   return elements.sort((a, b) => {
-    const aViewport = isInViewport(a) ? 0 : 1;
-    const bViewport = isInViewport(b) ? 0 : 1;
+    const aViewport = isInViewportCached(a, cache) ? 0 : 1;
+    const bViewport = isInViewportCached(b, cache) ? 0 : 1;
     if (aViewport !== bViewport) return aViewport - bViewport;
-    const aRect = a.getBoundingClientRect();
-    const bRect = b.getBoundingClientRect();
+    const aRect = cache?.get(a) ?? a.getBoundingClientRect();
+    const bRect = cache?.get(b) ?? b.getBoundingClientRect();
     return aRect.top - bRect.top || aRect.left - bRect.left;
   });
 }
 
+/** 使用缓存 rect 的 isInViewport，避免重复 getBoundingClientRect */
+function isInViewportCached(element: HTMLElement, cache?: Map<HTMLElement, DOMRect>): boolean {
+  const rect = cache?.get(element) ?? element.getBoundingClientRect();
+  return rect.bottom >= 0 && rect.right >= 0 && rect.top <= window.innerHeight && rect.left <= window.innerWidth;
+}
+
 function getElementText(element: HTMLElement): string | undefined {
+  // Use a more robust way to extract text, especially for nested components like AntD
   const text = normalizeText(element.innerText || element.textContent || "");
-  return text || undefined;
+  if (text) return text;
+  
+  // If no direct text, check if it's an icon or has a descriptive class
+  const ariaLabel = element.getAttribute("aria-label");
+  if (ariaLabel) return normalizeText(ariaLabel);
+  
+  const title = element.getAttribute("title");
+  if (title) return normalizeText(title);
+
+  return undefined;
 }
 
 function getNearbyText(element: HTMLElement): string {
