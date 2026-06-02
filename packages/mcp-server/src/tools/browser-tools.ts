@@ -381,11 +381,30 @@ export type BrowserToolDefinition = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  annotations?: {
+    title?: string;
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
+  };
   handler: (args: unknown) => Promise<unknown>;
 };
 
+export const browserReadOnlyAnnotations = {
+  readOnlyHint: true,
+  openWorldHint: true
+} as const;
+
+export const browserNonDestructiveAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: true
+} as const;
+
 export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefinition[] {
-  return [
+  const tools: BrowserToolDefinition[] = [
     {
       name: "browser_console_monitor",
       description: "启动控制台监听，捕获指定时间内的所有 console 日志（log, warn, error）和未捕获的异常。这对于调试页面报错或观察交互产生的日志非常有用。durationMs 默认为 5000ms。",
@@ -608,7 +627,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_select_option",
-      description: "【推荐优先使用】按表单标签选择下拉项。适合 Ant Design/Arco/Element 等自定义 Select。如果页面结构复杂导致本工具失效，请尝试使用 browser_visual_task。系统默认超时 60s。",
+      description: "【推荐优先使用】按表单标签选择下拉项。适合 Ant Design/Arco/Element 等自定义 Select。该工具内部会先尝试 DOM 标签定位，定位失败或超时时自动切到视觉下拉选择兜底；Agent 不应自行把一次下拉选择拆成读模型、点坐标、再读模型的多轮过程。系统默认超时 60s。",
       inputSchema: schema({
         tabId: { type: "number" },
         label: { type: "string" },
@@ -725,7 +744,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_screenshot",
-      description: "截取当前标签页或指定标签页，并直接返回 MCP image content。默认截取可视区域；需要更清晰截图时传 mode='cdp'，可配合 scale。",
+      description: "截取当前标签页或指定标签页，并直接返回 MCP image content。默认截取可视区域；需要更清晰截图时传 mode='cdp'，可配合 scale。需要看图判断页面时应直接调用本工具或 browser_screen_observe，不要通过 browser_run_steps 的截图步骤替代。",
       inputSchema: schema({
         tabId: { type: "number" },
         format: { type: "string", enum: ["png", "jpeg"] },
@@ -740,7 +759,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_screen_observe",
-      description: "视觉优先观察当前标签页。返回可视区域截图、viewport 尺寸、DPR 和坐标系信息；坐标统一为 viewport CSS pixels。可开启 withGrid 叠加坐标网格，适合 Canvas、设计器和可视化平台操作前定位。",
+      description: "视觉优先观察当前标签页。直接返回 MCP image content、viewport 尺寸、DPR 和坐标系信息；坐标统一为 viewport CSS pixels。可开启 withGrid 叠加坐标网格，适合 Canvas、设计器和可视化平台操作前定位。需要看图时优先单独调用本工具。",
       inputSchema: schema({
         tabId: { type: "number" },
         format: { type: "string", enum: ["png", "jpeg"] },
@@ -1223,7 +1242,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_open_url",
-      description: "在新的 Chrome 标签页中打开 URL。内网 SPA/认证跳转较慢时建议 waitUntil='commit'，页面开始导航即返回，后续用 visual 工具等待控件。",
+      description: "在新的 Chrome 标签页中打开 URL。内网 SPA/认证跳转较慢时建议 waitUntil='commit'，页面开始导航即返回；如果返回的 tab.url 暂时为空，不代表页面没打开，应继续用 browser_list_tabs、browser_observe 或 visual 工具确认当前标签页，避免重复开新标签。",
       inputSchema: schema({
         url: { type: "string" },
         timeoutMs: { type: "number" },
@@ -1320,7 +1339,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_run_steps",
-      description: "按顺序执行结构化浏览器操作步骤。支持 open、click、hover、type、selectOption、clear、scroll、waitFor、pressKey、assertText、getText、pageModel、snapshot、screenshot、pdf、sleep 等动作。表单下拉选择优先使用 selectOption，不要拆成点击下拉再读模型。",
+      description: "按顺序执行结构化浏览器操作步骤，适合明确的批量操作。支持 open、click、hover、type、selectOption、clear、scroll、waitFor、pressKey、assertText、getText、pageModel、snapshot、screenshot、screenObserve、screenClick、screenType、screenDrag、screenScroll、screenPress、pdf、sleep。表单下拉选择优先使用 selectOption，不要拆成点击下拉再读模型。执行用户明确任务时应尽量一次性组合 open/selectOption/click/assertText 等步骤，最终只向用户报告结果；不要把中间重试、工具选择、截图是否展开等内部过程当作用户可见结论。",
       inputSchema: schema({
         tabId: { type: "number" },
         stopOnError: { type: "boolean" },
@@ -1658,7 +1677,47 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
       }
     }
   ];
+
+  return tools.map(withDefaultAnnotations);
 }
+
+function withDefaultAnnotations(tool: BrowserToolDefinition): BrowserToolDefinition {
+  if (tool.annotations) {
+    return tool;
+  }
+
+  if (READ_ONLY_TOOLS.has(tool.name)) {
+    return { ...tool, annotations: browserReadOnlyAnnotations };
+  }
+
+  return { ...tool, annotations: browserNonDestructiveAnnotations };
+}
+
+const READ_ONLY_TOOLS = new Set<string>([
+  "browser_status",
+  "browser_get_active_tab",
+  "browser_list_tabs",
+  "browser_get_page_text",
+  "browser_get_page_snapshot",
+  "browser_get_page_model",
+  "browser_get_interactives",
+  "browser_find",
+  "browser_observe",
+  "browser_get_ax_tree",
+  "browser_get_selected_text",
+  "browser_get_links",
+  "browser_get_audit_log",
+  "browser_screenshot",
+  "browser_screen_observe",
+  "browser_visual_observe",
+  "browser_pdf",
+  "browser_capture_page",
+  "browser_console_monitor",
+  "browser_network_analysis",
+  "browser_get_recorded_steps",
+  "browser_generate_script",
+  "browser_get_variables"
+]);
 
 function schema(
   properties: Record<string, unknown>,

@@ -27,6 +27,12 @@ const browserUseTool = {
   name: "browser_use",
   description:
     "激活或关闭浏览器桥接 MCP 工具集。当 use=true 时，会激活工具并打开 Sci-Fi 蒙层（作为 Agent 正在使用浏览器的标识）；当 use=false 时，会关闭蒙层并清除本次会话的完全信任状态。Agent 在开始一系列浏览器操作前应当先询问用户是否允许完全自动化，若用户同意，后续调用应传 trustAgentFully=true 以实现全程无打扰操作。",
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true
+  },
   inputSchema: {
     type: "object",
     properties: {
@@ -60,7 +66,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [browserUseTool, ...tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    inputSchema: tool.inputSchema
+    inputSchema: tool.inputSchema,
+    annotations: tool.annotations
   }))]
 }));
 
@@ -131,6 +138,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (name === "browser_capture_page" && isRecord(result) && result.format === "pdf" && typeof result.data === "string") {
       return formatPdfResult(result);
     }
+    if (name === "browser_run_steps") {
+      return formatRunStepsResult(result);
+    }
     return {
       content: [
         {
@@ -153,6 +163,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 });
+
+function formatRunStepsResult(result: unknown): {
+  content: Array<
+    | { type: "text"; text: string }
+    | { type: "image"; data: string; mimeType: string }
+  >;
+} {
+  const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
+  const textResult = stripDataUrls(result, images);
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(textResult, null, 2)
+      },
+      ...images
+    ]
+  };
+}
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
@@ -202,6 +231,48 @@ function formatScreenshotResult(result: unknown): {
       }
     ]
   };
+}
+
+function stripDataUrls(
+  value: unknown,
+  images: Array<{ type: "image"; data: string; mimeType: string }>
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => stripDataUrls(item, images));
+  }
+
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const output: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "dataUrl" && typeof entry === "string") {
+      const image = dataUrlToImage(entry, typeof value.mimeType === "string" ? value.mimeType : undefined);
+      if (image) {
+        images.push(image);
+        output.imageContentIndex = images.length - 1;
+        output.dataUrlLength = entry.length;
+      }
+      continue;
+    }
+    output[key] = stripDataUrls(entry, images);
+  }
+  return output;
+}
+
+function dataUrlToImage(
+  dataUrl: string,
+  fallbackMimeType?: string
+): { type: "image"; data: string; mimeType: string } | undefined {
+  const [header, data] = dataUrl.split(",", 2);
+  if (!data) {
+    return undefined;
+  }
+  const mimeType = fallbackMimeType
+    ?? header.match(/^data:(.*);base64$/)?.[1]
+    ?? "image/png";
+  return { type: "image", data, mimeType };
 }
 
 function formatPdfResult(result: unknown): {

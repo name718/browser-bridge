@@ -2094,6 +2094,9 @@ async function selectOption(
 
   await openSelectControl(control);
   const optionElement = await waitForOptionElement(option, exact, timeoutMs);
+  if (params.__confirmedHighRisk !== true && await isHighRiskBlockingEnabled()) {
+    await assertElementClickSafe(optionElement);
+  }
   showVisualRipple(optionElement, "#22c55e");
   dispatchPointerEvent(optionElement, "mouseover");
   dispatchPointerEvent(optionElement, "mousemove");
@@ -2519,6 +2522,14 @@ async function fillForm(params: Record<string, unknown>): Promise<{
       const message = error instanceof Error ? error.message : String(error);
       results.push({ index, ok: false, error: message });
     }
+  }
+
+  const failed = results.filter((result) => !result.ok);
+  if (failed.length > 0) {
+    const details = failed
+      .map((result) => `#${result.index}: ${result.error ?? "未知错误"}`)
+      .join("; ");
+    throw new Error(`ELEMENT_NOT_FOUND: 表单填写失败 ${details}`);
   }
 
   return {

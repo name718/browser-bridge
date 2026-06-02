@@ -239,7 +239,7 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
     case "browser_scroll":
     case "browser_wait_for":
     case "browser_select_option":
-      return sendToContentScript(request);
+      return selectOptionWithFallback(request);
     default:
       throw new Error(`INTERNAL_ERROR: 不支持的工具 ${request.tool}`);
   }
@@ -277,7 +277,11 @@ async function runSteps(request: BridgeRequest): Promise<BrowserRunStepsResult> 
     throw new Error("INVALID_PARAMS: steps 参数必填");
   }
 
-  let currentTabId = request.tabId ?? numberParam(params, "tabId") ?? (await getActiveTab()).id;
+  const firstStep = steps.find(isRecord);
+  let currentTabId = request.tabId ?? numberParam(params, "tabId");
+  if (!currentTabId && firstStep?.action !== "open") {
+    currentTabId = (await getActiveTab()).id;
+  }
   
   // Use a persistent debugger for the entire sequence if any step needs it
   const needsDebugger = steps.some(s => 
@@ -423,7 +427,7 @@ async function runStep(step: BrowserStep, currentTabId?: number): Promise<unknow
       if (!step.url) {
         throw new Error("INVALID_PARAMS: open 步骤需要 url");
       }
-      return openUrl(step.url, { waitUntil: "commit", timeoutMs: step.timeoutMs ?? 3000 });
+      return openUrl(step.url, { waitUntil: "commit", timeoutMs: step.timeoutMs ?? 10000 });
     case "activateTab":
       return activateTab(requiredTabId(step, currentTabId));
     case "click":
@@ -437,7 +441,7 @@ async function runStep(step: BrowserStep, currentTabId?: number): Promise<unknow
         replace: step.replace
       }));
     case "selectOption":
-      return sendToContentScript(stepRequest("browser_select_option", step, currentTabId, {
+      return selectOptionWithFallback(stepRequest("browser_select_option", step, currentTabId, {
         label: step.label ?? step.text ?? step.query,
         option: step.option ?? step.value,
         exact: step.exact,
@@ -561,7 +565,7 @@ async function getActiveTab(): Promise<BrowserTab> {
 
 async function listTabs(): Promise<BrowserTab[]> {
   const tabs = await chrome.tabs.query({});
-  return tabs.filter((tab) => tab.id).map(normalizeTab);
+  return tabs.filter((tab) => tab.id).map((tab) => normalizeTab(tab));
 }
 
 async function openUrl(
@@ -575,7 +579,7 @@ async function openUrl(
   const tab = await chrome.tabs.create({ url, active: true });
   if (options.waitUntil === "commit") {
     void waitForTabUrl(tab.id, url, { timeoutMs: options.timeoutMs ?? 3000 }).catch(() => undefined);
-    return normalizeTab(tab);
+    return normalizeTab(tab, url);
   }
   return normalizeTab(await waitForTabUrl(tab.id, url, { timeoutMs: options.timeoutMs }));
 }
@@ -621,10 +625,11 @@ async function sendToContentScript(request: BridgeRequest): Promise<unknown> {
     throw new Error("TAB_NOT_FOUND: 缺少标签页 ID");
   }
 
-  const tab = await chrome.tabs.get(tabId);
+  const tab = await getTabWhenUrlReady(tabId, 10000);
   await assertUrlAllowed(tab.url);
 
   const confirmedHighRisk = await confirmHighRiskAction(tabId, request);
+  const bypassContentRiskPrompt = confirmedHighRisk || getSessionTrustAgentFully();
 
   if (request.tool === "browser_screenshot") {
     return captureScreenshot(tab, request);
@@ -637,7 +642,7 @@ async function sendToContentScript(request: BridgeRequest): Promise<unknown> {
       tabId,
       params: {
         ...(isRecord(request.params) ? request.params : {}),
-        __confirmedHighRisk: confirmedHighRisk
+        __confirmedHighRisk: bypassContentRiskPrompt
       }
     }
   });
@@ -755,6 +760,33 @@ async function confirmInPage(tabId: number, reason: string): Promise<boolean> {
     reason
   });
   return Boolean(response?.confirmed);
+}
+
+async function selectOptionWithFallback(request: BridgeRequest): Promise<unknown> {
+  try {
+    return await sendToContentScript(request);
+  } catch (error) {
+    if (!shouldFallbackToVisualSelect(error)) {
+      throw error;
+    }
+  }
+
+  const params = isRecord(request.params) ? request.params : {};
+  return runVisualMode({
+    ...request,
+    tool: "browser_visual_select",
+    params: {
+      ...params,
+      exact: params.exact !== false
+    }
+  });
+}
+
+function shouldFallbackToVisualSelect(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return /^(ELEMENT_NOT_FOUND|ACTION_TIMEOUT|CONTENT_SCRIPT_NOT_READY):/.test(error.message);
 }
 
 async function captureScreenshot(
@@ -2188,18 +2220,13 @@ async function captureResponsive(request: BridgeRequest): Promise<Record<string,
       });
       await delay(500);
 
-      const screenshot = await captureScreenshot(tab, {
-        id: crypto.randomUUID(),
-        tool: "browser_screenshot",
-        tabId,
-        params: { format: "png" }
-      });
+      const screenshot = await captureScreenshotWithAttachedDebugger(tabId);
 
       screenshots.push({
         name: vp.name,
         width: vp.width,
         height: vp.height,
-        mimeType: screenshot.mimeType,
+        mimeType: "image/png",
         dataUrl: screenshot.dataUrl
       });
     }
@@ -2221,6 +2248,19 @@ async function captureResponsive(request: BridgeRequest): Promise<Record<string,
   } finally {
     try { chrome.debugger.detach(debuggee); } catch { /* ignore */ }
   }
+}
+
+async function captureScreenshotWithAttachedDebugger(tabId: number): Promise<{ dataUrl: string }> {
+  const result = await sendDebuggerCommand(tabId, "Page.captureScreenshot", {
+    format: "png",
+    fromSurface: true,
+    captureBeyondViewport: false
+  });
+  const data = isRecord(result) ? result.data : undefined;
+  if (typeof data !== "string") {
+    throw new Error("INTERNAL_ERROR: 截图返回数据无效");
+  }
+  return { dataUrl: `data:image/png;base64,${data}` };
 }
 
 async function runNetworkAnalysis(request: BridgeRequest): Promise<Record<string, unknown>> {
@@ -2652,7 +2692,7 @@ async function ensureContentScript(tabId: number): Promise<void> {
   }
 }
 
-function normalizeTab(tab: chrome.tabs.Tab): BrowserTab {
+function normalizeTab(tab: chrome.tabs.Tab, fallbackUrl?: string): BrowserTab {
   if (!tab.id) {
     throw new Error("TAB_NOT_FOUND: 标签页没有 ID");
   }
@@ -2661,8 +2701,25 @@ function normalizeTab(tab: chrome.tabs.Tab): BrowserTab {
     windowId: tab.windowId,
     active: Boolean(tab.active),
     title: tab.title,
-    url: tab.url
+    url: tab.url ?? tab.pendingUrl ?? fallbackUrl
   };
+}
+
+async function getTabWhenUrlReady(tabId: number, timeoutMs = 5000): Promise<chrome.tabs.Tab> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.url) {
+      return tab;
+    }
+    await delay(100);
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  if (tab.url) {
+    return tab;
+  }
+  throw new Error(`ACTION_TIMEOUT: 标签页 URL 在 ${timeoutMs}ms 内不可用`);
 }
 
 async function waitForTabUrl(
@@ -2796,6 +2853,7 @@ function sanitizeStepData(action: BrowserStepAction, data: unknown): unknown {
       url: data.url,
       title: data.title,
       mimeType: data.mimeType,
+      dataUrl: data.dataUrl,
       dataUrlLength: typeof data.dataUrl === "string" ? data.dataUrl.length : undefined,
       viewport: data.viewport,
       coordinateSystem: data.coordinateSystem,
