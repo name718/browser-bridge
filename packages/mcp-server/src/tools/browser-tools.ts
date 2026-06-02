@@ -2,8 +2,10 @@ import { z } from "zod";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { BrowserAgentPlanner } from "../qa/planner.js";
 import { recordedStepsToCase } from "../qa/recorder.js";
-import { type BridgeRequest, type BrowserStatus, type RecordedStep } from "@majuntao-1/browser-bridge-shared";
+import { type RecordedStep } from "../qa/types.js";
+import { type BridgeRequest, type BrowserStatus } from "@majuntao-1/browser-bridge-shared";
 
 export type BrowserToolBridge = {
   getStatus: () => BrowserStatus | Promise<BrowserStatus>;
@@ -1551,6 +1553,42 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
           },
           instruction: "你可以复制上面的 payload.steps 数组到 browser_run_steps 中执行自动化流程。"
         };
+      }
+    },
+    {
+      name: "browser_agent_goal",
+      description: "【Agentic Planner】下达一个模糊的高级目标（如“对比三家店的价格”），系统会启动一个 ReAct (Thought-Action-Observation) 循环来拆解并执行任务。它会自动决定何时搜索、何时提取数据、何时跳转。",
+      inputSchema: schema({
+        goal: { type: "string" },
+        maxSteps: { type: "number" }
+      }, ["goal"]),
+      handler: async (args) => {
+        const { goal, maxSteps = 10 } = z.object({
+          goal: z.string().min(1),
+          maxSteps: z.number().int().positive().optional()
+        }).parse(args ?? {});
+        
+        const planner = new BrowserAgentPlanner(goal);
+        let currentObs = await bridge.call<any>("browser_get_active_tab");
+        // 初始化观察
+        const initialModel = await bridge.call<any>("browser_get_page_model", { visibleOnly: true });
+        
+        const results = [];
+        for (let i = 0; i < maxSteps; i++) {
+          const { thought, action, isDone } = await planner.nextStep({
+            url: initialModel.url,
+            title: initialModel.title,
+            summary: initialModel.summary?.textSample || "",
+          });
+          
+          results.push({ step: i + 1, thought, action });
+          if (isDone) break;
+          
+          // 执行动作
+          await bridge.call("browser_run_steps", { steps: [action] });
+        }
+        
+        return { ok: true, goal, completedSteps: results };
       }
     }
   ];

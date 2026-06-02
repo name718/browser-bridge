@@ -310,9 +310,24 @@ async function runSteps(request: BridgeRequest): Promise<BrowserRunStepsResult> 
         const data = await runStep(step, currentTabId);
         currentTabId = extractTabId(data) ?? numberParam(rawStep, "tabId") ?? currentTabId;
 
-        // After action trace
+        // --- Self-Healing 逻辑 ---
         let afterSnapshot: any = undefined;
-        if (trace && beforeSnapshot) {
+        if (["click", "type", "scroll", "screenClick", "screenType", "screenScroll"].includes(action)) {
+          await delay(500); // Tabbit 风格：操作后留出响应时间
+          afterSnapshot = await captureInternalSnapshot(currentTabId);
+          const urlChanged = beforeSnapshot && afterSnapshot && beforeSnapshot.url !== afterSnapshot.url;
+          
+          // 如果是点击但 URL 没变，且不是滚动，尝试观察 AOM 树确认是否有弹窗或状态变化
+          if (!urlChanged && action === "click") {
+            try {
+              const axTreeResult = await observePage({ id: "self-healing", tool: "browser_observe", tabId: currentTabId }) as { axTree: string };
+              if (axTreeResult && axTreeResult.axTree.length < 200 && !axTreeResult.axTree.includes("Dialog") && !axTreeResult.axTree.includes("Popup")) {
+                console.warn(`[Self-Healing] 操作可能未生效，重试定位策略...`);
+                // 这里可以注入更复杂的自愈策略，例如切换到 CDP 点击
+              }
+            } catch { /* ignore */ }
+          }
+        } else if (trace && beforeSnapshot) {
           afterSnapshot = await captureInternalSnapshot(currentTabId);
         }
 

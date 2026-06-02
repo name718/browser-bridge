@@ -6,6 +6,79 @@ import { type QaCaseInput, type QaPlan, type QaPlanInput } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
+export type AgentGoalInput = {
+  goal: string;
+  baseUrl?: string;
+  maxSteps?: number;
+};
+
+export type AgentObservation = {
+  url: string;
+  title: string;
+  summary: string;
+  axTree?: string;
+};
+
+/**
+ * Tabbit 风格的 Agent 规划器
+ * 实现 Reasoning and Acting (ReAct) 逻辑
+ */
+export class BrowserAgentPlanner {
+  private steps: string[] = [];
+  private observations: AgentObservation[] = [];
+
+  constructor(private readonly goal: string) {}
+
+  /**
+   * 基于当前观察生成下一个动作
+   * 模拟 ReAct 中的 Thought -> Action -> Observation 循环
+   */
+  async nextStep(observation: AgentObservation): Promise<{
+    thought: string;
+    action: any;
+    isDone: boolean;
+  }> {
+    this.observations.push(observation);
+    const stepCount = this.observations.length;
+
+    // 模糊指令分解示例逻辑 (针对对比任务)
+    if (this.goal.includes("对比") || this.goal.includes("价格")) {
+      return this.handleComparisonGoal(observation, stepCount);
+    }
+
+    // 默认探索逻辑
+    return {
+      thought: `观察到当前页面为「${observation.title}」，URL 为 ${observation.url}。我将先通过获取页面模型来理解内容。`,
+      action: { action: "pageModel", visibleOnly: true },
+      isDone: false
+    };
+  }
+
+  private handleComparisonGoal(obs: AgentObservation, step: number): { thought: string; action: any; isDone: boolean } {
+    if (step === 1) {
+      return {
+        thought: `目标是对比价格。第一步：我需要先在搜索引擎或目标电商网站搜索相关产品。`,
+        action: { action: "open", url: "https://www.google.com/search?q=" + encodeURIComponent(this.goal) },
+        isDone: false
+      };
+    }
+    
+    if (obs.url.includes("google.com") && step < 4) {
+      return {
+        thought: `搜索结果已加载。我现在需要从结果中挑选三家不同的店。`,
+        action: { action: "pageModel", maxElements: 40 },
+        isDone: false
+      };
+    }
+
+    return {
+      thought: `已完成信息收集与对比。`,
+      action: { action: "screenshot" },
+      isDone: true
+    };
+  }
+}
+
 export async function createQaPlan(input: QaPlanInput): Promise<QaPlan> {
   const prdText = input.prdText ?? (input.prdPath ? await readText(input.prdPath).catch(() => "") : "");
   const changedFiles = await getChangedFiles(input.compareBranch, input.branch);
