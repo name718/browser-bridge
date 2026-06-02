@@ -9,6 +9,10 @@ import { type BridgeRequest, type BrowserStatus } from "@majuntao-1/browser-brid
 
 export type BrowserToolBridge = {
   getStatus: () => BrowserStatus | Promise<BrowserStatus>;
+  setVariable: (name: string, value: any) => Promise<void>;
+  getVariable: (name: string) => Promise<any>;
+  getAllVariables: () => Promise<Record<string, any>>;
+  clearVariables: () => Promise<void>;
   call: <T = unknown>(
     tool: BridgeRequest["tool"],
     params?: Record<string, unknown>,
@@ -1589,6 +1593,68 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
         }
         
         return { ok: true, goal, completedSteps: results };
+      }
+    },
+    {
+      name: "browser_set_variable",
+      description: "【跨页上下文】在 MCP 会话存储中设置一个变量。该变量可以被后续的工具调用通过 {{varName}} 语法引用，实现跨页面、跨标签页的数据传递（例如：记录订单号并在另一个页面查询）。",
+      inputSchema: schema({
+        name: { type: "string" },
+        value: { type: "any" }
+      }, ["name", "value"]),
+      handler: async (args) => {
+        const { name, value } = z.object({
+          name: z.string().min(1),
+          value: z.any()
+        }).parse(args ?? {});
+        await bridge.setVariable(name, value);
+        return { ok: true, name, value };
+      }
+    },
+    {
+      name: "browser_get_variables",
+      description: "【跨页上下文】获取当前所有已设置的会话变量。",
+      inputSchema: schema({}),
+      handler: async () => {
+        return { ok: true, variables: await bridge.getAllVariables() };
+      }
+    },
+    {
+      name: "browser_run_skill",
+      description: "【技能系统】运行预设的复杂流（Skill）。Skill 是经过优化的步骤集合，支持参数化调用。系统会自动将参数注入到步骤的 {{paramName}} 中。",
+      inputSchema: schema({
+        skillId: { type: "string" },
+        parameters: { type: "object" }
+      }, ["skillId"]),
+      handler: async (args) => {
+        const { skillId, parameters = {} } = z.object({
+          skillId: z.string().min(1),
+          parameters: z.record(z.any()).optional()
+        }).parse(args ?? {});
+        
+        // 1. 设置参数到上下文
+        for (const [key, val] of Object.entries(parameters)) {
+          await bridge.setVariable(key, val);
+        }
+        
+        // 2. 获取 Skill 定义 (这里简单模拟，实际可以从文件读取)
+        const skills: Record<string, any> = {
+          "search-and-compare": {
+            steps: [
+              { action: "open", url: "https://www.google.com/search?q={{keyword}}" },
+              { action: "pageModel", visibleOnly: true },
+              { action: "screenshot" }
+            ]
+          }
+        };
+        
+        const skill = skills[skillId];
+        if (!skill) {
+          throw new Error(`SKILL_NOT_FOUND: 未找到 ID 为 ${skillId} 的技能`);
+        }
+        
+        // 3. 运行步骤 (插值会在 bridge.call 内部自动完成)
+        return bridge.call("browser_run_steps", { steps: skill.steps });
       }
     }
   ];

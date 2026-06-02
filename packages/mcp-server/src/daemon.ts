@@ -40,6 +40,36 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       return;
     }
 
+    if (request.url?.startsWith("/vars")) {
+      if (request.method === "GET") {
+        const url = new URL(request.url, `http://127.0.0.1:${apiPort}`);
+        const name = url.searchParams.get("name");
+        if (name) {
+          sendJson(response, 200, { value: bridge.getVariable(name) });
+        } else {
+          sendJson(response, 200, { variables: bridge.getAllVariables() });
+        }
+        return;
+      }
+
+      if (request.method === "POST") {
+        const body = await readJson(request);
+        if (isRecord(body) && typeof body.name === "string") {
+          bridge.setVariable(body.name, body.value);
+          sendJson(response, 200, { ok: true });
+        } else {
+          sendJson(response, 400, { error: "INVALID_PARAMS: name 参数必填" });
+        }
+        return;
+      }
+
+      if (request.method === "DELETE") {
+        bridge.clearVariables();
+        sendJson(response, 200, { ok: true });
+        return;
+      }
+    }
+
     if (request.method === "POST" && request.url === "/call") {
       const body = await readJson(request);
       if (!isRecord(body) || typeof body.tool !== "string") {

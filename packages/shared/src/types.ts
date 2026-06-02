@@ -526,3 +526,16 @@ export type BrowserRunStepsResult = {
   tabId?: number;
   results: BrowserStepResult[];
 };
+
+export type BrowserSkill = {
+  id: string;
+  name: string;
+  description: string;
+  category?: string;
+  parameters?: Record<string, {
+    type: "string" | "number" | "boolean";
+    description: string;
+    default?: any;
+  }>;
+  steps: BrowserStep[];
+};

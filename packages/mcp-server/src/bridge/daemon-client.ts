@@ -26,6 +26,35 @@ export class DaemonBridgeClient {
     return this.request<DaemonStatus>("/status", { method: "GET" });
   }
 
+  async setVariable(name: string, value: any): Promise<void> {
+    await this.ensureDaemon();
+    await this.request("/vars", {
+      method: "POST",
+      body: JSON.stringify({ name, value })
+    });
+  }
+
+  async getVariable(name: string): Promise<any> {
+    await this.ensureDaemon();
+    const res = await this.request<{ value: any }>(`/vars?name=${encodeURIComponent(name)}`, {
+      method: "GET"
+    });
+    return res.value;
+  }
+
+  async getAllVariables(): Promise<Record<string, any>> {
+    await this.ensureDaemon();
+    const res = await this.request<{ variables: Record<string, any> }>("/vars", {
+      method: "GET"
+    });
+    return res.variables;
+  }
+
+  async clearVariables(): Promise<void> {
+    await this.ensureDaemon();
+    await this.request("/vars", { method: "DELETE" });
+  }
+
   async call<T = unknown>(
     tool: BridgeRequest["tool"],
     params?: Record<string, unknown>,
@@ -95,7 +124,7 @@ export class DaemonBridgeClient {
 
   private async request<T>(
     path: string,
-    options: { method: "GET" | "POST"; body?: string; timeoutMs?: number }
+    options: { method: "GET" | "POST" | "DELETE"; body?: string; timeoutMs?: number }
   ): Promise<T> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 10_000);

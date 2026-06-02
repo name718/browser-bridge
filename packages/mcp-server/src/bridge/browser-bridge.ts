@@ -28,8 +28,53 @@ export class BrowserBridge {
   private connectedAt?: string;
   private extensionVersion?: string;
   private readonly connectionWaiters = new Set<ConnectionWaiter>();
+  
+  // Tabbit 风格的跨页上下文 (Cross-Tab Context)
+  private sessionStorage = new Map<string, any>();
 
   constructor(private readonly port: number) {}
+
+  setVariable(name: string, value: any): void {
+    this.logger.info("setting session variable", { name, value });
+    this.sessionStorage.set(name, value);
+  }
+
+  getVariable(name: string): any {
+    return this.sessionStorage.get(name);
+  }
+
+  getAllVariables(): Record<string, any> {
+    return Object.fromEntries(this.sessionStorage);
+  }
+
+  clearVariables(): void {
+    this.sessionStorage.clear();
+  }
+
+  /**
+   * 变量插值：将字符串中的 {{varName}} 替换为 sessionStorage 中的值
+   */
+  interpolate(value: any): any {
+    if (typeof value !== "string") return value;
+    return value.replace(/\{\{(.+?)\}\}/g, (_, name) => {
+      const val = this.getVariable(name.trim());
+      return val !== undefined ? String(val) : `{{${name}}}`;
+    });
+  }
+
+  private interpolateRecursive(obj: any): any {
+    if (!obj) return obj;
+    if (typeof obj === "string") return this.interpolate(obj);
+    if (Array.isArray(obj)) return obj.map((item) => this.interpolateRecursive(item));
+    if (typeof obj === "object") {
+      const result: Record<string, any> = {};
+      for (const key of Object.keys(obj)) {
+        result[key] = this.interpolateRecursive(obj[key]);
+      }
+      return result;
+    }
+    return obj;
+  }
 
   start(): void {
     if (this.server) {
@@ -79,10 +124,14 @@ export class BrowserBridge {
 
     const id = randomUUID();
     const timeoutMs = options?.timeoutMs ?? 10_000;
+    
+    // Tabbit 风格：自动递归插值所有字符串参数
+    const interpolatedParams = this.interpolateRecursive(params);
+
     const request: BridgeRequest = {
       id,
       tool,
-      params,
+      params: interpolatedParams,
       tabId: options?.tabId,
       timeoutMs
     };
