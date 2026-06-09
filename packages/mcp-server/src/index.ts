@@ -8,6 +8,7 @@ import {
 import { DaemonBridgeClient } from "./bridge/daemon-client.js";
 import { createBrowserTools } from "./tools/browser-tools.js";
 import { createQaTools } from "./qa/qa-tools.js";
+import { isRecord } from "@majuntao-1/browser-bridge-shared";
 import { Logger } from "./logger/logger.js";
 import { sanitizeForLog } from "./security/sanitize.js";
 
@@ -331,8 +332,4 @@ function formatPdfResult(result: unknown): {
       }
     ]
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

@@ -62,7 +62,13 @@ export type BridgeTool =
   | "browser_new_tab"
   | "browser_new_context"
   | "browser_toggle_recording"
-  | "browser_get_recorded_steps";
+  | "browser_get_recorded_steps"
+  // Phase 1: Smart Form Engine
+  | "browser_get_form_structure"
+  | "browser_fill_form_smart"
+  // Phase 3: Semantic tools
+  | "browser_navigate_and_observe"
+  | "browser_click_semantic_btn";
 
 export type BridgeRequest = {
   id: string;

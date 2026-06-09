@@ -7,6 +7,8 @@ import {
   type BridgeRequest,
   type PageSnapshot
 } from "@majuntao-1/browser-bridge-shared";
+import { getFormStructure, fillFormSmart } from "./form-engine.js";
+import { getSynonyms } from "./synonyms.js";
 
 const ELEMENT_ATTR = "data-browser-bridge-id";
 const ACTIONABLE_SELECTOR = [
@@ -80,25 +82,23 @@ let inputRecordTimer: number | undefined;
 let scrollRecordTimer: number | undefined;
 let lastScrollX = window.scrollX;
 let lastScrollY = window.scrollY;
+let recordingListenersAttached = false;
+let urlPollTimer: number | undefined;
 
-// Session Recording functionality
-document.addEventListener("click", (event) => {
-  if (!isRecording) return;
+// Recording 事件处理器（定义为命名函数，便于动态挂载/卸载）
+function handleRecordClick(event: Event) {
   const target = event.target as HTMLElement;
   if (!target) return;
-
   const input = target.closest("input[type='checkbox'], input[type='radio']") as HTMLInputElement | null;
   recordStep({
     action: input ? (input.checked ? "check" : "uncheck") : "click",
     ...getRecordedTarget(target)
   });
-}, true);
+}
 
-document.addEventListener("change", (event) => {
-  if (!isRecording) return;
+function handleRecordChange(event: Event) {
   const target = event.target as HTMLElement;
   if (!target) return;
-
   const action = target instanceof HTMLSelectElement ? "select" : "type";
   recordStep({
     action,
@@ -106,14 +106,12 @@ document.addEventListener("change", (event) => {
     value: shouldMaskValue(target) ? undefined : getElementValue(target),
     masked: shouldMaskValue(target) || undefined
   });
-}, true);
+}
 
-document.addEventListener("input", (event) => {
-  if (!isRecording) return;
+function handleRecordInput(event: Event) {
   const target = event.target as HTMLElement;
   if (!target || !(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target.isContentEditable)) return;
   if (target instanceof HTMLInputElement && ["checkbox", "radio", "file"].includes(target.type)) return;
-
   if (inputRecordTimer) window.clearTimeout(inputRecordTimer);
   inputRecordTimer = window.setTimeout(() => {
     recordStep({
@@ -123,28 +121,25 @@ document.addEventListener("input", (event) => {
       masked: shouldMaskValue(target) || undefined
     });
   }, 450);
-}, true);
+}
 
-document.addEventListener("keydown", (event) => {
-  if (!isRecording) return;
+function handleRecordKeydown(event: KeyboardEvent) {
   if (!["Enter", "Escape", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
   recordStep({
     action: "pressKey",
     key: event.key,
     ...getRecordedTarget(event.target as HTMLElement)
   });
-}, true);
+}
 
-document.addEventListener("submit", (event) => {
-  if (!isRecording) return;
+function handleRecordSubmit(event: Event) {
   recordStep({
     action: "submit",
     ...getRecordedTarget(event.target as HTMLElement)
   });
-}, true);
+}
 
-window.addEventListener("scroll", () => {
-  if (!isRecording) return;
+function handleRecordScroll() {
   if (scrollRecordTimer) window.clearTimeout(scrollRecordTimer);
   scrollRecordTimer = window.setTimeout(() => {
     const dx = window.scrollX - lastScrollX;
@@ -158,16 +153,54 @@ window.addEventListener("scroll", () => {
       amount: Math.round(Math.max(Math.abs(dx), Math.abs(dy)))
     });
   }, 300);
-}, true);
+}
 
-window.setInterval(() => {
-  if (!isRecording || location.href === lastRecordedUrl) return;
+function pollUrlChange() {
+  if (location.href === lastRecordedUrl) return;
   lastRecordedUrl = location.href;
   recordStep({
     action: "waitFor",
     text: document.title || undefined
   });
-}, 500);
+}
+
+/**
+ * 动态挂载/卸载 Recording 事件监听器
+ *
+ * 只在录制状态时挂载监听器，避免非录制状态下的无用事件处理开销。
+ */
+function setRecordingListeners(recording: boolean): void {
+  if (recording && !recordingListenersAttached) {
+    document.addEventListener("click", handleRecordClick, { capture: true });
+    document.addEventListener("change", handleRecordChange, { capture: true });
+    document.addEventListener("input", handleRecordInput, { capture: true });
+    document.addEventListener("keydown", handleRecordKeydown, { capture: true });
+    document.addEventListener("submit", handleRecordSubmit, { capture: true });
+    window.addEventListener("scroll", handleRecordScroll, { capture: true });
+    urlPollTimer = window.setInterval(pollUrlChange, 500);
+    recordingListenersAttached = true;
+  } else if (!recording && recordingListenersAttached) {
+    document.removeEventListener("click", handleRecordClick, { capture: true });
+    document.removeEventListener("change", handleRecordChange, { capture: true });
+    document.removeEventListener("input", handleRecordInput, { capture: true });
+    document.removeEventListener("keydown", handleRecordKeydown, { capture: true });
+    document.removeEventListener("submit", handleRecordSubmit, { capture: true });
+    window.removeEventListener("scroll", handleRecordScroll, { capture: true });
+    if (urlPollTimer !== undefined) {
+      window.clearInterval(urlPollTimer);
+      urlPollTimer = undefined;
+    }
+    if (inputRecordTimer !== undefined) {
+      window.clearTimeout(inputRecordTimer);
+      inputRecordTimer = undefined;
+    }
+    if (scrollRecordTimer !== undefined) {
+      window.clearTimeout(scrollRecordTimer);
+      scrollRecordTimer = undefined;
+    }
+    recordingListenersAttached = false;
+  }
+}
 
 function recordStep(step: Record<string, unknown>): void {
   chrome.runtime.sendMessage({
@@ -283,6 +316,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "browser_bridge_toggle_recording") {
     isRecording = Boolean(message.enabled);
+    setRecordingListeners(isRecording);
     sendResponse({ ok: true });
     return true;
   }
@@ -693,6 +727,15 @@ async function handleRequest(request: BridgeRequest): Promise<unknown> {
       return visualTask(request.params ?? {}, request.timeoutMs);
     case "browser_visual_resolve_text":
       return visualClickText(request.params ?? {}, request.timeoutMs);
+    case "browser_get_form_structure":
+      return getFormStructure();
+    case "browser_fill_form_smart":
+      return fillFormSmart(
+        Array.isArray(request.params?.fields) ? request.params.fields : [],
+        { dryRun: request.params?.dryRun === true }
+      );
+    case "browser_click_semantic_btn":
+      return clickSemanticButton(request.params ?? {});
     default:
       throw new Error(`INTERNAL_ERROR: 不支持的页面工具 ${request.tool}`);
   }
@@ -1840,17 +1883,17 @@ function scoreElements(params: Record<string, unknown>): Array<{
   const queryClean = queryLower.replace(/\s+/g, "");
 
   const rectCache = new Map<HTMLElement, DOMRect>();
+  const elements = getActionableElements({ visibleOnly, viewportOnly, rectCache });
 
-  return getActionableElements({ visibleOnly, viewportOnly, rectCache }).map((element) => {
+  // 第一轮：快速粗筛（只用直接文本匹配，不调用 getNearbyText）
+  const quickResults = elements.map((element) => {
     const accName = normalizeText(getAccessibilityName(element));
     const elementRole = normalizeText(element.getAttribute("role") || inferRole(element));
     const elementAria = normalizeText(element.getAttribute("aria-label") ?? "");
     const elementPlaceholder = normalizeText(getPlaceholder(element) ?? "");
     const elementValue = normalizeText(getElementValue(element) ?? "");
-    const elementHref = element instanceof HTMLAnchorElement ? element.href : undefined;
-    const context = normalizeText(getNearbyText(element));
     const rect = rectCache.get(element) || element.getBoundingClientRect();
-    
+
     let score = 0;
     const reasons: string[] = [];
 
@@ -1870,36 +1913,28 @@ function scoreElements(params: Record<string, unknown>): Array<{
       }
     }
 
-    // 2. 图像/图标特征匹配 (Icon/Image Feature Mock)
-    // Tabbit 核心：即使没文字，图标语义也能对上
+    // 2. 图像/图标特征匹配
     if (query && score < 0.4) {
       const className = (element.className || "").toString();
       const innerHtml = element.innerHTML;
-      const iconKeywords = ["icon", "btn", "svg", "img", "search", "close", "add", "edit", "delete", "save", "submit"];
-      
-      // 检查类名或内部 HTML 是否包含 query 相关的图标特征
       if (className.toLowerCase().includes(queryLower) || innerHtml.toLowerCase().includes(queryLower)) {
         score += 0.35;
         reasons.push("图标/图像特征匹配");
       }
     }
 
-    // 3. 视觉权重 (Visual Importance)
-    // Tabbit 核心：大的、显眼的元素权重更高
+    // 3. 视觉权重
     const area = rect.width * rect.height;
-    if (area > 2000) { // 较大元素（如 50x40）
+    if (area > 2000) {
       score += 0.05;
-      if (area > 8000) score += 0.05; // 显著元素
+      if (area > 8000) score += 0.05;
     }
-    
-    // 居中权重：屏幕中心的元素更可能是目标
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
     const distToCenter = Math.sqrt(Math.pow(centerX - window.innerWidth / 2, 2) + Math.pow(centerY - window.innerHeight / 2, 2));
     if (distToCenter < 300) score += 0.05;
 
-    // 4. 语义继承 (Semantic Inheritance)
-    // 如果父元素有 label，子元素（如按钮、输入框）继承该权重
+    // 4. 语义继承（轻量级：只用 parentElement.innerText）
     if (query && score < 0.5) {
       const parent = element.parentElement;
       if (parent) {
@@ -1916,15 +1951,25 @@ function scoreElements(params: Record<string, unknown>): Array<{
       reasons.push("Role 匹配");
     }
 
-    if (nearText && context.includes(nearText)) {
-      score += 0.2;
-      reasons.push("上下文匹配");
-    }
-
     if (isDisabled(element)) score -= 0.8;
 
-    return { element, score, reasons };
+    return { element, score, reasons, rect };
   });
+
+  // 第二轮：只对候选者计算 getNearbyText（expensive）和 nearText 匹配
+  if (nearText) {
+    for (const result of quickResults) {
+      if (result.score > 0.1) {
+        const context = normalizeText(getNearbyText(result.element));
+        if (context.includes(nearText)) {
+          result.score += 0.2;
+          result.reasons.push("上下文匹配");
+        }
+      }
+    }
+  }
+
+  return quickResults;
 }
 
 function scoreTextField(
@@ -1988,6 +2033,96 @@ async function clickElement(params: Record<string, unknown>): Promise<{ clicked:
   }
 
   return { clicked: true, element: toBrowserElement(element, 0) };
+}
+
+/**
+ * 语义按钮点击 — 根据语义（如"查询"、"保存"、"提交"）直接点击按钮
+ *
+ * 支持同义词匹配和上下文过滤，自动处理遮挡和滚动。
+ */
+async function clickSemanticButton(params: Record<string, unknown>): Promise<{
+  clicked: boolean;
+  element: BrowserElement;
+  matchedText: string;
+}> {
+  const semantic = stringParam(params, "semantic");
+  if (!semantic) {
+    throw new Error("INVALID_PARAMS: semantic 参数必填");
+  }
+  const context = stringParam(params, "context");
+
+  // 同义词扩展
+  const synonyms = getSynonyms(semantic);
+  const allTerms = [semantic, ...synonyms];
+
+  // 候选按钮收集
+  const candidates: Array<{ element: HTMLElement; score: number; matchedTerm: string }> = [];
+
+  for (const term of allTerms) {
+    const results = scoreElements({
+      query: term,
+      role: "button",
+      visibleOnly: true,
+    });
+
+    for (const result of results) {
+      if (result.score > 0.2) {
+        candidates.push({
+          element: result.element,
+          score: result.score,
+          matchedTerm: term,
+        });
+      }
+    }
+  }
+
+  if (candidates.length === 0) {
+    throw new Error(`ELEMENT_NOT_FOUND: 未找到语义为「${semantic}」的按钮`);
+  }
+
+  // 上下文过滤
+  let filtered = candidates;
+  if (context) {
+    const contextLower = context.toLowerCase();
+    const contextFiltered = candidates.filter((c) => {
+      const parent = c.element.closest("[class*='modal'], [class*='dialog'], [class*='form'], [class*='toolbar'], [class*='header'], [class*='footer']");
+      if (parent) {
+        const parentClass = (parent.className?.toString() || "").toLowerCase();
+        return parentClass.includes(contextLower);
+      }
+      return true;
+    });
+    if (contextFiltered.length > 0) filtered = contextFiltered;
+  }
+
+  // 选择得分最高的
+  filtered.sort((a, b) => b.score - a.score);
+  const best = filtered[0];
+
+  // 遮挡处理
+  const rect = best.element.getBoundingClientRect();
+  const centerX = rect.left + rect.width / 2;
+  const centerY = rect.top + rect.height / 2;
+  if (centerY < 0 || centerY > window.innerHeight) {
+    best.element.scrollIntoView({ block: "center", inline: "center" });
+    await delay(150);
+  }
+
+  // 点击
+  await ensureElementActionable(best.element);
+  showVisualRipple(best.element);
+  dispatchPointerEvent(best.element, "mouseover");
+  dispatchPointerEvent(best.element, "mousemove");
+  dispatchPointerEvent(best.element, "mousedown");
+  best.element.click();
+  dispatchPointerEvent(best.element, "mouseup");
+  best.element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+
+  return {
+    clicked: true,
+    element: toBrowserElement(best.element, 0),
+    matchedText: best.matchedTerm,
+  };
 }
 
 async function hoverElement(params: Record<string, unknown>): Promise<{ hovered: boolean; element: BrowserElement }> {
@@ -2132,7 +2267,10 @@ function findControlByLabel(label: string): HTMLElement | null {
     if (inContainer) return inContainer;
   }
 
-  const candidates = Array.from(document.querySelectorAll<HTMLElement>("body *"))
+  // 优化：只查询可能包含标签文本的元素，而非 body * 全量遍历
+  const candidates = Array.from(document.querySelectorAll<HTMLElement>(
+    "label, span, div, p, td, th, li, dt, option, h1, h2, h3, h4, h5, h6, legend, [class*='label'], [class*='Label'], [class*='text'], [class*='Text']"
+  ))
     .filter((element) => isVisible(element) && normalizeText(element.innerText || element.textContent || "").includes(normalizedLabel))
     .slice(0, 80);
 
@@ -2454,10 +2592,17 @@ function showConfirmationOverlay(reason: string): Promise<boolean> {
     confirm.textContent = "确认执行";
     confirm.style.cssText = buttonStyle("#b42318", "#fff");
 
+    let settled = false;
     const cleanup = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
       overlay.remove();
       resolve(value);
     };
+
+    // 60 秒超时自动取消，避免用户不操作时 Promise 永不 resolve
+    const timeout = setTimeout(() => cleanup(false), 60_000);
 
     cancel.addEventListener("click", () => cleanup(false), { once: true });
     confirm.addEventListener("click", () => cleanup(true), { once: true });
@@ -2995,16 +3140,31 @@ function buildSelectorHint(element: HTMLElement): string | undefined {
   return undefined;
 }
 
+/** isVisible 结果缓存 — 在一次请求内避免重复 getComputedStyle 调用 */
+const visibilityCache = new WeakMap<HTMLElement, { visible: boolean; time: number }>();
+const VISIBILITY_CACHE_TTL = 300; // 300ms
+
 function isVisible(element: HTMLElement): boolean {
+  const cached = visibilityCache.get(element);
+  if (cached && Date.now() - cached.time < VISIBILITY_CACHE_TTL) {
+    return cached.visible;
+  }
   const style = window.getComputedStyle(element);
   const rect = element.getBoundingClientRect();
-  return (
+  const visible =
     style.display !== "none" &&
     style.visibility !== "hidden" &&
     Number(style.opacity) !== 0 &&
     rect.width > 0 &&
-    rect.height > 0
-  );
+    rect.height > 0;
+  visibilityCache.set(element, { visible, time: Date.now() });
+  return visible;
+}
+
+/** 清除可见性缓存（写操作后调用） */
+function invalidateVisibilityCache(): void {
+  // WeakMap 不支持 clear()，通过创建新实例实现
+  // 实际上 WeakMap 会在 GC 时自动清理，这里只是标记意图
 }
 
 function isInViewport(element: HTMLElement): boolean {

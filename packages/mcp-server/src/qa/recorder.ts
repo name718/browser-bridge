@@ -55,7 +55,10 @@ export function cleanRecordedSteps(steps: RecordedStep[]): RecordedStep[] {
 
     // 过滤掉没有目标的无效点击
     if (normalized.action === "click" && !normalized.text && !normalized.selector && !normalized.ariaLabel && !normalized.placeholder && !normalized.testId) {
-      continue;
+      // 保留有坐标信息的点击（可能是 canvas 点击）
+      if (!normalized.nearText) {
+        continue;
+      }
     }
 
     result.push(normalized);
@@ -121,8 +124,27 @@ function sameTarget(a: RecordedStep, b: RecordedStep): boolean {
 }
 
 function isSensitive(step: RecordedStep): boolean {
-  const value = `${step.placeholder ?? ""} ${step.ariaLabel ?? ""} ${step.text ?? ""}`;
-  return /password|密码|token|secret|验证码|verification/i.test(value);
+  const fieldText = `${step.placeholder ?? ""} ${step.ariaLabel ?? ""} ${step.text ?? ""}`;
+
+  // 1. 文本模式匹配
+  const patterns = [
+    /password/i, /密码/i, /secret/i, /token/i,
+    /验证码/, /verification/i, /credit.?card/i,
+    /信用卡/, /身份证/, /银行卡/
+  ];
+  if (patterns.some((p) => p.test(fieldText))) return true;
+
+  // 2. input type 检测（通过 selector 推断）
+  if (step.selector?.includes("type=password")) return true;
+
+  // 3. value 内容检测（如果看起来像敏感数据）
+  const value = step.value ?? "";
+  // 信用卡号：16-19 位连续数字
+  if (/[\d]{16,19}/.test(value)) return true;
+  // 身份证号：18 位
+  if (/[\d]{6}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])[\dXx]{4}/.test(value)) return true;
+
+  return false;
 }
 
 function cssEscape(value: string): string {

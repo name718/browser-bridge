@@ -34,6 +34,10 @@ export type QaRunInput = {
   branch?: string;
   compareBranch?: string;
   focus?: string[];
+  /** 最大并行数（默认 1 = 顺序执行，最大 5） */
+  maxParallel?: number;
+  /** 只返回摘要，不返回详细步骤 */
+  summaryOnly?: boolean;
 };
 
 export type QaStepEvidence = {

@@ -101,7 +101,11 @@ const qaRunSchema = z.object({
   failOnConsoleError: z.boolean().optional(),
   failOnUncaughtException: z.boolean().optional(),
   captureNetwork: z.boolean().optional(),
-  recordReplay: z.boolean().optional()
+  recordReplay: z.boolean().optional(),
+  /** 最大并行数（默认 1 = 顺序执行，最大 5） */
+  maxParallel: z.number().int().min(1).max(5).optional(),
+  /** 只返回摘要，不返回详细步骤 */
+  summaryOnly: z.boolean().optional()
 }).refine((value) => Boolean(value.cases?.length || value.steps?.length), {
   message: "cases 或 steps 必须至少提供一个"
 });
@@ -157,7 +161,7 @@ export function createQaTools(bridge: BrowserToolBridge): BrowserToolDefinition[
     },
     {
       name: "browser_qa_run",
-      description: "执行 AI QA 测试任务。MVP 版本支持传入 cases 或 steps，自动执行浏览器步骤，保存 summary、report.md、report.html 和 replay.json。",
+      description: "执行 AI QA 测试任务。支持传入 cases 或 steps，自动执行浏览器步骤，保存 summary、report.md、report.html 和 replay.json。支持并行执行和摘要模式。",
       inputSchema: schema({
         taskId: { type: "string" },
         title: { type: "string" },
@@ -173,7 +177,9 @@ export function createQaTools(bridge: BrowserToolBridge): BrowserToolDefinition[
         failOnConsoleError: { type: "boolean" },
         failOnUncaughtException: { type: "boolean" },
         captureNetwork: { type: "boolean" },
-        recordReplay: { type: "boolean" }
+        recordReplay: { type: "boolean" },
+        maxParallel: { type: "number", description: "最大并行数（1-5，默认 1 顺序执行）" },
+        summaryOnly: { type: "boolean", description: "只返回摘要，不返回详细步骤（减少响应体积）" }
       }),
       handler: async (args) => runQa(bridge, qaRunSchema.parse(args ?? {}) as unknown as QaRunInput)
     },
@@ -225,23 +231,58 @@ async function runQa(bridge: BrowserToolBridge, input: QaRunInput): Promise<QaRu
   await Promise.all([ensureDir(casesDir), ensureDir(screenshotsDir), ensureDir(logsDir)]);
 
   const cases = normalizeCases(input);
+  const maxParallel = input.maxParallel ?? 1;
   const results: QaCaseResult[] = [];
 
-  for (const testCase of cases) {
-    const result = await runQaCase(bridge, testCase, {
-      stopOnError: input.stopOnError,
-      delayMs: input.delayMs,
-      timeoutMs: input.timeoutMs,
-      screenshotOnError: input.screenshotOnError,
-      captureConsole: input.captureConsole,
-      failOnConsoleError: input.failOnConsoleError,
-      failOnUncaughtException: input.failOnUncaughtException,
-      captureNetwork: input.captureNetwork,
-      screenshotsDir,
-      logsDir
-    });
-    results.push(result);
-    await writeJson(join(casesDir, `${result.id}.json`), result);
+  if (maxParallel > 1 && cases.length > 1) {
+    // 并行执行独立用例（每个用例最多 maxParallel 个并行）
+    const executing = new Set<Promise<void>>();
+
+    for (const testCase of cases) {
+      const runAndSave = async () => {
+        const result = await runQaCase(bridge, testCase, {
+          stopOnError: input.stopOnError,
+          delayMs: input.delayMs,
+          timeoutMs: input.timeoutMs,
+          screenshotOnError: input.screenshotOnError,
+          captureConsole: input.captureConsole,
+          failOnConsoleError: input.failOnConsoleError,
+          failOnUncaughtException: input.failOnUncaughtException,
+          captureNetwork: input.captureNetwork,
+          screenshotsDir,
+          logsDir
+        });
+        results.push(result);
+        await writeJson(join(casesDir, `${result.id}.json`), result);
+      };
+
+      const p = runAndSave().then(() => { executing.delete(p); });
+      executing.add(p);
+
+      if (executing.size >= maxParallel) {
+        await Promise.race(executing);
+      }
+    }
+
+    await Promise.all(executing);
+  } else {
+    // 顺序执行（默认）
+    for (const testCase of cases) {
+      const result = await runQaCase(bridge, testCase, {
+        stopOnError: input.stopOnError,
+        delayMs: input.delayMs,
+        timeoutMs: input.timeoutMs,
+        screenshotOnError: input.screenshotOnError,
+        captureConsole: input.captureConsole,
+        failOnConsoleError: input.failOnConsoleError,
+        failOnUncaughtException: input.failOnUncaughtException,
+        captureNetwork: input.captureNetwork,
+        screenshotsDir,
+        logsDir
+      });
+      results.push(result);
+      await writeJson(join(casesDir, `${result.id}.json`), result);
+    }
   }
 
   const finishedAt = new Date();
@@ -273,6 +314,24 @@ async function runQa(bridge: BrowserToolBridge, input: QaRunInput): Promise<QaRu
   await writeText(paths.reportHtml, renderHtml(runResult));
   await writeText(paths.replayViewer, renderReplayViewer(runResult, replay));
   await writeJson(paths.ciSummary, renderCiSummary(runResult));
+
+  // summaryOnly 模式：只返回摘要和失败用例详情，减少响应体积
+  if (input.summaryOnly) {
+    return {
+      ...runResult,
+      cases: runResult.cases.map((c) => ({
+        ...c,
+        // 清空步骤详情，只保留摘要信息
+        steps: [],
+        runResult: undefined,
+        artifacts: {
+          ...c.artifacts,
+          console: undefined,
+          network: undefined
+        }
+      }))
+    };
+  }
 
   return runResult;
 }

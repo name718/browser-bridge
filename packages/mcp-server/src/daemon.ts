@@ -2,6 +2,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { BrowserBridge } from "./bridge/browser-bridge.js";
 import { Logger } from "./logger/logger.js";
+import { isRecord } from "@majuntao-1/browser-bridge-shared";
 
 const logger = new Logger("bridge-daemon");
 const bridgePort = Number(process.env.BROWSER_BRIDGE_PORT ?? 17321);
@@ -121,8 +122,3 @@ function sendJson(response: ServerResponse, statusCode: number, body: unknown): 
   });
   response.end(JSON.stringify(body));
 }
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-

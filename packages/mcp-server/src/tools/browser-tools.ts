@@ -6,6 +6,7 @@ import { BrowserAgentPlanner } from "../qa/planner.js";
 import { recordedStepsToCase } from "../qa/recorder.js";
 import { type RecordedStep } from "../qa/types.js";
 import { type BridgeRequest, type BrowserStatus } from "@majuntao-1/browser-bridge-shared";
+import { ObservationCache } from "../utils/cache.js";
 
 export type BrowserToolBridge = {
   getStatus: () => BrowserStatus | Promise<BrowserStatus>;
@@ -404,6 +405,9 @@ export const browserNonDestructiveAnnotations = {
 } as const;
 
 export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefinition[] {
+  // 观察结果缓存：快速连续观察调用从 2 次往返 → 0 次往返
+  const observationCache = new ObservationCache(2000);
+
   const tools: BrowserToolDefinition[] = [
     {
       name: "browser_console_monitor",
@@ -430,7 +434,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_get_ax_tree",
-      description: "获取当前页面的完整无障碍树（Accessibility Tree）。相比 DOM 树，AXTree 更加简洁并聚焦于可交互元素和语义信息，是 AI 理解页面结构和进行导航的极佳选择。",
+      description: "[DEPRECATED since v0.4.0] Use browser_get_page_model 获取更精简的语义化页面模型。AX Tree 返回体积较大，将在 v0.6.0 移除。",
       inputSchema: schema({
         tabId: { type: "number" }
       }),
@@ -502,7 +506,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_get_page_text",
-      description: "返回当前标签页或指定标签页中的可见文本。",
+      description: "[DEPRECATED since v0.4.0] Use browser_get_page_model 或 browser_observe 获取更结构化的页面信息。此工具将保留但不再推荐使用。",
       inputSchema: schema({ tabId: { type: "number" } }),
       handler: async (args) => {
         const parsed = optionalTabId.parse(args ?? {});
@@ -511,7 +515,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_get_page_snapshot",
-      description: "调试/兜底工具：返回页面标题、URL、大段可见文本和可操作元素列表，消耗 token 较高。点击、输入、等待等操作应优先使用 browser_act、browser_find_and_click、browser_find_and_type 或 browser_run_steps。",
+      description: "[DEPRECATED since v0.4.0] Use browser_get_page_model 获取低 token 的语义化页面模型。此工具返回完整快照，token 消耗较高，将在 v0.6.0 移除。",
       inputSchema: schema({ tabId: { type: "number" } }),
       handler: async (args) => {
         const parsed = optionalTabId.parse(args ?? {});
@@ -598,7 +602,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_find_and_click",
-      description: "在浏览器端查找最匹配元素并点击，减少 Agent 拉取 DOM 后再回传 elementId 的往返。",
+      description: "[DEPRECATED since v0.4.0] Use browser_act({ action: 'click' }) 或 browser_click_semantic_btn 替代。将在 v0.6.0 移除。",
       inputSchema: schema({
         ...stepTargetProperties(),
         tabId: { type: "number" },
@@ -612,7 +616,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_find_and_type",
-      description: "在浏览器端查找输入目标并输入文本，适合账号、搜索框、筛选条件等场景。",
+      description: "[DEPRECATED since v0.4.0] Use browser_act({ action: 'type' }) 或 browser_fill_form_smart 批量填写替代。将在 v0.6.0 移除。",
       inputSchema: schema({
         ...stepTargetProperties(),
         tabId: { type: "number" },
@@ -672,6 +676,75 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
       }
     },
     {
+      name: "browser_get_form_structure",
+      description: "提取当前页面的完整表单模型，返回所有字段的标签、类型、选项、必填状态和框架识别结果。一次调用即可看到整个表单结构，减少多次 browser_find 调用。支持 AntD、Element UI、Arco 和原生 HTML 表单。",
+      inputSchema: schema({
+        tabId: { type: "number" }
+      }),
+      handler: async (args) => {
+        const parsed = optionalTabId.parse(args ?? {});
+        return bridge.call("browser_get_form_structure", parsed, { tabId: parsed.tabId });
+      }
+    },
+    {
+      name: "browser_fill_form_smart",
+      description: "批量智能填写表单字段，自动处理不同 UI 框架的组件差异（AntD Select、Element UI DatePicker 等）。每个字段填写后自动验证，失败字段可单独报告，不影响已成功字段。支持 dryRun 模式预览匹配结果。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        dryRun: { type: "boolean", description: "仅返回匹配字段和策略，不实际填写" },
+        fields: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              label: { type: "string", description: "字段标签，如'用户名'、'开始日期'" },
+              value: { type: "string", description: "要填写的值" },
+              selector: { type: "string", description: "可选：直接指定 CSS 选择器" },
+              elementId: { type: "string", description: "可选：直接指定元素 ID" },
+              replace: { type: "boolean", description: "是否替换现有值（默认 true）" }
+            },
+            required: ["label", "value"],
+            additionalProperties: false
+          }
+        }
+      }, ["fields"]),
+      handler: async (args) => {
+        const parsed = optionalTabId.extend({
+          dryRun: z.boolean().optional(),
+          fields: z.array(z.object({
+            label: z.string(),
+            value: z.string(),
+            selector: z.string().optional(),
+            elementId: z.string().optional(),
+            replace: z.boolean().optional()
+          })).min(1).max(30)
+        }).parse(args ?? {});
+        return bridge.call("browser_fill_form_smart", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: 60_000
+        });
+      }
+    },
+    {
+      name: "browser_click_semantic_btn",
+      description: "根据语义（如'查询'、'保存'、'提交'）直接点击按钮，自动处理遮挡、滚动和同义词匹配。支持上下文过滤（如'弹窗内'、'表单底部'）。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        semantic: { type: "string", description: "按钮语义，如'查询'、'确认'、'取消'" },
+        context: { type: "string", description: "上下文区域，如'表单底部'、'弹窗'" }
+      }, ["semantic"]),
+      handler: async (args) => {
+        const parsed = optionalTabId.extend({
+          semantic: z.string().min(1),
+          context: z.string().optional()
+        }).parse(args ?? {});
+        return bridge.call("browser_click_semantic_btn", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: 15_000
+        });
+      }
+    },
+    {
       name: "browser_hover",
       description: "在浏览器端查找元素并触发 hover，适合头像菜单、下拉菜单等场景。",
       inputSchema: schema({
@@ -691,7 +764,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_press_key",
-      description: "向当前页面发送键盘按键，例如 Enter、Escape、Tab、ArrowDown。",
+      description: "[DEPRECATED since v0.4.0] Use browser_screen_press 替代（CDP 更通用）。将在 v0.6.0 移除。",
       inputSchema: schema({
         tabId: { type: "number" },
         key: { type: "string" }
@@ -932,7 +1005,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_save_screenshot",
-      description: "截取当前标签页或指定标签页，并由本地 MCP 服务保存为图片文件。仅在需要落盘或避免大图进入模型上下文时使用；直接给 Agent 看图请用 browser_screenshot。",
+      description: "[DEPRECATED since v0.4.0] Use browser_screenshot({ save: true, path: '...' }) 替代。将在 v0.6.0 移除。",
       inputSchema: schema({
         tabId: { type: "number" },
         format: { type: "string", enum: ["png", "jpeg"] },
@@ -984,7 +1057,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_save_pdf",
-      description: "将当前标签页或指定标签页导出为 PDF 并保存到本地文件。默认保存到桌面，只返回文件路径和元数据，避免把大 PDF base64 塞进模型上下文。",
+      description: "[DEPRECATED since v0.4.0] Use browser_pdf({ save: true, path: '...' }) 替代。将在 v0.6.0 移除。",
       inputSchema: schema({
         tabId: { type: "number" },
         landscape: { type: "boolean" },
@@ -1214,7 +1287,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_click",
-      description: "通过 elementId、选择器或可见文本点击页面元素。",
+      description: "[DEPRECATED since v0.4.0] Use browser_act({ action: 'click' }) 或 browser_click_semantic_btn 替代。将在 v0.6.0 移除。",
       inputSchema: schema({
         tabId: { type: "number" },
         query: { type: "string" },
@@ -1262,6 +1335,58 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
       handler: async (args) => bridge.call("browser_open_incognito", openUrlSchema.parse(args ?? {}))
     },
     {
+      name: "browser_navigate_and_observe",
+      description: "打开 URL 并立即返回页面业务摘要（表单/按钮/列表），将 open_url + get_page_model 两步合为一步，减少初次加载的 MCP 往返次数。",
+      inputSchema: schema({
+        url: { type: "string" },
+        waitForSelector: { type: "string", description: "等待特定选择器出现后再采集页面信息" },
+        timeoutMs: { type: "number" }
+      }, ["url"]),
+      handler: async (args) => {
+        const parsed = z.object({
+          url: z.string().url(),
+          waitForSelector: z.string().optional(),
+          timeoutMs: z.number().int().positive().optional()
+        }).parse(args ?? {});
+
+        // 1. 打开 URL
+        const openResult = await bridge.call<{ tabId: number; url: string }>(
+          "browser_open_url",
+          { url: parsed.url, waitUntil: "ready" },
+          { timeoutMs: parsed.timeoutMs ?? 15_000 }
+        );
+
+        // 2. 等待特定选择器（如果指定）
+        if (parsed.waitForSelector && openResult.tabId) {
+          try {
+            await bridge.call(
+              "browser_wait_for",
+              { selector: parsed.waitForSelector, timeoutMs: 5_000 },
+              { tabId: openResult.tabId, timeoutMs: 7_000 }
+            );
+          } catch {
+            // 等待超时不阻塞，继续采集
+          }
+        }
+
+        // 3. 采集页面模型
+        if (openResult.tabId) {
+          const pageModel = await bridge.call(
+            "browser_get_page_model",
+            { visibleOnly: true, viewportOnly: true, maxElements: 50 },
+            { tabId: openResult.tabId }
+          );
+
+          return {
+            ...openResult,
+            pageModel
+          };
+        }
+
+        return openResult;
+      }
+    },
+    {
       name: "browser_activate_tab",
       description: "通过 tabId 激活指定 Chrome 标签页。",
       inputSchema: schema({ tabId: { type: "number" } }, ["tabId"]),
@@ -1269,7 +1394,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_type",
-      description: "通过 elementId 或选择器向页面元素输入文本。",
+      description: "[DEPRECATED since v0.4.0] Use browser_act({ action: 'type' }) 或 browser_fill_form_smart 批量填写替代。将在 v0.6.0 移除。",
       inputSchema: schema({
         tabId: { type: "number" },
         query: { type: "string" },
@@ -1304,7 +1429,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     },
     {
       name: "browser_scroll",
-      description: "向上、向下、向左或向右滚动页面。",
+      description: "[DEPRECATED since v0.4.0] Use browser_screen_scroll 替代（CDP 更通用）。将在 v0.6.0 移除。",
       inputSchema: schema({
         tabId: { type: "number" },
         direction: { type: "string", enum: ["up", "down", "left", "right"] },
@@ -1716,7 +1841,9 @@ const READ_ONLY_TOOLS = new Set<string>([
   "browser_network_analysis",
   "browser_get_recorded_steps",
   "browser_generate_script",
-  "browser_get_variables"
+  "browser_get_variables",
+  "browser_get_form_structure",
+  "browser_navigate_and_observe"
 ]);
 
 function schema(
@@ -1883,8 +2010,8 @@ async function capturePage(
       if (format === preferredFormat[preferredFormat.length - 1]) {
         throw error;
       }
-      // continue to next format
-      void message;
+      // 记录降级日志，便于调试
+      console.warn(`[capturePage] ${format} failed, trying next format:`, message);
     }
   }
 

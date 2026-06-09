@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="/Users/didi/Desktop/my-project/browser-bridge-1"
+ROOT="$(cd "$(dirname "$0")" && pwd)"
 REGISTRY="https://registry.npmjs.org/"
 TMP_DIR="/private/tmp"
 
-SHARED_VERSION="0.1.2"
-EXTENSION_VERSION="0.1.2"
-MCP_VERSION="0.1.4"
+# 从 package.json 读取版本号，避免硬编码
+SHARED_VERSION=$(node -p "require('$ROOT/packages/shared/package.json').version")
+EXTENSION_VERSION=$(node -p "require('$ROOT/packages/extension/package.json').version")
+MCP_VERSION=$(node -p "require('$ROOT/packages/mcp-server/package.json').version")
 
 cd "$ROOT"
 

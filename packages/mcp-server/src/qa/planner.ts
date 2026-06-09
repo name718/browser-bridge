@@ -19,62 +19,217 @@ export type AgentObservation = {
   axTree?: string;
 };
 
+export type PlannerState =
+  | "idle"
+  | "need_navigate"
+  | "need_observe"
+  | "need_fill_form"
+  | "need_submit"
+  | "need_verify"
+  | "goal_achieved"
+  | "stuck";
+
+export type PlannerDecision = {
+  thought: string;
+  action: Record<string, unknown>;
+  isDone: boolean;
+};
+
 /**
- * Tabbit 风格的 Agent 规划器
- * 实现 Reasoning and Acting (ReAct) 逻辑
+ * BrowserAgentPlanner — 确定性状态机
+ *
+ * 关键设计：Planner 不调用 LLM，而是基于页面观察和目标的确定性分析。
+ * Claude Code 本身就是 LLM，Planner 由 Claude Code 通过 MCP 工具驱动。
+ *
+ * 如果未来确实需要 Planner 调用 LLM（处理完全开放式的任务），
+ * 通过环境变量 BB_PLANNER_LLM_ENDPOINT 配置。
  */
 export class BrowserAgentPlanner {
+  private state: PlannerState = "idle";
   private steps: string[] = [];
   private observations: AgentObservation[] = [];
+  private readonly maxSteps: number;
 
-  constructor(private readonly goal: string) {}
+  constructor(
+    private readonly goal: string,
+    options: { maxSteps?: number } = {}
+  ) {
+    this.maxSteps = options.maxSteps ?? 10;
+  }
 
   /**
    * 基于当前观察生成下一个动作
-   * 模拟 ReAct 中的 Thought -> Action -> Observation 循环
+   *
+   * 确定性状态机：不调用 LLM，使用规则引擎分析页面状态。
    */
-  async nextStep(observation: AgentObservation): Promise<{
-    thought: string;
-    action: any;
-    isDone: boolean;
-  }> {
+  async nextStep(observation: AgentObservation): Promise<PlannerDecision> {
     this.observations.push(observation);
     const stepCount = this.observations.length;
 
-    // 模糊指令分解示例逻辑 (针对对比任务)
-    if (this.goal.includes("对比") || this.goal.includes("价格")) {
-      return this.handleComparisonGoal(observation, stepCount);
+    // 超过最大步数，强制结束
+    if (stepCount > this.maxSteps) {
+      return {
+        thought: `已达到最大步数 ${this.maxSteps}，结束执行。`,
+        action: { action: "screenshot" },
+        isDone: true
+      };
     }
 
-    // 默认探索逻辑
+    // 分析当前页面状态
+    this.state = this.analyzeState(observation);
+
+    switch (this.state) {
+      case "need_navigate":
+        return this.handleNavigate(observation);
+      case "need_observe":
+        return this.handleObserve(observation);
+      case "need_fill_form":
+        return this.handleFillForm(observation);
+      case "need_submit":
+        return this.handleSubmit(observation);
+      case "need_verify":
+        return this.handleVerify(observation);
+      case "goal_achieved":
+        return {
+          thought: `目标「${this.goal}」已完成。`,
+          action: { action: "screenshot" },
+          isDone: true
+        };
+      case "stuck":
+        return {
+          thought: `无法确定下一步操作，建议使用视觉模式。`,
+          action: { action: "screenshot" },
+          isDone: true
+        };
+      default:
+        return {
+          thought: `当前状态未知，尝试获取页面模型。`,
+          action: { action: "pageModel", visibleOnly: true },
+          isDone: false
+        };
+    }
+  }
+
+  /**
+   * 确定性状态分析
+   */
+  private analyzeState(obs: AgentObservation): PlannerState {
+    const url = obs.url.toLowerCase();
+    const title = obs.title.toLowerCase();
+    const summary = obs.summary?.toLowerCase() ?? "";
+
+    // 如果在空白页，需要导航
+    if (url === "about:blank" || url === "") {
+      return "need_navigate";
+    }
+
+    // 如果刚导航到新页面，需要观察
+    if (this.observations.length <= 1) {
+      return "need_observe";
+    }
+
+    // 如果页面有表单，可能需要填写
+    if (
+      summary.includes("表单") || summary.includes("form") ||
+      summary.includes("输入") || summary.includes("input") ||
+      summary.includes("登录") || summary.includes("login")
+    ) {
+      return "need_fill_form";
+    }
+
+    // 如果页面有提交按钮，可能需要提交
+    if (
+      summary.includes("提交") || summary.includes("submit") ||
+      summary.includes("确认") || summary.includes("confirm")
+    ) {
+      return "need_submit";
+    }
+
+    // 如果页面有结果/数据，可能需要验证
+    if (
+      summary.includes("结果") || summary.includes("result") ||
+      summary.includes("列表") || summary.includes("list") ||
+      summary.includes("详情") || summary.includes("detail")
+    ) {
+      return "need_verify";
+    }
+
+    // 默认尝试观察
+    return "need_observe";
+  }
+
+  private handleNavigate(obs: AgentObservation): PlannerDecision {
+    // 从目标中提取可能的 URL 或搜索词
+    const searchMatch = this.goal.match(/https?:\/\/[^\s]+/);
+    if (searchMatch) {
+      return {
+        thought: `目标包含 URL，直接导航。`,
+        action: { action: "open", url: searchMatch[0] },
+        isDone: false
+      };
+    }
+
+    // 默认使用搜索引擎
     return {
-      thought: `观察到当前页面为「${observation.title}」，URL 为 ${observation.url}。我将先通过获取页面模型来理解内容。`,
-      action: { action: "pageModel", visibleOnly: true },
+      thought: `在搜索引擎中搜索「${this.goal}」。`,
+      action: { action: "open", url: `https://www.google.com/search?q=${encodeURIComponent(this.goal)}` },
       isDone: false
     };
   }
 
-  private handleComparisonGoal(obs: AgentObservation, step: number): { thought: string; action: any; isDone: boolean } {
-    if (step === 1) {
+  private handleObserve(obs: AgentObservation): PlannerDecision {
+    return {
+      thought: `观察到当前页面为「${obs.title}」，URL 为 ${obs.url}。获取页面模型以理解内容。`,
+      action: { action: "pageModel", visibleOnly: true, maxElements: 80 },
+      isDone: false
+    };
+  }
+
+  private handleFillForm(obs: AgentObservation): PlannerDecision {
+    // 如果目标包含具体值，尝试填写
+    const valueMatch = this.goal.match(/填写|输入|填入[：:]\s*(.+)/);
+    if (valueMatch) {
       return {
-        thought: `目标是对比价格。第一步：我需要先在搜索引擎或目标电商网站搜索相关产品。`,
-        action: { action: "open", url: "https://www.google.com/search?q=" + encodeURIComponent(this.goal) },
-        isDone: false
-      };
-    }
-    
-    if (obs.url.includes("google.com") && step < 4) {
-      return {
-        thought: `搜索结果已加载。我现在需要从结果中挑选三家不同的店。`,
-        action: { action: "pageModel", maxElements: 40 },
+        thought: `目标要求填写「${valueMatch[1]}」，尝试使用智能填表。`,
+        action: { action: "fillForm", fields: [{ label: "搜索", value: valueMatch[1] }] },
         isDone: false
       };
     }
 
     return {
-      thought: `已完成信息收集与对比。`,
-      action: { action: "screenshot" },
-      isDone: true
+      thought: `页面有表单结构，获取表单模型以了解需要填写的字段。`,
+      action: { action: "pageModel", visibleOnly: true, maxElements: 80 },
+      isDone: false
+    };
+  }
+
+  private handleSubmit(_obs: AgentObservation): PlannerDecision {
+    return {
+      thought: `尝试点击提交/确认按钮。`,
+      action: { action: "click", semantic: "提交" },
+      isDone: false
+    };
+  }
+
+  private handleVerify(obs: AgentObservation): PlannerDecision {
+    // 检查是否达成了目标
+    const goalKeywords = this.goal.split(/\s+/).filter((w) => w.length > 1);
+    const matched = goalKeywords.some((kw) =>
+      obs.summary?.toLowerCase().includes(kw.toLowerCase())
+    );
+
+    if (matched) {
+      return {
+        thought: `页面内容与目标匹配，验证通过。`,
+        action: { action: "screenshot" },
+        isDone: true
+      };
+    }
+
+    return {
+      thought: `获取页面模型以验证结果。`,
+      action: { action: "pageModel", visibleOnly: true, maxElements: 50 },
+      isDone: false
     };
   }
 }

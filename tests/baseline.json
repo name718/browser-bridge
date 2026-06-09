@@ -1,0 +1,47 @@
+{
+  "version": "0.1.0",
+  "createdAt": null,
+  "updatedAt": null,
+  "metrics": {
+    "scoreElements": {
+      "top1Accuracy": null,
+      "top3Accuracy": null,
+      "avgDurationMs": null,
+      "samples": 0
+    },
+    "getPageModel": {
+      "avgDurationMs": null,
+      "p50DurationMs": null,
+      "p95DurationMs": null,
+      "samples": 0
+    },
+    "fillForm": {
+      "avgDurationMs": null,
+      "p50DurationMs": null,
+      "p95DurationMs": null,
+      "samples": 0
+    },
+    "mcpRoundtrip": {
+      "avgToolCalls": null,
+      "avgTotalDurationMs": null,
+      "samples": 0
+    },
+    "responseSize": {
+      "avgBytes": null,
+      "p50Bytes": null,
+      "p95Bytes": null,
+      "samples": 0
+    },
+    "fallbackSuccess": {
+      "successRate": null,
+      "samples": 0
+    }
+  },
+  "benchmarks": {
+    "normalizeBridgeError": { "avgMs": null },
+    "featureFlagsResolve": { "avgMs": null },
+    "isRecord": { "avgMs": null },
+    "isSensitive": { "avgMs": null },
+    "deepMerge": { "avgMs": null }
+  }
+}

@@ -2028,11 +2028,7 @@ async function mockNetwork(request: BridgeRequest): Promise<Record<string, unkno
 
 function stringToBase64(str: string): string {
   const bytes = new TextEncoder().encode(str);
-  let binary = "";
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
+  const binary = Array.from(bytes, (b) => String.fromCharCode(b)).join("");
   return btoa(binary);
 }
 

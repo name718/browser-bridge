@@ -6,6 +6,7 @@ import {
   type BrowserStatus,
   PROTOCOL_VERSION
 } from "@majuntao-1/browser-bridge-shared";
+import { isRecord } from "@majuntao-1/browser-bridge-shared";
 import { Logger } from "../logger/logger.js";
 
 type PendingRequest = {
@@ -236,6 +237,16 @@ export class BrowserBridge {
       return;
     }
 
+    // 响应应用层心跳 ping → 发送 pong
+    if (message.kind === "ping" || message.type === "ping") {
+      try {
+        this.socket?.send(JSON.stringify({ kind: "pong", ts: Date.now() }));
+      } catch {
+        // 发送失败忽略
+      }
+      return;
+    }
+
     if (message.kind !== "response" || !isRecord(message.payload)) {
       return;
     }
@@ -274,8 +285,4 @@ export class BrowserBridge {
       this.connectionWaiters.delete(waiter);
     }
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

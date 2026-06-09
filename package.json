@@ -10,11 +10,16 @@
     "dev:server": "pnpm --filter @majuntao-1/browser-bridge-mcp-server dev",
     "dev:daemon": "pnpm --filter @majuntao-1/browser-bridge-mcp-server dev:daemon",
     "build:extension": "pnpm --filter @browser-bridge/extension build",
-    "smoke": "pnpm --filter @majuntao-1/browser-bridge-mcp-server smoke"
+    "smoke": "pnpm --filter @majuntao-1/browser-bridge-mcp-server smoke",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "bench": "vitest bench"
   },
   "devDependencies": {
     "@types/node": "^20.12.12",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "vitest": "^2.0.0"
   },
   "packageManager": "pnpm@9.0.0"
 }
