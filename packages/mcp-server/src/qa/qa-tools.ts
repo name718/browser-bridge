@@ -9,6 +9,10 @@ import { renderCiSummary, renderHtml, renderMarkdown, renderReplayViewer } from 
 import {
   type QaCaseInput,
   type QaCaseResult,
+  type QaDiagnosticsPolicy,
+  type QaEvidenceKind,
+  type QaFailureCategory,
+  type QaObservePolicy,
   type QaPlanInput,
   type QaReplayFile,
   type QaRunInput,
@@ -16,6 +20,11 @@ import {
   type QaSummary,
   type RecordedStep
 } from "./types.js";
+
+type NormalizedQaCase = Omit<Required<QaCaseInput>, "observe" | "diagnostics"> & {
+  observe?: QaObservePolicy;
+  diagnostics?: QaDiagnosticsPolicy;
+};
 
 const stepSchema = z.object({
   action: z.enum([
@@ -42,11 +51,12 @@ const stepSchema = z.object({
     "screenScroll",
     "screenPress",
     "pdf",
-    "sleep"
+  "sleep"
   ]),
   description: z.string().optional(),
   tabId: z.number().int().positive().optional(),
   target: z.record(z.unknown()).optional(),
+  locator: z.record(z.unknown()).optional(),
   url: z.string().optional(),
   value: z.string().optional(),
   option: z.string().optional(),
@@ -62,6 +72,7 @@ const stepSchema = z.object({
   contains: z.string().optional(),
   text: z.string().optional(),
   query: z.string().optional(),
+  testId: z.string().optional(),
   selector: z.string().optional(),
   elementId: z.string().optional(),
   role: z.string().optional(),
@@ -73,12 +84,29 @@ const stepSchema = z.object({
   viewportOnly: z.boolean().optional()
 }).passthrough();
 
+const evidenceKindSchema = z.enum(["screenshot", "console", "network", "pageModel"]);
+const observeSchema = z.object({
+  before: z.array(evidenceKindSchema).optional(),
+  afterEachStep: z.boolean().optional(),
+  onFailure: z.array(evidenceKindSchema).optional(),
+  final: z.array(evidenceKindSchema).optional()
+}).optional();
+
+const diagnosticsSchema = z.object({
+  failOnConsoleError: z.boolean().optional(),
+  failOnUncaughtException: z.boolean().optional(),
+  failOnNetworkError: z.boolean().optional(),
+  slowRequestThresholdMs: z.number().int().positive().optional()
+}).optional();
+
 const caseSchema = z.object({
   id: z.string().optional(),
   title: z.string().min(1),
   priority: z.enum(["P0", "P1", "P2"]).optional(),
   steps: z.array(stepSchema).min(1).max(50),
-  expected: z.array(z.string()).optional()
+  expected: z.array(z.string()).optional(),
+  observe: observeSchema,
+  diagnostics: diagnosticsSchema
 });
 
 const qaRunSchema = z.object({
@@ -101,6 +129,8 @@ const qaRunSchema = z.object({
   failOnConsoleError: z.boolean().optional(),
   failOnUncaughtException: z.boolean().optional(),
   captureNetwork: z.boolean().optional(),
+  observe: observeSchema,
+  diagnostics: diagnosticsSchema,
   recordReplay: z.boolean().optional(),
   /** 最大并行数（默认 1 = 顺序执行，最大 5） */
   maxParallel: z.number().int().min(1).max(5).optional(),
@@ -177,6 +207,8 @@ export function createQaTools(bridge: BrowserToolBridge): BrowserToolDefinition[
         failOnConsoleError: { type: "boolean" },
         failOnUncaughtException: { type: "boolean" },
         captureNetwork: { type: "boolean" },
+        observe: { type: "object", description: "脚本化观察策略：before/onFailure/final 可包含 screenshot、console、network、pageModel" },
+        diagnostics: { type: "object", description: "失败诊断策略：控制 console/network 是否导致用例失败及慢请求阈值" },
         recordReplay: { type: "boolean" },
         maxParallel: { type: "number", description: "最大并行数（1-5，默认 1 顺序执行）" },
         summaryOnly: { type: "boolean", description: "只返回摘要，不返回详细步骤（减少响应体积）" }
@@ -227,8 +259,16 @@ async function runQa(bridge: BrowserToolBridge, input: QaRunInput): Promise<QaRu
   const casesDir = join(runDir, "cases");
   const screenshotsDir = join(runDir, "screenshots");
   const logsDir = join(runDir, "logs");
+  const pageModelsDir = join(runDir, "page-models");
+  const diagnosticsDir = join(runDir, "diagnostics");
 
-  await Promise.all([ensureDir(casesDir), ensureDir(screenshotsDir), ensureDir(logsDir)]);
+  await Promise.all([
+    ensureDir(casesDir),
+    ensureDir(screenshotsDir),
+    ensureDir(logsDir),
+    ensureDir(pageModelsDir),
+    ensureDir(diagnosticsDir)
+  ]);
 
   const cases = normalizeCases(input);
   const maxParallel = input.maxParallel ?? 1;
@@ -249,8 +289,12 @@ async function runQa(bridge: BrowserToolBridge, input: QaRunInput): Promise<QaRu
           failOnConsoleError: input.failOnConsoleError,
           failOnUncaughtException: input.failOnUncaughtException,
           captureNetwork: input.captureNetwork,
+          observe: input.observe,
+          diagnostics: input.diagnostics,
           screenshotsDir,
-          logsDir
+          logsDir,
+          pageModelsDir,
+          diagnosticsDir
         });
         results.push(result);
         await writeJson(join(casesDir, `${result.id}.json`), result);
@@ -277,8 +321,12 @@ async function runQa(bridge: BrowserToolBridge, input: QaRunInput): Promise<QaRu
         failOnConsoleError: input.failOnConsoleError,
         failOnUncaughtException: input.failOnUncaughtException,
         captureNetwork: input.captureNetwork,
+        observe: input.observe,
+        diagnostics: input.diagnostics,
         screenshotsDir,
-        logsDir
+        logsDir,
+        pageModelsDir,
+        diagnosticsDir
       });
       results.push(result);
       await writeJson(join(casesDir, `${result.id}.json`), result);
@@ -298,7 +346,9 @@ async function runQa(bridge: BrowserToolBridge, input: QaRunInput): Promise<QaRu
     replay: join(runDir, "replay.json"),
     casesDir,
     screenshotsDir,
-    logsDir
+    logsDir,
+    pageModelsDir,
+    diagnosticsDir
   };
 
   const runResult: QaRunResult = {
@@ -338,7 +388,7 @@ async function runQa(bridge: BrowserToolBridge, input: QaRunInput): Promise<QaRu
 
 async function runQaCase(
   bridge: BrowserToolBridge,
-  testCase: Required<QaCaseInput>,
+  testCase: NormalizedQaCase,
   options: {
     stopOnError?: boolean;
     delayMs?: number;
@@ -348,8 +398,12 @@ async function runQaCase(
     failOnConsoleError?: boolean;
     failOnUncaughtException?: boolean;
     captureNetwork?: boolean;
+    observe?: QaObservePolicy;
+    diagnostics?: QaDiagnosticsPolicy;
     screenshotsDir: string;
     logsDir: string;
+    pageModelsDir: string;
+    diagnosticsDir: string;
   }
 ): Promise<QaCaseResult> {
   const started = Date.now();
@@ -358,50 +412,112 @@ async function runQaCase(
   let consolePath: string | undefined;
   let consoleSummary: QaCaseResult["artifacts"]["consoleSummary"];
   let networkPath: string | undefined;
+  let networkSummary: QaCaseResult["artifacts"]["networkSummary"];
+  let beforePageModel: string | undefined;
+  let finalPageModel: string | undefined;
+  let failurePageModel: string | undefined;
+  let screenshot: QaCaseResult["artifacts"]["screenshot"];
+  let failureScreenshot: QaCaseResult["artifacts"]["failureScreenshot"];
+
+  const observe = mergeObservePolicy(options.observe, testCase.observe, {
+    captureConsole: options.captureConsole,
+    captureNetwork: options.captureNetwork,
+    screenshotOnError: options.screenshotOnError
+  });
+  const diagnostics = mergeDiagnosticsPolicy(options, testCase.diagnostics);
+  const steps = testCase.steps.map(normalizeStepLocators);
+
+  if (hasEvidence(observe.before, "pageModel")) {
+    beforePageModel = await capturePageModel(bridge, join(options.pageModelsDir, `${testCase.id}-before.json`));
+  }
 
   try {
     runResult = await bridge.call<BrowserRunStepsResult>("browser_run_steps", {
-      steps: testCase.steps,
+      steps,
       stopOnError: options.stopOnError,
       delayMs: options.delayMs,
       timeoutMs: options.timeoutMs,
-      screenshotOnError: options.screenshotOnError ?? true
+      screenshotOnError: hasEvidence(observe.onFailure, "screenshot"),
+      trace: observe.afterEachStep === true
     }, { timeoutMs: options.timeoutMs });
   } catch (caught) {
     error = normalizeError(caught);
   }
 
-  if (options.captureConsole === true) {
+  const executionFailed = Boolean(error) || runResult?.ok === false;
+
+  if (shouldCaptureEvidence(observe, executionFailed, "console")) {
     try {
       const consoleResult = await bridge.call("browser_console_monitor", { durationMs: 1000 }, { timeoutMs: 3_500 });
-      consoleSummary = summarizeConsole(consoleResult, {
-        failOnConsoleError: options.failOnConsoleError,
-        failOnUncaughtException: options.failOnUncaughtException
-      });
+      consoleSummary = summarizeConsole(consoleResult, diagnostics);
       consolePath = await writeJson(join(options.logsDir, `${testCase.id}-console.json`), consoleResult);
     } catch {
       // Console capture is evidence only; do not change the case result.
     }
   }
 
-  if (options.captureNetwork === true) {
+  if (shouldCaptureEvidence(observe, executionFailed, "network")) {
     try {
-      const networkResult = await bridge.call("browser_network_analysis", { durationMs: 500 }, { timeoutMs: 3_000 });
+      const networkResult = await bridge.call("browser_network_analysis", {
+        durationMs: 500,
+        slowThresholdMs: diagnostics.slowRequestThresholdMs
+      }, { timeoutMs: 3_000 });
+      networkSummary = summarizeNetwork(networkResult, diagnostics);
       networkPath = await writeJson(join(options.logsDir, `${testCase.id}-network.json`), networkResult);
     } catch {
       // Network capture is evidence only; do not change the case result.
     }
   }
 
-  const screenshot = await captureEvidenceScreenshot(bridge, join(options.screenshotsDir, `${testCase.id}.png`));
+  if (executionFailed && hasEvidence(observe.onFailure, "pageModel")) {
+    failurePageModel = await capturePageModel(bridge, join(options.pageModelsDir, `${testCase.id}-failure.json`));
+  }
+
+  if (hasEvidence(observe.final, "pageModel")) {
+    finalPageModel = await capturePageModel(bridge, join(options.pageModelsDir, `${testCase.id}-final.json`));
+  }
+
+  if (executionFailed && hasEvidence(observe.onFailure, "screenshot")) {
+    failureScreenshot = await captureEvidenceScreenshot(bridge, join(options.screenshotsDir, `${testCase.id}-failure.png`));
+  }
+  if (hasEvidence(observe.final, "screenshot")) {
+    screenshot = await captureEvidenceScreenshot(bridge, join(options.screenshotsDir, `${testCase.id}.png`));
+  }
+
   const consoleError = consoleSummary?.failed
     ? {
       code: "CONSOLE_ERROR",
       message: `Console 检查失败：error ${consoleSummary.errorCount}，exception ${consoleSummary.exceptionCount}`
     }
     : undefined;
-  const finalError = error ?? consoleError;
-  const status = finalError && !consoleError ? "blocked" : (runResult?.ok === false || consoleError ? "failed" : "passed");
+  const networkError = networkSummary?.failed
+    ? {
+      code: "NETWORK_ERROR",
+      message: `Network 检查失败：failed ${networkSummary.failedCount}，slow ${networkSummary.slowCount}`
+    }
+    : undefined;
+  const stepError = runResult?.results.find((result) => !result.ok)?.error;
+  const finalError = error ?? consoleError ?? networkError ?? stepError;
+  const failureCategory = classifyFailure(finalError, { consoleSummary, networkSummary, runResult });
+  const status = error ? "blocked" : (runResult?.ok === false || consoleError || networkError ? "failed" : "passed");
+  const diagnosticsPath = executionFailed || consoleError || networkError
+    ? await writeJson(join(options.diagnosticsDir, `${testCase.id}.json`), {
+      caseId: testCase.id,
+      status,
+      failureCategory,
+      error: finalError,
+      failedStep: runResult?.results.find((result) => !result.ok),
+      artifacts: {
+        beforePageModel,
+        finalPageModel,
+        failurePageModel,
+        screenshot: screenshot?.path,
+        failureScreenshot: failureScreenshot?.path,
+        console: consolePath,
+        network: networkPath
+      }
+    })
+    : undefined;
 
   return {
     id: testCase.id,
@@ -410,14 +526,21 @@ async function runQaCase(
     status,
     elapsedMs: Date.now() - started,
     expected: testCase.expected,
-    steps: testCase.steps,
+    steps,
     runResult,
     error: finalError,
+    failureCategory,
     artifacts: {
+      beforePageModel,
+      finalPageModel,
+      failurePageModel,
       screenshot,
+      failureScreenshot,
       console: consolePath,
       consoleSummary,
-      network: networkPath
+      network: networkPath,
+      networkSummary,
+      diagnostics: diagnosticsPath
     }
   };
 }
@@ -466,6 +589,167 @@ function consoleEntryType(entry: Record<string, unknown>, message: string): stri
   return typeof entry.type === "string" ? entry.type : "unknown";
 }
 
+function mergeObservePolicy(
+  runPolicy: QaObservePolicy | undefined,
+  casePolicy: QaObservePolicy | undefined,
+  legacy: { captureConsole?: boolean; captureNetwork?: boolean; screenshotOnError?: boolean }
+): Required<QaObservePolicy> {
+  const finalKinds: QaEvidenceKind[] = ["screenshot"];
+  if (legacy.captureConsole) finalKinds.push("console");
+  if (legacy.captureNetwork) finalKinds.push("network");
+  const onFailureKinds: QaEvidenceKind[] = legacy.screenshotOnError === false ? [] : ["screenshot", "pageModel"];
+  if (legacy.captureConsole) onFailureKinds.push("console");
+  if (legacy.captureNetwork) onFailureKinds.push("network");
+  return {
+    before: casePolicy?.before ?? runPolicy?.before ?? [],
+    afterEachStep: casePolicy?.afterEachStep ?? runPolicy?.afterEachStep ?? false,
+    onFailure: casePolicy?.onFailure ?? runPolicy?.onFailure ?? uniqueEvidence(onFailureKinds),
+    final: casePolicy?.final ?? runPolicy?.final ?? uniqueEvidence(finalKinds)
+  };
+}
+
+function mergeDiagnosticsPolicy(
+  options: {
+    failOnConsoleError?: boolean;
+    failOnUncaughtException?: boolean;
+    captureNetwork?: boolean;
+    diagnostics?: QaDiagnosticsPolicy;
+  },
+  casePolicy: QaDiagnosticsPolicy | undefined
+): Required<QaDiagnosticsPolicy> {
+  return {
+    failOnConsoleError: casePolicy?.failOnConsoleError
+      ?? options.diagnostics?.failOnConsoleError
+      ?? options.failOnConsoleError
+      ?? false,
+    failOnUncaughtException: casePolicy?.failOnUncaughtException
+      ?? options.diagnostics?.failOnUncaughtException
+      ?? options.failOnUncaughtException
+      ?? false,
+    failOnNetworkError: casePolicy?.failOnNetworkError
+      ?? options.diagnostics?.failOnNetworkError
+      ?? options.captureNetwork
+      ?? false,
+    slowRequestThresholdMs: casePolicy?.slowRequestThresholdMs
+      ?? options.diagnostics?.slowRequestThresholdMs
+      ?? 1000
+  };
+}
+
+function uniqueEvidence(values: QaEvidenceKind[]): QaEvidenceKind[] {
+  return Array.from(new Set(values));
+}
+
+function hasEvidence(values: QaEvidenceKind[] | undefined, kind: QaEvidenceKind): boolean {
+  return values?.includes(kind) === true;
+}
+
+function shouldCaptureEvidence(
+  observe: Required<QaObservePolicy>,
+  executionFailed: boolean,
+  kind: QaEvidenceKind
+): boolean {
+  return hasEvidence(observe.final, kind) || (executionFailed && hasEvidence(observe.onFailure, kind));
+}
+
+function normalizeStepLocators(step: BrowserStep): BrowserStep {
+  const locator = isRecord(step.locator) ? step.locator : undefined;
+  const target = isRecord(step.target) ? step.target : {};
+  const testId = stringField(locator, "testId") ?? step.testId ?? stringField(target, "testId");
+  const selector = stringField(locator, "selector") ?? step.selector ?? stringField(target, "selector")
+    ?? (testId ? `data-testid=${testId}` : undefined);
+  return {
+    ...step,
+    target: {
+      ...target,
+      ...locator
+    },
+    query: step.query ?? stringField(locator, "query") ?? stringField(locator, "label") ?? stringField(target, "query"),
+    elementId: step.elementId ?? stringField(locator, "elementId") ?? stringField(target, "elementId"),
+    selector,
+    testId,
+    text: step.text ?? stringField(locator, "text") ?? stringField(locator, "label") ?? stringField(target, "text"),
+    role: step.role ?? stringField(locator, "role") ?? stringField(target, "role"),
+    ariaLabel: step.ariaLabel ?? stringField(locator, "ariaLabel") ?? stringField(target, "ariaLabel"),
+    placeholder: step.placeholder ?? stringField(locator, "placeholder") ?? stringField(target, "placeholder"),
+    label: step.label ?? stringField(locator, "label") ?? stringField(target, "label"),
+    href: step.href ?? stringField(locator, "href") ?? stringField(target, "href"),
+    nearText: step.nearText ?? stringField(locator, "nearText") ?? stringField(target, "nearText"),
+    visibleOnly: step.visibleOnly ?? booleanField(locator, "visibleOnly"),
+    viewportOnly: step.viewportOnly ?? booleanField(locator, "viewportOnly")
+  };
+}
+
+function stringField(value: Record<string, unknown> | undefined, key: string): string | undefined {
+  const raw = value?.[key];
+  return typeof raw === "string" && raw.length > 0 ? raw : undefined;
+}
+
+function booleanField(value: Record<string, unknown> | undefined, key: string): boolean | undefined {
+  const raw = value?.[key];
+  return typeof raw === "boolean" ? raw : undefined;
+}
+
+function summarizeNetwork(
+  networkResult: unknown,
+  options: Required<QaDiagnosticsPolicy>
+): QaCaseResult["artifacts"]["networkSummary"] {
+  const rawEntries = extractNetworkEntries(networkResult);
+  const entries = rawEntries.map((entry) => ({
+    url: typeof entry.url === "string" ? entry.url : typeof entry.requestUrl === "string" ? entry.requestUrl : undefined,
+    method: typeof entry.method === "string" ? entry.method : undefined,
+    status: typeof entry.status === "number" ? entry.status : typeof entry.statusCode === "number" ? entry.statusCode : undefined,
+    durationMs: typeof entry.durationMs === "number" ? entry.durationMs : typeof entry.duration === "number" ? entry.duration : undefined,
+    errorText: typeof entry.errorText === "string" ? entry.errorText : typeof entry.error === "string" ? entry.error : undefined
+  }));
+  const failedCount = entries.filter((entry) => Boolean(entry.errorText) || (typeof entry.status === "number" && entry.status >= 400)).length;
+  const slowCount = entries.filter((entry) => typeof entry.durationMs === "number" && entry.durationMs >= options.slowRequestThresholdMs).length;
+  return {
+    failedCount,
+    slowCount,
+    failed: options.failOnNetworkError && failedCount > 0,
+    entries
+  };
+}
+
+function extractNetworkEntries(networkResult: unknown): Record<string, unknown>[] {
+  if (!isRecord(networkResult)) return [];
+  for (const key of ["requests", "entries", "logs", "resources"]) {
+    const value = networkResult[key];
+    if (Array.isArray(value)) return value.filter(isRecord);
+  }
+  return [];
+}
+
+function classifyFailure(
+  error: QaCaseResult["error"] | undefined,
+  context: {
+    consoleSummary?: QaCaseResult["artifacts"]["consoleSummary"];
+    networkSummary?: QaCaseResult["artifacts"]["networkSummary"];
+    runResult?: BrowserRunStepsResult;
+  }
+): QaFailureCategory {
+  if (!error) return "none";
+  if (context.consoleSummary?.failed) return "console_error";
+  if (context.networkSummary?.failed) return "network_error";
+  const code = error.code.toUpperCase();
+  const message = error.message.toLowerCase();
+  if (code.includes("ELEMENT") || code.includes("AMBIGUOUS") || message.includes("selector") || message.includes("定位")) {
+    return "selector_failed";
+  }
+  if (code.includes("ASSERT") || message.includes("assert") || message.includes("断言")) {
+    return "assertion_failed";
+  }
+  if (code.includes("BROWSER_NOT_CONNECTED") || code.includes("TAB_") || code.includes("ACTION_TIMEOUT")) {
+    return "environment_error";
+  }
+  if (message.includes("login") || message.includes("登录") || message.includes("auth") || message.includes("unauthorized")) {
+    return "auth_error";
+  }
+  if (context.runResult?.ok === false) return "execution_error";
+  return "unknown";
+}
+
 async function captureEvidenceScreenshot(
   bridge: BrowserToolBridge,
   path: string
@@ -485,6 +769,27 @@ async function captureEvidenceScreenshot(
       title: result.title,
       mimeType: result.mimeType
     };
+  } catch {
+    return undefined;
+  }
+}
+
+async function capturePageModel(
+  bridge: BrowserToolBridge,
+  path: string
+): Promise<string | undefined> {
+  try {
+    const result = await bridge.call("browser_get_page_model", {
+      visibleOnly: true,
+      viewportOnly: false,
+      maxTextLength: 8000,
+      maxElements: 200,
+      maxHeadings: 120,
+      maxRegions: 80,
+      maxTables: 20,
+      maxTableRows: 10
+    }, { timeoutMs: 5_000 });
+    return writeJson(path, result);
   } catch {
     return undefined;
   }
@@ -579,7 +884,7 @@ async function qaFromRecording(
   return { ok: true, recordedCount: recorded.count ?? recorded.steps?.length ?? 0, case: testCase, casePath, replayPath };
 }
 
-function normalizeCases(input: QaRunInput): Array<Required<QaCaseInput>> {
+function normalizeCases(input: QaRunInput): NormalizedQaCase[] {
   const rawCases = input.cases?.length
     ? input.cases
     : [{
@@ -597,7 +902,9 @@ function normalizeCases(input: QaRunInput): Array<Required<QaCaseInput>> {
     priority: testCase.priority ?? "P1",
     type: testCase.type ?? "exploratory",
     steps: testCase.steps,
-    expected: testCase.expected ?? []
+    expected: testCase.expected ?? [],
+    observe: testCase.observe,
+    diagnostics: testCase.diagnostics
   }));
 }
 
@@ -630,7 +937,7 @@ function makeReplay(
   input: QaRunInput,
   taskId: string,
   title: string,
-  cases: Array<Required<QaCaseInput>>
+  cases: NormalizedQaCase[]
 ): QaReplayFile {
   return {
     version: "1",

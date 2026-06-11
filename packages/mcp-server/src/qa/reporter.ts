@@ -32,6 +32,7 @@ export function renderMarkdown(result: QaRunResult): string {
     lines.push(`- ID：${testCase.id}`);
     lines.push(`- 优先级：${testCase.priority}`);
     lines.push(`- 状态：${testCase.status}`);
+    lines.push(`- 失败分类：${testCase.failureCategory}`);
     lines.push(`- 耗时：${testCase.elapsedMs}ms`);
     if (testCase.expected.length) {
       lines.push(`- 预期：${testCase.expected.join("；")}`);
@@ -42,11 +43,26 @@ export function renderMarkdown(result: QaRunResult): string {
     if (testCase.artifacts.screenshot?.path) {
       lines.push(`- 截图：${testCase.artifacts.screenshot.path}`);
     }
+    if (testCase.artifacts.failureScreenshot?.path) {
+      lines.push(`- 失败截图：${testCase.artifacts.failureScreenshot.path}`);
+    }
+    if (testCase.artifacts.beforePageModel) {
+      lines.push(`- Before PageModel：${testCase.artifacts.beforePageModel}`);
+    }
+    if (testCase.artifacts.failurePageModel) {
+      lines.push(`- Failure PageModel：${testCase.artifacts.failurePageModel}`);
+    }
+    if (testCase.artifacts.finalPageModel) {
+      lines.push(`- Final PageModel：${testCase.artifacts.finalPageModel}`);
+    }
     if (testCase.artifacts.console) {
       lines.push(`- Console：${testCase.artifacts.console}`);
     }
     if (testCase.artifacts.network) {
       lines.push(`- Network：${testCase.artifacts.network}`);
+    }
+    if (testCase.artifacts.diagnostics) {
+      lines.push(`- Diagnostics：${testCase.artifacts.diagnostics}`);
     }
     lines.push("");
     lines.push("复现步骤：");
@@ -66,19 +82,25 @@ export function renderHtml(result: QaRunResult): string {
       <header>
         <div>
           <strong>${escapeHtml(testCase.title)}</strong>
-          <span>${escapeHtml(testCase.id)} · ${testCase.priority} · ${testCase.elapsedMs}ms</span>
+          <span>${escapeHtml(testCase.id)} · ${testCase.priority} · ${escapeHtml(testCase.failureCategory)} · ${testCase.elapsedMs}ms</span>
         </div>
         <b>${statusLabel(testCase.status)}</b>
       </header>
       ${testCase.expected.length ? `<p class="expected">${escapeHtml(testCase.expected.join("；"))}</p>` : ""}
       ${testCase.error ? `<p class="error">${escapeHtml(`${testCase.error.code}: ${testCase.error.message}`)}</p>` : ""}
       <ol>${testCase.steps.map((step) => `<li>${escapeHtml(describeStep(step))}</li>`).join("")}</ol>
-      ${renderScreenshot(result.paths.runDir, testCase.artifacts.screenshot?.path)}
+      ${renderScreenshot(result.paths.runDir, testCase.artifacts.failureScreenshot?.path ?? testCase.artifacts.screenshot?.path)}
       ${renderConsoleSummary(testCase.artifacts.consoleSummary)}
+      ${renderNetworkSummary(testCase.artifacts.networkSummary)}
       <div class="artifacts">
         ${testCase.artifacts.screenshot?.path ? `<a href="${escapeHtml(relativePath(result.paths.runDir, testCase.artifacts.screenshot.path))}">截图</a>` : ""}
+        ${testCase.artifacts.failureScreenshot?.path ? `<a href="${escapeHtml(relativePath(result.paths.runDir, testCase.artifacts.failureScreenshot.path))}">失败截图</a>` : ""}
+        ${testCase.artifacts.beforePageModel ? `<a href="${escapeHtml(relativePath(result.paths.runDir, testCase.artifacts.beforePageModel))}">Before PageModel</a>` : ""}
+        ${testCase.artifacts.failurePageModel ? `<a href="${escapeHtml(relativePath(result.paths.runDir, testCase.artifacts.failurePageModel))}">Failure PageModel</a>` : ""}
+        ${testCase.artifacts.finalPageModel ? `<a href="${escapeHtml(relativePath(result.paths.runDir, testCase.artifacts.finalPageModel))}">Final PageModel</a>` : ""}
         ${testCase.artifacts.console ? `<a href="${escapeHtml(relativePath(result.paths.runDir, testCase.artifacts.console))}">Console</a>` : ""}
         ${testCase.artifacts.network ? `<a href="${escapeHtml(relativePath(result.paths.runDir, testCase.artifacts.network))}">Network</a>` : ""}
+        ${testCase.artifacts.diagnostics ? `<a href="${escapeHtml(relativePath(result.paths.runDir, testCase.artifacts.diagnostics))}">Diagnostics</a>` : ""}
       </div>
     </article>
   `).join("");
@@ -115,6 +137,10 @@ export function renderHtml(result: QaRunResult): string {
     .console .counts { padding: 8px 12px; color: #334155; font-size: 13px; }
     .console pre { margin: 0; padding: 10px 12px; background: #111827; color: #e5e7eb; overflow: auto; max-height: 220px; }
     .console.failed h4 { color: #b91c1c; }
+    .network { margin: 12px 0; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
+    .network h4 { margin: 0; padding: 10px 12px; background: #f8fafc; font-size: 14px; }
+    .network .counts { padding: 8px 12px; color: #334155; font-size: 13px; }
+    .network.failed h4 { color: #b91c1c; }
     ol { padding-left: 22px; color: #334155; }
     li { margin: 4px 0; }
     .artifacts a { display: inline-block; margin-right: 10px; color: #2563eb; }
@@ -298,7 +324,17 @@ export function renderCiSummary(result: QaRunResult): Record<string, unknown> {
     total: result.summary.total,
     risk: result.summary.risk,
     reportHtml: result.paths.reportHtml,
-    replay: result.paths.replay
+    replay: result.paths.replay,
+    failures: result.cases
+      .filter((testCase) => testCase.status !== "passed")
+      .map((testCase) => ({
+        id: testCase.id,
+        title: testCase.title,
+        status: testCase.status,
+        failureCategory: testCase.failureCategory,
+        error: testCase.error,
+        diagnostics: testCase.artifacts.diagnostics
+      }))
   };
 }
 
@@ -333,6 +369,16 @@ function renderConsoleSummary(summary: QaRunResult["cases"][number]["artifacts"]
       <h4>Console 检查</h4>
       <div class="counts">error ${summary.errorCount} · warning ${summary.warningCount} · exception ${summary.exceptionCount}</div>
       ${entries ? `<pre>${escapeHtml(entries)}</pre>` : ""}
+    </section>
+  `;
+}
+
+function renderNetworkSummary(summary: QaRunResult["cases"][number]["artifacts"]["networkSummary"]): string {
+  if (!summary) return "";
+  return `
+    <section class="network ${summary.failed ? "failed" : ""}">
+      <h4>Network 检查</h4>
+      <div class="counts">failed ${summary.failedCount} · slow ${summary.slowCount}</div>
     </section>
   `;
 }

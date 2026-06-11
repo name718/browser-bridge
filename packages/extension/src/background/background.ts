@@ -2790,18 +2790,22 @@ function parseStepAction(value: unknown): BrowserStepAction {
 
 function targetParams(step: BrowserStep): Record<string, unknown> {
   const target = isRecord(step.target) ? step.target : {};
+  const locator = isRecord(step.locator) ? step.locator : {};
+  const testId = stringParam(step, "testId") ?? stringParam(locator, "testId") ?? stringParam(target, "testId");
   return {
-    query: step.query ?? target.query,
-    elementId: step.elementId ?? target.elementId,
-    selector: step.selector ?? target.selector,
-    text: step.text ?? target.text,
-    role: step.role ?? target.role,
-    ariaLabel: step.ariaLabel ?? target.ariaLabel,
-    placeholder: step.placeholder ?? target.placeholder,
-    href: step.href ?? target.href,
-    nearText: step.nearText ?? target.nearText,
-    visibleOnly: step.visibleOnly,
-    viewportOnly: step.viewportOnly
+    query: step.query ?? locator.query ?? locator.label ?? target.query,
+    elementId: step.elementId ?? locator.elementId ?? target.elementId,
+    selector: step.selector ?? locator.selector ?? target.selector ?? (testId ? `data-testid=${testId}` : undefined),
+    testId,
+    text: step.text ?? locator.text ?? locator.label ?? target.text,
+    role: step.role ?? locator.role ?? target.role,
+    ariaLabel: step.ariaLabel ?? locator.ariaLabel ?? target.ariaLabel,
+    placeholder: step.placeholder ?? locator.placeholder ?? target.placeholder,
+    label: step.label ?? locator.label ?? target.label,
+    href: step.href ?? locator.href ?? target.href,
+    nearText: step.nearText ?? locator.nearText ?? target.nearText,
+    visibleOnly: step.visibleOnly ?? locator.visibleOnly,
+    viewportOnly: step.viewportOnly ?? locator.viewportOnly
   };
 }
 

@@ -436,12 +436,19 @@ export type BrowserStepTarget = {
   query?: string;
   elementId?: string;
   selector?: string;
+  testId?: string;
   text?: string;
   role?: string;
   ariaLabel?: string;
   placeholder?: string;
+  label?: string;
   href?: string;
   nearText?: string;
+};
+
+export type BrowserLocator = BrowserStepTarget & {
+  visibleOnly?: boolean;
+  viewportOnly?: boolean;
 };
 
 export type BrowserStep = BrowserStepTarget & {
@@ -449,6 +456,7 @@ export type BrowserStep = BrowserStepTarget & {
   description?: string;
   tabId?: number;
   target?: BrowserStepTarget;
+  locator?: BrowserLocator;
   url?: string;
   value?: string;
   label?: string;

@@ -1774,7 +1774,8 @@ function resolveSelector(selector: string): HTMLElement | null {
       return document.getElementById(selector.slice(3));
     }
     if (selector.startsWith("data-testid=")) {
-      return findInDeepScope(`[data-testid="${cssEscape(selector.slice(12))}"]`);
+      const value = cssEscape(selector.slice(12));
+      return findInDeepScope(`[data-testid="${value}"],[data-test="${value}"],[data-cy="${value}"]`);
     }
 
     const cleanSelector = selector.startsWith("css=") ? selector.slice(4) : selector;

@@ -3,6 +3,32 @@ import { type BrowserStep, type BrowserRunStepsResult } from "@majuntao-1/browse
 export type QaPriority = "P0" | "P1" | "P2";
 export type QaCaseStatus = "passed" | "failed" | "blocked";
 export type QaRisk = "low" | "medium" | "high";
+export type QaEvidenceKind = "screenshot" | "console" | "network" | "pageModel";
+export type QaFailureCategory =
+  | "none"
+  | "selector_failed"
+  | "assertion_failed"
+  | "console_error"
+  | "network_error"
+  | "test_data_error"
+  | "auth_error"
+  | "environment_error"
+  | "execution_error"
+  | "unknown";
+
+export type QaObservePolicy = {
+  before?: QaEvidenceKind[];
+  afterEachStep?: boolean;
+  onFailure?: QaEvidenceKind[];
+  final?: QaEvidenceKind[];
+};
+
+export type QaDiagnosticsPolicy = {
+  failOnConsoleError?: boolean;
+  failOnUncaughtException?: boolean;
+  failOnNetworkError?: boolean;
+  slowRequestThresholdMs?: number;
+};
 
 export type QaCaseInput = {
   id?: string;
@@ -11,6 +37,8 @@ export type QaCaseInput = {
   type?: "main" | "negative" | "edge" | "regression" | "exploratory" | "recorded";
   steps: BrowserStep[];
   expected?: string[];
+  observe?: QaObservePolicy;
+  diagnostics?: QaDiagnosticsPolicy;
 };
 
 export type QaRunInput = {
@@ -28,6 +56,8 @@ export type QaRunInput = {
   failOnConsoleError?: boolean;
   failOnUncaughtException?: boolean;
   captureNetwork?: boolean;
+  observe?: QaObservePolicy;
+  diagnostics?: QaDiagnosticsPolicy;
   recordReplay?: boolean;
   prdPath?: string;
   prdText?: string;
@@ -59,6 +89,19 @@ export type QaConsoleSummary = {
   }>;
 };
 
+export type QaNetworkSummary = {
+  failedCount: number;
+  slowCount: number;
+  failed: boolean;
+  entries: Array<{
+    url?: string;
+    method?: string;
+    status?: number;
+    durationMs?: number;
+    errorText?: string;
+  }>;
+};
+
 export type QaCaseResult = {
   id: string;
   title: string;
@@ -72,11 +115,18 @@ export type QaCaseResult = {
     code: string;
     message: string;
   };
+  failureCategory: QaFailureCategory;
   artifacts: {
+    beforePageModel?: string;
+    finalPageModel?: string;
+    failurePageModel?: string;
     screenshot?: QaStepEvidence;
+    failureScreenshot?: QaStepEvidence;
     console?: string;
     consoleSummary?: QaConsoleSummary;
     network?: string;
+    networkSummary?: QaNetworkSummary;
+    diagnostics?: string;
   };
 };
 
@@ -108,6 +158,8 @@ export type QaRunResult = {
     casesDir: string;
     screenshotsDir: string;
     logsDir: string;
+    pageModelsDir: string;
+    diagnosticsDir: string;
   };
 };
 
