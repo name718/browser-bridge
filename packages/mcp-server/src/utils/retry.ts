@@ -76,7 +76,15 @@ export function isRetryableError(error: unknown): boolean {
   }
   // 网络错误
   if (error instanceof Error) {
+    if (error.name === "AbortError") return true;
     if (error.message.includes("ECONNREFUSED") || error.message.includes("ECONNRESET")) {
+      return true;
+    }
+    if (
+      error.message.includes("ACTION_TIMEOUT") ||
+      error.message.includes("BROWSER_NOT_CONNECTED") ||
+      error.message.includes("CONTENT_SCRIPT_NOT_READY")
+    ) {
       return true;
     }
   }

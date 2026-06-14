@@ -75,6 +75,16 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+export function getElementValue(element: HTMLElement): string | undefined {
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+    return element.value || undefined;
+  }
+  if (element.isContentEditable) {
+    return element.textContent || undefined;
+  }
+  return element.getAttribute('value') || undefined;
+}
+
 export function stringParam(params: Record<string, unknown>, key: string): string | undefined {
   const value = params[key];
   return typeof value === 'string' ? value : undefined;

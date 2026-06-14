@@ -1803,7 +1803,7 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
     }
   ];
 
-  return tools.map(withDefaultAnnotations);
+  return tools.map((tool) => withObservationCache(withDefaultAnnotations(tool), observationCache));
 }
 
 function withDefaultAnnotations(tool: BrowserToolDefinition): BrowserToolDefinition {
@@ -1816,6 +1816,45 @@ function withDefaultAnnotations(tool: BrowserToolDefinition): BrowserToolDefinit
   }
 
   return { ...tool, annotations: browserNonDestructiveAnnotations };
+}
+
+function withObservationCache(tool: BrowserToolDefinition, cache: ObservationCache): BrowserToolDefinition {
+  if (!CACHEABLE_OBSERVATION_TOOLS.has(tool.name)) {
+    if (READ_ONLY_TOOLS.has(tool.name)) return tool;
+    return {
+      ...tool,
+      handler: async (args) => {
+        const result = await tool.handler(args);
+        cache.invalidate();
+        return result;
+      }
+    };
+  }
+
+  return {
+    ...tool,
+    handler: async (args) => {
+      const key = `${tool.name}:${stableStringify(args ?? {})}`;
+      const cached = cache.get(key);
+      if (cached !== null) return cached;
+      const result = await tool.handler(args);
+      cache.set(key, result);
+      return result;
+    }
+  };
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, val]) => `${JSON.stringify(key)}:${stableStringify(val)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 const READ_ONLY_TOOLS = new Set<string>([
@@ -1844,6 +1883,19 @@ const READ_ONLY_TOOLS = new Set<string>([
   "browser_get_variables",
   "browser_get_form_structure",
   "browser_navigate_and_observe"
+]);
+
+const CACHEABLE_OBSERVATION_TOOLS = new Set<string>([
+  "browser_get_active_tab",
+  "browser_list_tabs",
+  "browser_get_page_text",
+  "browser_get_page_model",
+  "browser_get_interactives",
+  "browser_find",
+  "browser_observe",
+  "browser_get_selected_text",
+  "browser_get_links",
+  "browser_get_form_structure"
 ]);
 
 function schema(

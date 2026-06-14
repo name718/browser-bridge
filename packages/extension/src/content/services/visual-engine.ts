@@ -145,5 +145,3 @@ export function visualTask(params: Record<string, unknown>, requestTimeoutMs?: n
   if (actions.length === 0) throw new Error('INVALID_PARAMS: 无法解析视觉指令 「' + instruction + '」');
   return { instruction, actions };
 }
-  return { instruction, actions };
-}

@@ -38,27 +38,133 @@ export function getPageSnapshot(): PageSnapshot {
 
 export function getPageModel(params: Record<string, any>): BrowserPageModel {
   const fullText = getVisibleText();
+  const limits = {
+    maxTextLength: clamp(Number(params.maxTextLength ?? 2000), 0, 20000),
+    maxElements: clamp(Number(params.maxElements ?? 120), 0, 300),
+    maxHeadings: clamp(Number(params.maxHeadings ?? 60), 0, 200),
+    maxRegions: clamp(Number(params.maxRegions ?? 40), 0, 120),
+    maxTables: clamp(Number(params.maxTables ?? 10), 0, 50),
+    maxTableRows: clamp(Number(params.maxTableRows ?? 5), 0, 30)
+  };
+  const visibleOnly = params.visibleOnly !== false;
+  const viewportOnly = params.viewportOnly === true;
+
   return {
     tabId: -1, url: location.href, title: document.title,
     viewport: { width: window.innerWidth, height: window.innerHeight, scrollX: window.scrollX, scrollY: window.scrollY },
-    summary: { textSample: truncate(fullText, 2000) || '', textLength: fullText.length, truncated: fullText.length > 2000 },
-    outline: [], regions: [], interactives: getActionableElements({ visibleOnly: true }).slice(0, 50).map(toBrowserElement),
-    floatingOptions: [], forms: [], tables: [], messages: [],
-    limits: { maxTextLength: 2000, maxElements: 120, maxHeadings: 60, maxRegions: 40, maxTables: 10, maxTableRows: 5 }
+    summary: {
+      textSample: truncate(fullText, limits.maxTextLength) || '',
+      textLength: fullText.length,
+      truncated: fullText.length > limits.maxTextLength
+    },
+    outline: getPageOutline({ visibleOnly, viewportOnly, limit: limits.maxHeadings }),
+    regions: getPageRegions({ visibleOnly, viewportOnly, limit: limits.maxRegions }),
+    interactives: getActionableElements({ visibleOnly, viewportOnly }).slice(0, limits.maxElements).map(toBrowserElement),
+    floatingOptions: getFloatingOptions({ visibleOnly, viewportOnly, limit: Math.min(limits.maxElements, 80) }),
+    forms: getPageForms({ visibleOnly, viewportOnly, maxFields: limits.maxElements }),
+    tables: getPageTables({ visibleOnly, viewportOnly, limit: limits.maxTables, maxRows: limits.maxTableRows }),
+    messages: getPageMessages({ visibleOnly, viewportOnly, limit: 40 }),
+    limits
   };
 }
 export function getPageOutline(options: { visibleOnly: boolean; viewportOnly: boolean; limit: number }): any[] {
   return Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
-    .filter(el => (options.visibleOnly ? isVisible(el as HTMLElement) : true))
+    .filter(el => shouldInclude(el as HTMLElement, options.visibleOnly, options.viewportOnly))
     .slice(0, options.limit)
-    .map((el, i) => ({ level: parseInt(el.tagName[1]), text: el.textContent?.trim(), elementId: ensureElementId(el as HTMLElement, i) }));
+    .map((el, i) => ({
+      level: parseInt(el.tagName[1]),
+      text: normalizeText(el.textContent ?? ''),
+      elementId: ensureElementId(el as HTMLElement, i),
+      rect: rectOf(el as HTMLElement)
+    }));
 }
 
 export function getPageRegions(options: { visibleOnly: boolean; viewportOnly: boolean; limit: number }): any[] {
-  return Array.from(document.querySelectorAll('main,nav,header,footer,aside,section,article,form'))
-    .filter(el => (options.visibleOnly ? isVisible(el as HTMLElement) : true))
+  return Array.from(document.querySelectorAll<HTMLElement>('main,nav,header,footer,aside,section,article,form,[role="main"],[role="navigation"],[role="banner"],[role="contentinfo"],[role="dialog"]'))
+    .filter(el => shouldInclude(el, options.visibleOnly, options.viewportOnly))
     .slice(0, options.limit)
-    .map((el, i) => ({ tagName: el.tagName.toLowerCase(), elementId: ensureElementId(el as HTMLElement, i) }));
+    .map((el, i) => ({
+      elementId: ensureElementId(el, i),
+      role: el.getAttribute('role') || inferRole(el),
+      tagName: el.tagName.toLowerCase(),
+      name: getAccessibilityName(el) || undefined,
+      textSample: truncate(normalizeText(el.innerText || el.textContent || ''), 220),
+      rect: rectOf(el)
+    }));
+}
+
+function getFloatingOptions(options: { visibleOnly: boolean; viewportOnly: boolean; limit: number }): BrowserElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>(FLOATING_OPTION_SELECTOR))
+    .filter(el => shouldInclude(el, options.visibleOnly, options.viewportOnly))
+    .slice(0, options.limit)
+    .map(toBrowserElement);
+}
+
+function getPageForms(options: { visibleOnly: boolean; viewportOnly: boolean; maxFields: number }): BrowserPageModel['forms'] {
+  const forms = Array.from(document.querySelectorAll<HTMLElement>('form,[role="form"],.ant-form,.el-form,.arco-form'))
+    .filter(el => shouldInclude(el, options.visibleOnly, options.viewportOnly));
+
+  return forms.map((form, index) => {
+    const fields = Array.from(form.querySelectorAll<HTMLElement>('input,textarea,select,[role="textbox"],[role="combobox"],[contenteditable="true"]'))
+      .filter(el => shouldInclude(el, options.visibleOnly, options.viewportOnly))
+      .slice(0, options.maxFields)
+      .map(toBrowserElement);
+    return {
+      elementId: ensureElementId(form, index),
+      name: getAccessibilityName(form) || form.getAttribute('name') || undefined,
+      fields
+    };
+  }).filter(form => form.fields.length > 0);
+}
+
+function getPageTables(options: { visibleOnly: boolean; viewportOnly: boolean; limit: number; maxRows: number }): BrowserPageModel['tables'] {
+  return Array.from(document.querySelectorAll<HTMLElement>('table,[role="table"],[role="grid"]'))
+    .filter(el => shouldInclude(el, options.visibleOnly, options.viewportOnly))
+    .slice(0, options.limit)
+    .map((table, index) => {
+      const rows = Array.from(table.querySelectorAll<HTMLTableRowElement>('tr,[role="row"]'));
+      const headers = Array.from(table.querySelectorAll<HTMLElement>('th,[role="columnheader"]'))
+        .map(cell => normalizeText(cell.innerText || cell.textContent || ''))
+        .filter(Boolean);
+      const sampleRows = rows.slice(0, options.maxRows).map(row =>
+        Array.from(row.querySelectorAll<HTMLElement>('th,td,[role="cell"],[role="gridcell"]'))
+          .map(cell => normalizeText(cell.innerText || cell.textContent || ''))
+          .filter(Boolean)
+      ).filter(row => row.length > 0);
+      const caption = table.querySelector('caption')?.textContent;
+      return {
+        elementId: ensureElementId(table, index),
+        caption: caption ? normalizeText(caption) : undefined,
+        headers,
+        rowCount: rows.length,
+        sampleRows,
+        rect: rectOf(table)
+      };
+    });
+}
+
+function getPageMessages(options: { visibleOnly: boolean; viewportOnly: boolean; limit: number }): BrowserPageModel['messages'] {
+  return Array.from(document.querySelectorAll<HTMLElement>('[role="alert"],[role="status"],[aria-live],.toast,.notification,.message,.error,.warning,.success'))
+    .filter(el => shouldInclude(el, options.visibleOnly, options.viewportOnly))
+    .map((el, index) => ({
+      elementId: ensureElementId(el, index),
+      role: el.getAttribute('role') || inferRole(el),
+      text: normalizeText(el.innerText || el.textContent || ''),
+      rect: rectOf(el)
+    }))
+    .filter(message => message.text)
+    .slice(0, options.limit);
+}
+
+function shouldInclude(element: HTMLElement, visibleOnly: boolean, viewportOnly: boolean): boolean {
+  if (visibleOnly && !isVisible(element)) return false;
+  if (viewportOnly && !isInViewport(element)) return false;
+  return true;
+}
+
+function rectOf(element: HTMLElement): BrowserElement['rect'] {
+  const rect = element.getBoundingClientRect();
+  return { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) };
 }
 
 export function getSelectedText(): string {

@@ -1,4 +1,4 @@
-import { DEFAULT_BRIDGE_URL } from '../shared/config.js';
+import { DEFAULT_BRIDGE_URL } from '../../shared/config.js';
 import { getSecurityConfig, getSessionTrustAgentFully } from '../security.js';
 import { getAuditLog } from '../audit.js';
 

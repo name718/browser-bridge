@@ -4,6 +4,7 @@ import * as PageModel from './services/page-model.js';
 import * as VisualEngine from './services/visual-engine.js';
 import * as UIOverlay from './services/ui-overlay.js';
 import * as Recorder from './services/recorder.js';
+import { fillFormSmart, getFormStructure } from './form-engine.js';
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'browser_bridge_ping') { sendResponse({ ok: true }); return true; }
@@ -33,7 +34,15 @@ async function handleRequest(request: BridgeRequest): Promise<unknown> {
     case 'browser_get_page_snapshot': return PageModel.getPageSnapshot();
     case 'browser_get_page_model': return PageModel.getPageModel(p);
     case 'browser_get_interactives': return { elements: PageModel.getPageSnapshot().elements.slice(0, 50) };
-    case 'browser_find': return { matched: true, matches: DomInteractor.scoreElements(p).slice(0, 8).map(m => DomInteractor.toBrowserElement(m.element, 0)) };
+    case 'browser_find': {
+      const limit = typeof p.limit === 'number' ? Math.max(1, Math.min(50, p.limit)) : 8;
+      const matches = DomInteractor.scoreElements(p).slice(0, limit).map((match, index) => ({
+        ...DomInteractor.toBrowserElement(match.element, index),
+        confidence: Math.max(0, Math.min(1, match.score)),
+        reasons: match.reasons
+      }));
+      return { matched: matches.length > 0, query: String(p.query ?? p.text ?? ''), count: matches.length, matches };
+    }
     case 'browser_act': return DomInteractor.clickElement(p); // Placeholder for complex act
     case 'browser_click':
     case 'browser_find_and_click': return DomInteractor.clickElement(p);
@@ -56,5 +65,4 @@ async function handleRequest(request: BridgeRequest): Promise<unknown> {
     case 'browser_fill_form_smart': return fillFormSmart(Array.isArray(p.fields) ? p.fields : [], { dryRun: p.dryRun === true });
     default: throw new Error('Unsupported tool: ' + request.tool);
   }
-}
 }

@@ -3,7 +3,7 @@ import {
 } from '../utils/dom.js';
 import {
   getElementText, getElementValue, getPlaceholder, getAccessibilityName, inferRole, ensureElementId, getActionableElements,
-  ACTIONABLE_SELECTOR, FLOATING_OPTION_SELECTOR, getAssociatedLabel
+  ACTIONABLE_SELECTOR, FLOATING_OPTION_SELECTOR, getAssociatedLabel, getNearbyText
 } from '../utils/dom-info.js';
 import { type BrowserElement, type BrowserActAction, type BrowserActResult } from '@majuntao-1/browser-bridge-shared';
 import { showVisualRipple, assertElementClickSafe, showConfirmationOverlay } from './ui-overlay.js';
@@ -90,6 +90,9 @@ export function scoreElements(params: Record<string, unknown>): Array<{
 }> {
   const query = normalizeText(stringParam(params, 'query') ?? stringParam(params, 'text') ?? '');
   const role = normalizeText(stringParam(params, 'role') ?? '');
+  const ariaLabel = normalizeText(stringParam(params, 'ariaLabel') ?? '');
+  const placeholder = normalizeText(stringParam(params, 'placeholder') ?? '');
+  const href = normalizeText(stringParam(params, 'href') ?? '');
   const nearText = normalizeText(stringParam(params, 'nearText') ?? '');
   const visibleOnly = params.visibleOnly !== false;
   const viewportOnly = params.viewportOnly === true;
@@ -106,6 +109,7 @@ export function scoreElements(params: Record<string, unknown>): Array<{
     const elementAria = normalizeText(element.getAttribute('aria-label') ?? '');
     const elementPlaceholder = normalizeText(getPlaceholder(element) ?? '');
     const elementValue = normalizeText(getElementValue(element) ?? '');
+    const elementHref = normalizeText(element instanceof HTMLAnchorElement ? element.href : element.getAttribute('href') ?? '');
     const rect = rectCache.get(element)!;
 
     let score = 0;
@@ -154,12 +158,26 @@ export function scoreElements(params: Record<string, unknown>): Array<{
       reasons.push('Role 匹配');
     }
 
+    if (ariaLabel) score += scoreTextField(ariaLabel, elementAria, 0.45, 'aria-label', reasons);
+    if (placeholder) score += scoreTextField(placeholder, elementPlaceholder, 0.45, 'placeholder', reasons);
+    if (href) score += scoreTextField(href, elementHref, 0.4, 'href', reasons);
+    if (nearText) {
+      const context = normalizeText(getNearbyText(element));
+      score += scoreTextField(nearText, context, 0.25, '附近文本', reasons);
+    }
+
+    if (viewportOnly || isElementInViewportRect(rect)) {
+      score += 0.04;
+    }
+
     if (isDisabled(element)) score -= 0.8;
 
     return { element, score, reasons, rect };
   });
 
-  return quickResults;
+  return quickResults
+    .filter((result) => result.score > 0 || (!query && !role && !ariaLabel && !placeholder && !href && !nearText))
+    .sort((a, b) => b.score - a.score || a.rect.top - b.rect.top || a.rect.left - b.rect.left);
 }
 
 function scoreTextField(query: string, value: string, weight: number, label: string, reasons: string[]): number {
@@ -168,6 +186,10 @@ function scoreTextField(query: string, value: string, weight: number, label: str
   if (value.includes(query)) { reasons.push(label + ' 包含匹配'); return weight * 0.78; }
   if (query.includes(value) && value.length >= 2) { reasons.push(label + ' 被查询包含'); return weight * 0.5; }
   return 0;
+}
+
+function isElementInViewportRect(rect: DOMRect): boolean {
+  return rect.bottom >= 0 && rect.right >= 0 && rect.top <= window.innerHeight && rect.left <= window.innerWidth;
 }
 
 export async function clickElement(params: Record<string, unknown>): Promise<{ clicked: boolean; element: BrowserElement }> {

@@ -50,6 +50,22 @@ export function getAssociatedLabel(element: HTMLElement): string {
   return parentLabel?.textContent ? normalizeText(parentLabel.textContent) : '';
 }
 
+export function getNearbyText(element: HTMLElement): string {
+  const parts: string[] = [];
+  const label = getAssociatedLabel(element);
+  if (label) parts.push(label);
+
+  const parent = element.closest('label,[class*="form-item"],[class*="FormItem"],[class*="field"],[class*="Field"],.form-group');
+  if (parent?.textContent) parts.push(parent.textContent);
+
+  let sibling = element.previousElementSibling;
+  for (let i = 0; sibling && i < 2; i++, sibling = sibling.previousElementSibling) {
+    if (sibling.textContent) parts.push(sibling.textContent);
+  }
+
+  return normalizeText(parts.join(' '));
+}
+
 export function getAccessibilityName(element: HTMLElement): string {
   const labelledBy = element.getAttribute('aria-labelledby');
   if (labelledBy) {

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { type BridgeRequest, type BrowserStatus } from "@majuntao-1/browser-bridge-shared";
 import { isRecord } from "@majuntao-1/browser-bridge-shared";
 import { Logger } from "../logger/logger.js";
+import { isRetryableError, withRetry } from "../utils/retry.js";
 
 type DaemonStatus = BrowserStatus & {
   apiUrl?: string;
@@ -62,7 +63,7 @@ export class DaemonBridgeClient {
     options?: { tabId?: number; timeoutMs?: number }
   ): Promise<T> {
     await this.ensureDaemon();
-    const result = await this.request<{ data: T }>("/call", {
+    const result = await withRetry(() => this.request<{ data: T }>("/call", {
       method: "POST",
       body: JSON.stringify({
         tool,
@@ -71,6 +72,10 @@ export class DaemonBridgeClient {
         timeoutMs: options?.timeoutMs
       }),
       timeoutMs: options?.timeoutMs ? options.timeoutMs + 5000 : undefined
+    }), {
+      maxAttempts: isReadOnlyBridgeTool(tool) ? 3 : 2,
+      baseDelay: 200,
+      retryOn: isRetryableError
     });
     return result.data;
   }
@@ -152,4 +157,8 @@ export class DaemonBridgeClient {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isReadOnlyBridgeTool(tool: BridgeRequest["tool"]): boolean {
+  return /^(browser_status|browser_get_|browser_list_|browser_observe|browser_screenshot|browser_pdf|browser_capture_page|browser_console_monitor|browser_network_analysis)/.test(tool);
 }

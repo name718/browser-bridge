@@ -166,12 +166,6 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
     case 'browser_wait_for':
     case 'browser_select_option':
       return VisualService.selectOptionWithFallback(request);
-    case 'browser_list_vars':
-      return chrome.storage.local.get(null).then(s => Object.fromEntries(Object.entries(s).filter(([k]) => k.startsWith('var:'))));
-    case 'browser_set_var':
-      return chrome.storage.local.set({ ['var:' + request.params?.name]: request.params?.value }).then(() => ({ ok: true }));
-    case 'browser_delete_var':
-      return chrome.storage.local.remove('var:' + request.params?.name).then(() => ({ ok: true }));
     default:
       throw new Error('INTERNAL_ERROR: 不支持的工具 ' + request.tool);
   }

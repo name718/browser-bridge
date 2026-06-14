@@ -3,7 +3,7 @@ import {
 } from '@majuntao-1/browser-bridge-shared';
 import { assertUrlAllowed } from '../security.js';
 import { appendAuditLog } from '../audit.js';
-import { getActiveTab, getViewportInfo } from './tabs.js';
+import { getActiveTab } from './tabs.js';
 import { sendToContentScript, ensureContentScript } from './content-script.js';
 import * as DebuggerService from './debugger.js';
 

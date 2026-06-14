@@ -52,14 +52,6 @@ async function attachDebugger(tabId: number): Promise<void> {
   attachingTabs.set(tabId, promise);
   return promise;
 }
-  } catch (error: any) {
-    if (error?.message?.includes('already attached') || error?.message?.includes('Another debugger')) {
-      // Treat as attached but we don't own it, so don't add to pool for auto-detach
-      return;
-    }
-    throw error;
-  }
-}
 
 async function detachDebugger(tabId: number): Promise<void> {
   const existing = attachedTabs.get(tabId);
@@ -161,7 +153,7 @@ export async function executeCdp(request: BridgeRequest, getActiveTab: () => Pro
 
 export async function executeCdpSession(request: BridgeRequest, getActiveTab: () => Promise<BrowserTab>): Promise<Record<string, unknown>> {
   const params = isRecord(request.params) ? request.params : {};
-  const enableDomains = Array.isArray(params.enable) ? params.enable.filter((d): d is string => typeof d === 'string') : [];
+  const enableDomains = Array.isArray(params.enable) ? params.enable.filter((d: unknown): d is string => typeof d === 'string') : [];
   if (enableDomains.length === 0) {
     throw new Error('INVALID_PARAMS: enable 参数必填，至少一个 CDP 域名');
   }
@@ -259,15 +251,13 @@ export async function observePage(request: BridgeRequest, getActiveTab: () => Pr
       let result = (await chrome.debugger.sendCommand(debuggee, 'Accessibility.getFullAXTree', {})) as { nodes: any[] };
       let simplified = simplifyAXTree(result.nodes);
 
-      if (simplified.split('
-').length <= 3) {
+      if (simplified.split('\n').length <= 3) {
         await delay(200);
         result = (await chrome.debugger.sendCommand(debuggee, 'Accessibility.getFullAXTree', { depth: -1 })) as { nodes: any[] };
         simplified = simplifyAXTree(result.nodes);
       }
 
-      if (simplified.split('
-').length <= 2) {
+      if (simplified.split('\n').length <= 2) {
         const doc = await chrome.debugger.sendCommand(debuggee, 'DOM.getDocument', { depth: 0 }) as { root: { nodeId: number } };
         if (doc?.root?.nodeId) {
           const partial = await chrome.debugger.sendCommand(debuggee, 'Accessibility.getPartialAXTree', {
@@ -348,8 +338,7 @@ function simplifyAXTree(nodes: any[]): string {
       if (isPressed) states.push('pressed');
       if (states.length > 0) line += ' (' + states.join(', ') + ')';
       
-      line += ' [' + nodeId + ']
-';
+      line += ' [' + nodeId + ']\n';
     }
 
     let children = '';
@@ -858,7 +847,7 @@ export async function captureResponsive(request: BridgeRequest, getActiveTab: ()
   const params = isRecord(request.params) ? request.params : {};
   const rawViewports = Array.isArray(params.viewports) ? params.viewports : [];
   const viewports: Array<{ name: string; width: number; height: number }> = rawViewports
-    .filter((v): v is Record<string, unknown> => isRecord(v))
+    .filter((v: unknown): v is Record<string, unknown> => isRecord(v))
     .map((v) => ({
       name: typeof v.name === 'string' ? v.name : v.width + 'x' + v.height,
       width: typeof v.width === 'number' ? v.width : 1920,
