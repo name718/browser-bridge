@@ -8,8 +8,10 @@
 <p align="center">
   <a href="#特性">特性</a> ·
   <a href="#使用场景">使用场景</a> ·
+  <a href="#ai-自动化测试">AI 自动化测试</a> ·
   <a href="#快速开始">快速开始</a> ·
   <a href="#工具一览">工具一览</a> ·
+  <a href="#文档入口">文档入口</a> ·
   <a href="#安全机制">安全机制</a> ·
   <a href="#架构">架构</a>
 </p>
@@ -92,6 +94,49 @@ browser_cdp_session({ enable: ["Network"], durationMs: 3000 })
 browser_cdp_session({ enable: ["Profiler"], durationMs: 5000 })
 ```
 
+### AI 自动化测试 — 计划、执行、报告、回放
+
+```json
+// 根据 PRD/focus/git diff 生成测试计划
+browser_qa_plan({
+  "baseUrl": "https://staging.example.com",
+  "prdText": "用户可以搜索订单，并校验退款金额",
+  "focus": ["订单搜索", "退款金额校验"]
+})
+
+// 执行测试用例并生成报告与 replay
+browser_qa_run({
+  "taskId": "refund-flow",
+  "title": "退款流程测试",
+  "cases": [{
+    "id": "refund-main-flow",
+    "title": "退款主流程可完成",
+    "priority": "P0",
+    "steps": [
+      { "action": "open", "url": "https://staging.example.com/orders/123" },
+      { "action": "click", "text": "申请退款" },
+      { "action": "type", "placeholder": "退款金额", "value": "10" },
+      { "action": "click", "text": "提交" },
+      { "action": "assertText", "contains": "退款中" }
+    ]
+  }]
+})
+
+// 回放已生成的 replay.json
+browser_qa_replay({
+  "replayPath": ".browser-bridge/runs/refund-flow/replay.json",
+  "mode": "smart"
+})
+```
+
+测试运行会在 `.browser-bridge/runs/{taskId}` 下生成：
+
+- `report.html` / `report.md`：测试报告
+- `replay-viewer.html`：可视化回放时间线
+- `replay.json`：机器可执行回放文件
+- `ci-summary.json`：CI/PR 汇总
+- `cases/`、`screenshots/`、`logs/`：用例、截图和日志证据
+
 ### 与 Computer Use 配合
 
 Browser Bridge 面向普通网页：优先用 DOM、文本、交互元素和 CDP 做低 token 的结构化操作。遇到 Chrome 外壳、`chrome://` 页面、扩展管理页、系统弹窗、文件选择器，或网页控件只能靠屏幕识别时，Agent 应切换到 Computer Use 兜底。
@@ -106,7 +151,7 @@ Browser Bridge 面向普通网页：优先用 DOM、文本、交互元素和 CDP
 
 ## 工具一览
 
-共 **39 个 MCP 工具**，分为 11 大类：
+共 **56 个 MCP 工具**，分为 12 大类：
 
 | 类别 | 工具 | 说明 |
 |---|---|---|
@@ -121,6 +166,7 @@ Browser Bridge 面向普通网页：优先用 DOM、文本、交互元素和 CDP
 | **性能分析** | `browser_responsive` `browser_network_analysis` | 响应式测试 + 网络分析 |
 | **网络与监控** | `browser_wait_for_request` `browser_console_monitor` `browser_get_audit_log` | 请求监听 + 控制台监控 + 审计 |
 | **自动化** | `browser_run_steps` | 多步骤流程 |
+| **AI QA** | `browser_qa_plan` `browser_qa_run` `browser_qa_from_recording` `browser_qa_replay` `browser_qa_report` | 计划、执行、报告、录制转用例、回放 |
 
 ## 使用场景
 
@@ -149,6 +195,18 @@ Browser Bridge 面向普通网页：优先用 DOM、文本、交互元素和 CDP
 > **你**：帮我测一下登录流程有没有问题
 >
 > **Agent**：`browser_run_steps` 按步骤操作：打开登录页 → 填写表单 → 点击登录 → 断言页面出现 "Dashboard" → 截图留档
+
+### AI QA 测试报告
+
+> **你**：基于当前分支和 PRD，去测试环境跑一轮 AI QA，输出报告和回放
+>
+> **Agent**：`browser_qa_plan` 生成测试范围和回归影响点 → `browser_qa_run` 执行用例 → 保存 `report.html`、`replay-viewer.html`、`replay.json` 和 `ci-summary.json`
+
+### 录制转测试用例
+
+> **你**：我手动走一遍流程，你把它变成可回放测试
+>
+> **Agent**：`browser_toggle_recording` 开启录制 → 用户操作页面 → `browser_get_recorded_steps` 获取步骤 → `browser_qa_from_recording` 清洗为 QA case 和 replay
 
 ### 批量填表单
 
@@ -387,6 +445,70 @@ browser_run_steps({
   ]
 })
 ```
+
+### AI QA：计划、执行、回放
+
+生成测试计划：
+
+```bash
+browser_qa_plan({
+  "baseUrl": "https://staging.example.com",
+  "prdText": "用户可以搜索订单、查看订单详情，并对退款金额做校验。",
+  "focus": ["订单搜索", "退款金额校验"]
+})
+```
+
+执行测试并生成报告：
+
+```bash
+browser_qa_run({
+  "taskId": "order-refund",
+  "title": "订单退款 AI QA",
+  "outputDir": ".browser-bridge/runs/order-refund",
+  "cases": [{
+    "id": "open-page",
+    "title": "测试环境页面可打开",
+    "priority": "P0",
+    "expected": ["页面可打开并截图"],
+    "steps": [
+      { "action": "open", "url": "https://staging.example.com" },
+      { "action": "pageModel", "visibleOnly": true, "maxElements": 80 },
+      { "action": "screenshot" }
+    ]
+  }],
+  "captureConsole": true,
+  "captureNetwork": true,
+  "screenshotOnError": true
+})
+```
+
+回放：
+
+```bash
+browser_qa_replay({
+  "replayPath": ".browser-bridge/runs/order-refund/replay.json",
+  "mode": "smart"
+})
+```
+
+重新生成报告或 CI 汇总：
+
+```bash
+browser_qa_report({
+  "runDir": ".browser-bridge/runs/order-refund",
+  "format": "viewer"
+})
+```
+
+当前 AI QA 规划是本地启发式实现：会读取 PRD 文本、focus 和 git diff 推断测试范围，但不调用外部大模型。更复杂的自然语言推理可由上层 AI Agent 基于 `browser_qa_plan` 输出继续补全用例。
+
+## 文档入口
+
+文档已收敛为三个入口：
+
+- `README.md`：项目介绍、快速开始、工具说明和常用示例。
+- `docs/ai-qa-automation-plan.md`：AI QA 自动化测试方案、当前实现状态、边界和后续计划。
+- `docs/security.md`：安全机制、配置项和审计说明。
 
 ## 开发
 

@@ -21,6 +21,16 @@ const DEFAULT_SECURITY_CONFIG: SecurityConfig = {
   pdfEnabled: true
 };
 
+let sessionTrustAgentFully = false;
+
+export function setSessionTrustAgentFully(trusted: boolean): void {
+  sessionTrustAgentFully = trusted;
+}
+
+export function getSessionTrustAgentFully(): boolean {
+  return sessionTrustAgentFully;
+}
+
 const HIGH_RISK_TEXT_PATTERNS = [
   /delete/i,
   /remove/i,
@@ -72,6 +82,15 @@ export async function getSecurityConfig(): Promise<SecurityConfig> {
   };
 }
 
+// URL 校验缓存：同一 URL 不重复读 chrome.storage.local
+const urlAllowedCache = new Map<string, boolean>();
+let lastCacheTime = 0;
+const CACHE_TTL_MS = 30_000; // 30 秒过期，避免配置变更后长期不生效
+
+export function invalidateUrlCache(): void {
+  urlAllowedCache.clear();
+}
+
 export async function assertUrlAllowed(url: string | undefined): Promise<void> {
   if (!url) {
     throw new Error("TAB_NOT_FOUND: 标签页 URL 不可用");
@@ -82,12 +101,28 @@ export async function assertUrlAllowed(url: string | undefined): Promise<void> {
     throw new Error("UNSUPPORTED_PAGE: 仅支持 http 和 https 页面");
   }
 
+  // 缓存命中检查
+  const now = Date.now();
+  if (now - lastCacheTime < CACHE_TTL_MS && urlAllowedCache.has(url)) {
+    if (!urlAllowedCache.get(url)) {
+      throw new Error("DOMAIN_NOT_ALLOWED: 当前 URL 被浏览器桥接安全配置拒绝");
+    }
+    return;
+  }
+
   const config = await getSecurityConfig();
-  if (matchesAny(url, config.denylist)) {
+  const denied = matchesAny(url, config.denylist);
+  const allowed = !denied && matchesAny(url, config.allowlist);
+
+  // 更新缓存
+  urlAllowedCache.set(url, allowed);
+  lastCacheTime = now;
+
+  if (denied) {
     throw new Error("DOMAIN_NOT_ALLOWED: 当前 URL 被浏览器桥接安全配置拒绝");
   }
 
-  if (!matchesAny(url, config.allowlist)) {
+  if (!allowed) {
     throw new Error("DOMAIN_NOT_ALLOWED: 当前 URL 不在浏览器桥接允许列表中");
   }
 }
@@ -103,7 +138,7 @@ export async function assertActionAllowed(request: BridgeRequest): Promise<void>
     throw new Error("PERMISSION_DENIED: 浏览器桥接安全配置已禁用 PDF 导出");
   }
 
-  if (!config.blockHighRiskActions || !isClickTool(request.tool)) {
+  if (sessionTrustAgentFully || !config.blockHighRiskActions || !isClickTool(request.tool)) {
     return;
   }
 
@@ -115,7 +150,7 @@ export async function assertActionAllowed(request: BridgeRequest): Promise<void>
 
 export async function getActionRisk(request: BridgeRequest): Promise<RiskCheck> {
   const config = await getSecurityConfig();
-  if (!config.blockHighRiskActions || !isClickTool(request.tool)) {
+  if (sessionTrustAgentFully || !config.blockHighRiskActions || !isClickTool(request.tool)) {
     return { risky: false };
   }
   return getRequestRisk(request);

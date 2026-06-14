@@ -6,9 +6,9 @@
         "/Users/didi/Desktop/my-project/browser-bridge-1/packages/mcp-server/dist/index.js"
       ],
       "env": {
-        "BROWSER_BRIDGE_PORT": "17321"
+        "BROWSER_BRIDGE_PORT": "17321",
+        "BROWSER_BRIDGE_API_PORT": "17320"
       }
     }
   }
 }
-

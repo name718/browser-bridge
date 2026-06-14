@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>原生 HTML 表单测试</title>
+</head>
+<body>
+  <h1>用户信息表单</h1>
+  <form id="user-form">
+    <div>
+      <label for="username">用户名</label>
+      <input type="text" id="username" name="username" placeholder="请输入用户名" required />
+    </div>
+    <div>
+      <label for="email">邮箱</label>
+      <input type="email" id="email" name="email" placeholder="请输入邮箱" required />
+    </div>
+    <div>
+      <label for="phone">手机号</label>
+      <input type="tel" id="phone" name="phone" placeholder="请输入手机号" />
+    </div>
+    <div>
+      <label for="city">城市</label>
+      <select id="city" name="city">
+        <option value="">请选择城市</option>
+        <option value="beijing">北京</option>
+        <option value="shanghai">上海</option>
+        <option value="guangzhou">广州</option>
+        <option value="shenzhen">深圳</option>
+      </select>
+    </div>
+    <div>
+      <label for="bio">简介</label>
+      <textarea id="bio" name="bio" placeholder="请输入个人简介"></textarea>
+    </div>
+    <div>
+      <label>
+        <input type="checkbox" name="agree" value="yes" />
+        我同意用户协议
+      </label>
+    </div>
+    <div>
+      <button type="submit">提交</button>
+      <button type="reset">重置</button>
+    </div>
+  </form>
+</body>
+</html>

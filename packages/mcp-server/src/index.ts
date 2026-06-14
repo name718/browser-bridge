@@ -7,6 +7,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { DaemonBridgeClient } from "./bridge/daemon-client.js";
 import { createBrowserTools } from "./tools/browser-tools.js";
+import { createQaTools } from "./qa/qa-tools.js";
+import { isRecord } from "@majuntao-1/browser-bridge-shared";
 import { Logger } from "./logger/logger.js";
 import { sanitizeForLog } from "./security/sanitize.js";
 
@@ -14,7 +16,10 @@ const logger = new Logger("mcp-server");
 const bridgePort = Number(process.env.BROWSER_BRIDGE_PORT ?? 17321);
 const apiPort = Number(process.env.BROWSER_BRIDGE_API_PORT ?? 17320);
 const bridge = new DaemonBridgeClient(bridgePort, apiPort);
-const tools = createBrowserTools(bridge);
+const tools = [
+  ...createBrowserTools(bridge),
+  ...createQaTools(bridge)
+];
 const toolMap = new Map(tools.map((tool) => [tool.name, tool]));
 
 let activated = false;
@@ -22,13 +27,23 @@ let activated = false;
 const browserUseTool = {
   name: "browser_use",
   description:
-    "激活或关闭浏览器桥接 MCP 工具集。当 use=true 时，会激活工具并打开 Sci-Fi 蒙层（作为 Agent 正在使用浏览器的标识）；当 use=false 时，会关闭蒙层。Agent 在开始一系列浏览器操作前必须先调用此工具 (use=true)，并在结束所有浏览器操作后再次调用 (use=false) 以关闭蒙层。蒙层不会立即消失，会有一定的平滑退出时间。",
+    "激活或关闭浏览器桥接 MCP 工具集。当 use=true 时，会激活工具并打开 Sci-Fi 蒙层（作为 Agent 正在使用浏览器的标识）；当 use=false 时，会关闭蒙层并清除本次会话的完全信任状态。Agent 在开始一系列浏览器操作前应当先询问用户是否允许完全自动化，若用户同意，后续调用应传 trustAgentFully=true 以实现全程无打扰操作。",
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true
+  },
   inputSchema: {
     type: "object",
     properties: {
       use: {
         type: "boolean",
         description: "是否正在使用浏览器。true 开启蒙层，false 关闭蒙层。"
+      },
+      trustAgentFully: {
+        type: "boolean",
+        description: "是否在本次 browser_use 会话中完全信任 Agent 操作浏览器。仅当用户明确同意后传 true；use=false 会清除该状态。"
       }
     },
     required: [],
@@ -52,7 +67,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [browserUseTool, ...tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    inputSchema: tool.inputSchema
+    inputSchema: tool.inputSchema,
+    annotations: tool.annotations
   }))]
 }));
 
@@ -61,14 +77,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // browser_use 激活开关
   if (name === "browser_use") {
-    const args = (request.params.arguments ?? {}) as { use?: boolean };
+    const args = (request.params.arguments ?? {}) as { use?: boolean; trustAgentFully?: boolean };
     const use = args.use !== false; // 默认 true
     activated = use;
     
     // 通知插件开启/关闭蒙层
     let extensionResult = {};
     try {
-      extensionResult = await bridge.call("browser_use", { use });
+      extensionResult = await bridge.call("browser_use", {
+        use,
+        trustAgentFully: use && args.trustAgentFully === true
+      });
     } catch (e) {
       logger.warn("failed to send browser_use to extension", e);
     }
@@ -80,6 +99,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           type: "text",
           text: JSON.stringify({ 
             activated: use, 
+            trustAgentFully: use && args.trustAgentFully === true,
             message: use ? "浏览器桥接工具已激活且蒙层已开启。" : "浏览器桥接工具已关闭且蒙层将平滑退出。",
             extensionResult 
           }, null, 2)
@@ -88,17 +108,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
-  // 未激活时拒绝所有其他 browser_* 工具
+  // 自动激活，避免 Agent 首次调用 browser_* 时先失败一轮。
   if (!activated && name.startsWith("browser_")) {
-    return {
-      isError: true,
-      content: [
-        {
-          type: "text",
-          text: "浏览器桥接工具未激活。请先调用 browser_use 工具来激活，然后再使用其他 browser_* 工具。"
-        }
-      ]
-    };
+    activated = true;
+    try {
+      await bridge.call("browser_use", { use: true });
+    } catch (e) {
+      logger.warn("failed to auto-activate browser bridge", e);
+    }
   }
 
   const tool = toolMap.get(name);
@@ -113,7 +130,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     const result = await tool.handler(request.params.arguments ?? {});
-    if (name === "browser_screenshot") {
+    if (name === "browser_screenshot" || name === "browser_screen_observe" || name === "browser_visual_observe") {
       return formatScreenshotResult(result);
     }
     if (name === "browser_pdf") {
@@ -121,6 +138,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     if (name === "browser_capture_page" && isRecord(result) && result.format === "pdf" && typeof result.data === "string") {
       return formatPdfResult(result);
+    }
+    if (name === "browser_run_steps") {
+      return formatRunStepsResult(result);
     }
     return {
       content: [
@@ -144,6 +164,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 });
+
+function formatRunStepsResult(result: unknown): {
+  content: Array<
+    | { type: "text"; text: string }
+    | { type: "image"; data: string; mimeType: string }
+  >;
+} {
+  const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
+  const textResult = stripDataUrls(result, images);
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(textResult, null, 2)
+      },
+      ...images
+    ]
+  };
+}
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
@@ -193,6 +232,48 @@ function formatScreenshotResult(result: unknown): {
       }
     ]
   };
+}
+
+function stripDataUrls(
+  value: unknown,
+  images: Array<{ type: "image"; data: string; mimeType: string }>
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => stripDataUrls(item, images));
+  }
+
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const output: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "dataUrl" && typeof entry === "string") {
+      const image = dataUrlToImage(entry, typeof value.mimeType === "string" ? value.mimeType : undefined);
+      if (image) {
+        images.push(image);
+        output.imageContentIndex = images.length - 1;
+        output.dataUrlLength = entry.length;
+      }
+      continue;
+    }
+    output[key] = stripDataUrls(entry, images);
+  }
+  return output;
+}
+
+function dataUrlToImage(
+  dataUrl: string,
+  fallbackMimeType?: string
+): { type: "image"; data: string; mimeType: string } | undefined {
+  const [header, data] = dataUrl.split(",", 2);
+  if (!data) {
+    return undefined;
+  }
+  const mimeType = fallbackMimeType
+    ?? header.match(/^data:(.*);base64$/)?.[1]
+    ?? "image/png";
+  return { type: "image", data, mimeType };
 }
 
 function formatPdfResult(result: unknown): {
@@ -251,8 +332,4 @@ function formatPdfResult(result: unknown): {
       }
     ]
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

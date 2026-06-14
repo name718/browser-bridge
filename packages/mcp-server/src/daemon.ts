@@ -2,6 +2,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { BrowserBridge } from "./bridge/browser-bridge.js";
 import { Logger } from "./logger/logger.js";
+import { isRecord } from "@majuntao-1/browser-bridge-shared";
 
 const logger = new Logger("bridge-daemon");
 const bridgePort = Number(process.env.BROWSER_BRIDGE_PORT ?? 17321);
@@ -38,6 +39,36 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         bridgeUrl: `ws://127.0.0.1:${bridgePort}`
       });
       return;
+    }
+
+    if (request.url?.startsWith("/vars")) {
+      if (request.method === "GET") {
+        const url = new URL(request.url, `http://127.0.0.1:${apiPort}`);
+        const name = url.searchParams.get("name");
+        if (name) {
+          sendJson(response, 200, { value: bridge.getVariable(name) });
+        } else {
+          sendJson(response, 200, { variables: bridge.getAllVariables() });
+        }
+        return;
+      }
+
+      if (request.method === "POST") {
+        const body = await readJson(request);
+        if (isRecord(body) && typeof body.name === "string") {
+          bridge.setVariable(body.name, body.value);
+          sendJson(response, 200, { ok: true });
+        } else {
+          sendJson(response, 400, { error: "INVALID_PARAMS: name 参数必填" });
+        }
+        return;
+      }
+
+      if (request.method === "DELETE") {
+        bridge.clearVariables();
+        sendJson(response, 200, { ok: true });
+        return;
+      }
     }
 
     if (request.method === "POST" && request.url === "/call") {
@@ -91,8 +122,3 @@ function sendJson(response: ServerResponse, statusCode: number, body: unknown): 
   });
   response.end(JSON.stringify(body));
 }
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-

@@ -9,6 +9,7 @@ export type BridgeTool =
   | "browser_act"
   | "browser_find_and_click"
   | "browser_find_and_type"
+  | "browser_select_option"
   | "browser_fill_form"
   | "browser_hover"
   | "browser_press_key"
@@ -19,6 +20,17 @@ export type BridgeTool =
   | "browser_use"
   | "browser_screenshot"
   | "browser_save_screenshot"
+  | "browser_screen_observe"
+  | "browser_screen_click"
+  | "browser_screen_type"
+  | "browser_screen_drag"
+  | "browser_screen_scroll"
+  | "browser_screen_press"
+  | "browser_visual_observe"
+  | "browser_visual_click_text"
+  | "browser_visual_select"
+  | "browser_visual_task"
+  | "browser_visual_resolve_text"
   | "browser_click"
   | "browser_list_tabs"
   | "browser_open_url"
@@ -38,6 +50,7 @@ export type BridgeTool =
   | "browser_save_pdf"
   | "browser_capture_page"
   | "browser_evaluate"
+  | "browser_smart_act"
   | "browser_cdp"
   | "browser_cdp_session"
   | "browser_responsive"
@@ -49,7 +62,13 @@ export type BridgeTool =
   | "browser_new_tab"
   | "browser_new_context"
   | "browser_toggle_recording"
-  | "browser_get_recorded_steps";
+  | "browser_get_recorded_steps"
+  // Phase 1: Smart Form Engine
+  | "browser_get_form_structure"
+  | "browser_fill_form_smart"
+  // Phase 3: Semantic tools
+  | "browser_navigate_and_observe"
+  | "browser_click_semantic_btn";
 
 export type BridgeRequest = {
   id: string;

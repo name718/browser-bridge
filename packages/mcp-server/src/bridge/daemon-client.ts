@@ -2,7 +2,9 @@ import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type BridgeRequest, type BrowserStatus } from "@majuntao-1/browser-bridge-shared";
+import { isRecord } from "@majuntao-1/browser-bridge-shared";
 import { Logger } from "../logger/logger.js";
+import { isRetryableError, withRetry } from "../utils/retry.js";
 
 type DaemonStatus = BrowserStatus & {
   apiUrl?: string;
@@ -26,20 +28,54 @@ export class DaemonBridgeClient {
     return this.request<DaemonStatus>("/status", { method: "GET" });
   }
 
+  async setVariable(name: string, value: any): Promise<void> {
+    await this.ensureDaemon();
+    await this.request("/vars", {
+      method: "POST",
+      body: JSON.stringify({ name, value })
+    });
+  }
+
+  async getVariable(name: string): Promise<any> {
+    await this.ensureDaemon();
+    const res = await this.request<{ value: any }>(`/vars?name=${encodeURIComponent(name)}`, {
+      method: "GET"
+    });
+    return res.value;
+  }
+
+  async getAllVariables(): Promise<Record<string, any>> {
+    await this.ensureDaemon();
+    const res = await this.request<{ variables: Record<string, any> }>("/vars", {
+      method: "GET"
+    });
+    return res.variables;
+  }
+
+  async clearVariables(): Promise<void> {
+    await this.ensureDaemon();
+    await this.request("/vars", { method: "DELETE" });
+  }
+
   async call<T = unknown>(
     tool: BridgeRequest["tool"],
     params?: Record<string, unknown>,
     options?: { tabId?: number; timeoutMs?: number }
   ): Promise<T> {
     await this.ensureDaemon();
-    const result = await this.request<{ data: T }>("/call", {
+    const result = await withRetry(() => this.request<{ data: T }>("/call", {
       method: "POST",
       body: JSON.stringify({
         tool,
         params,
         tabId: options?.tabId,
         timeoutMs: options?.timeoutMs
-      })
+      }),
+      timeoutMs: options?.timeoutMs ? options.timeoutMs + 5000 : undefined
+    }), {
+      maxAttempts: isReadOnlyBridgeTool(tool) ? 3 : 2,
+      baseDelay: 200,
+      retryOn: isRetryableError
     });
     return result.data;
   }
@@ -94,7 +130,7 @@ export class DaemonBridgeClient {
 
   private async request<T>(
     path: string,
-    options: { method: "GET" | "POST"; body?: string; timeoutMs?: number }
+    options: { method: "GET" | "POST" | "DELETE"; body?: string; timeoutMs?: number }
   ): Promise<T> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 10_000);
@@ -123,6 +159,6 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+function isReadOnlyBridgeTool(tool: BridgeRequest["tool"]): boolean {
+  return /^(browser_status|browser_get_|browser_list_|browser_observe|browser_screenshot|browser_pdf|browser_capture_page|browser_console_monitor|browser_network_analysis)/.test(tool);
 }

@@ -51,6 +51,7 @@ export type BrowserPageModel = {
   outline: BrowserPageModelHeading[];
   regions: BrowserPageModelRegion[];
   interactives: BrowserElement[];
+  floatingOptions?: BrowserElement[];
   forms: BrowserPageModelForm[];
   tables: BrowserPageModelTable[];
   messages: BrowserPageModelMessage[];
@@ -281,6 +282,54 @@ export type ScreenshotParams = {
   scale?: number;
 };
 
+export type BrowserScreenObserveParams = {
+  tabId?: number;
+  format?: "png" | "jpeg";
+  quality?: number;
+  withGrid?: boolean;
+  gridSize?: number;
+  scale?: number;
+};
+
+export type BrowserScreenPoint = {
+  x: number;
+  y: number;
+};
+
+export type BrowserScreenClickParams = BrowserScreenPoint & {
+  tabId?: number;
+  button?: "left" | "middle" | "right";
+  clickCount?: number;
+  delayMs?: number;
+};
+
+export type BrowserScreenDragParams = {
+  tabId?: number;
+  from: BrowserScreenPoint;
+  to: BrowserScreenPoint;
+  button?: "left" | "middle" | "right";
+  steps?: number;
+  durationMs?: number;
+};
+
+export type BrowserScreenTypeParams = {
+  tabId?: number;
+  text: string;
+};
+
+export type BrowserScreenScrollParams = {
+  tabId?: number;
+  x?: number;
+  y?: number;
+  deltaX?: number;
+  deltaY?: number;
+};
+
+export type BrowserScreenPressParams = {
+  tabId?: number;
+  key: string;
+};
+
 export type PdfParams = {
   tabId?: number;
   landscape?: boolean;
@@ -363,6 +412,7 @@ export type BrowserStepAction =
   | "click"
   | "hover"
   | "type"
+  | "selectOption"
   | "fillForm"
   | "clear"
   | "scroll"
@@ -373,6 +423,12 @@ export type BrowserStepAction =
   | "pageModel"
   | "snapshot"
   | "screenshot"
+  | "screenObserve"
+  | "screenClick"
+  | "screenType"
+  | "screenDrag"
+  | "screenScroll"
+  | "screenPress"
   | "pdf"
   | "sleep";
 
@@ -380,12 +436,19 @@ export type BrowserStepTarget = {
   query?: string;
   elementId?: string;
   selector?: string;
+  testId?: string;
   text?: string;
   role?: string;
   ariaLabel?: string;
   placeholder?: string;
+  label?: string;
   href?: string;
   nearText?: string;
+};
+
+export type BrowserLocator = BrowserStepTarget & {
+  visibleOnly?: boolean;
+  viewportOnly?: boolean;
 };
 
 export type BrowserStep = BrowserStepTarget & {
@@ -393,8 +456,12 @@ export type BrowserStep = BrowserStepTarget & {
   description?: string;
   tabId?: number;
   target?: BrowserStepTarget;
+  locator?: BrowserLocator;
   url?: string;
   value?: string;
+  label?: string;
+  option?: string;
+  exact?: boolean;
   fields?: BrowserFormField[];
   replace?: boolean;
   direction?: "up" | "down" | "left" | "right";
@@ -413,6 +480,18 @@ export type BrowserStep = BrowserStepTarget & {
   maxTableRows?: number;
   format?: "png" | "jpeg";
   quality?: number;
+  withGrid?: boolean;
+  gridSize?: number;
+  x?: number;
+  y?: number;
+  from?: BrowserScreenPoint;
+  to?: BrowserScreenPoint;
+  button?: "left" | "middle" | "right";
+  clickCount?: number;
+  steps?: number;
+  durationMs?: number;
+  deltaX?: number;
+  deltaY?: number;
   landscape?: boolean;
   printBackground?: boolean;
   scale?: number;
@@ -454,4 +533,17 @@ export type BrowserRunStepsResult = {
   stoppedAt?: number;
   tabId?: number;
   results: BrowserStepResult[];
+};
+
+export type BrowserSkill = {
+  id: string;
+  name: string;
+  description: string;
+  category?: string;
+  parameters?: Record<string, {
+    type: "string" | "number" | "boolean";
+    description: string;
+    default?: any;
+  }>;
+  steps: BrowserStep[];
 };
