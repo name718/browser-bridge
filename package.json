@@ -10,6 +10,8 @@
     "dev:server": "pnpm --filter @majuntao-1/browser-bridge-mcp-server dev",
     "dev:daemon": "pnpm --filter @majuntao-1/browser-bridge-mcp-server dev:daemon",
     "build:extension": "pnpm --filter @browser-bridge/extension build",
+    "build:site": "pnpm --filter @browser-bridge/ink-wuxia-site build",
+    "dev:site": "pnpm --filter @browser-bridge/ink-wuxia-site dev",
     "smoke": "pnpm --filter @majuntao-1/browser-bridge-mcp-server smoke",
     "test": "vitest run",
     "test:watch": "vitest",
