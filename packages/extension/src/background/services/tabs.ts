@@ -1,6 +1,11 @@
 import { type BrowserTab } from '@majuntao-1/browser-bridge-shared';
 import { assertUrlAllowed } from '../security.js';
 
+export type TargetTab = {
+  tabId: number;
+  tab: chrome.tabs.Tab;
+};
+
 export async function getActiveTab(): Promise<BrowserTab> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) {
@@ -132,4 +137,31 @@ export async function getTabWhenUrlReady(tabId: number, timeoutMs = 5000): Promi
     return tab;
   }
   throw new Error('ACTION_TIMEOUT: 标签页 URL 不可用');
+}
+
+export async function resolveTargetTab(
+  request: { tabId?: number; params?: Record<string, unknown> },
+  options: { waitForUrl?: boolean; timeoutMs?: number } = {}
+): Promise<TargetTab> {
+  const requestedTabId = request.tabId ?? Number(request.params?.tabId);
+  const tabId = Number.isFinite(requestedTabId) && requestedTabId > 0
+    ? requestedTabId
+    : (await getActiveTab()).id;
+  if (!tabId) {
+    throw new Error('TAB_NOT_FOUND: 缺少标签页 ID');
+  }
+
+  const tab = options.waitForUrl
+    ? await getTabWhenUrlReady(tabId, options.timeoutMs)
+    : await chrome.tabs.get(tabId);
+  return { tabId, tab };
+}
+
+export async function resolveSafeTargetTab(
+  request: { tabId?: number; params?: Record<string, unknown> },
+  options: { waitForUrl?: boolean; timeoutMs?: number } = {}
+): Promise<TargetTab> {
+  const target = await resolveTargetTab(request, options);
+  await assertUrlAllowed(target.tab.url);
+  return target;
 }

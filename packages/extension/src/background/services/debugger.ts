@@ -4,6 +4,7 @@ import {
 } from '@majuntao-1/browser-bridge-shared';
 import { assertUrlAllowed } from '../security.js';
 import { appendAuditLog } from '../audit.js';
+import { resolveSafeTargetTab } from './tabs.js';
 
 /**
  * 通用 Debugger 任务包装器
@@ -113,21 +114,14 @@ export function stringToBase64(str: string): string {
   return btoa(binary);
 }
 
-export async function executeCdp(request: BridgeRequest, getActiveTab: () => Promise<BrowserTab>): Promise<Record<string, unknown>> {
+export async function executeCdp(request: BridgeRequest): Promise<Record<string, unknown>> {
   const params = isRecord(request.params) ? request.params : {};
   const method = typeof params.method === 'string' ? params.method : '';
   if (!method.includes('.')) {
     throw new Error('INVALID_PARAMS: method 必须是 Domain.method 格式');
   }
 
-  const requestedTabId = request.tabId ?? Number(params.tabId);
-  const tabId = requestedTabId || (await getActiveTab()).id;
-  if (!tabId) {
-    throw new Error('TAB_NOT_FOUND: 缺少标签页 ID');
-  }
-
-  const tab = await chrome.tabs.get(tabId);
-  await assertUrlAllowed(tab.url);
+  const { tabId, tab } = await resolveSafeTargetTab(request);
 
   if (!tab.url || /^(chrome|chrome-extension|about|edge|brave):/.test(tab.url)) {
     throw new Error('UNSUPPORTED_PAGE: 当前页面不支持 CDP 操作');
@@ -151,7 +145,7 @@ export async function executeCdp(request: BridgeRequest, getActiveTab: () => Pro
   });
 }
 
-export async function executeCdpSession(request: BridgeRequest, getActiveTab: () => Promise<BrowserTab>): Promise<Record<string, unknown>> {
+export async function executeCdpSession(request: BridgeRequest): Promise<Record<string, unknown>> {
   const params = isRecord(request.params) ? request.params : {};
   const enableDomains = Array.isArray(params.enable) ? params.enable.filter((d: unknown): d is string => typeof d === 'string') : [];
   if (enableDomains.length === 0) {
@@ -160,14 +154,7 @@ export async function executeCdpSession(request: BridgeRequest, getActiveTab: ()
 
   const durationMs = typeof params.durationMs === 'number' ? Math.max(params.durationMs, 100) : 3000;
 
-  const requestedTabId = request.tabId ?? Number(params.tabId);
-  const tabId = requestedTabId || (await getActiveTab()).id;
-  if (!tabId) {
-    throw new Error('TAB_NOT_FOUND: 缺少标签页 ID');
-  }
-
-  const tab = await chrome.tabs.get(tabId);
-  await assertUrlAllowed(tab.url);
+  const { tabId, tab } = await resolveSafeTargetTab(request);
 
   const events: Array<{ method: string; params: Record<string, unknown> }> = [];
   const listener = (source: chrome.debugger.Debuggee, method: string, eventParams?: unknown) => {
@@ -208,14 +195,8 @@ export async function executeCdpSession(request: BridgeRequest, getActiveTab: ()
   });
 }
 
-export async function getAXTree(request: BridgeRequest, getActiveTab: () => Promise<BrowserTab>): Promise<Record<string, unknown>> {
-  const params = isRecord(request.params) ? request.params : {};
-  const requestedTabId = request.tabId ?? Number(params.tabId);
-  const tabId = requestedTabId || (await getActiveTab()).id;
-  if (!tabId) throw new Error('TAB_NOT_FOUND: 缺少标签页 ID');
-
-  const tab = await chrome.tabs.get(tabId);
-  await assertUrlAllowed(tab.url);
+export async function getAXTree(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const { tabId, tab } = await resolveSafeTargetTab(request);
 
   return withDebugger(tabId, async (debuggee) => {
     try {
@@ -235,14 +216,8 @@ export async function getAXTree(request: BridgeRequest, getActiveTab: () => Prom
   });
 }
 
-export async function observePage(request: BridgeRequest, getActiveTab: () => Promise<BrowserTab>): Promise<Record<string, unknown>> {
-  const params = isRecord(request.params) ? request.params : {};
-  const requestedTabId = request.tabId ?? Number(params.tabId);
-  const tabId = requestedTabId || (await getActiveTab()).id;
-  if (!tabId) throw new Error('TAB_NOT_FOUND: 缺少标签页 ID');
-
-  const tab = await chrome.tabs.get(tabId);
-  await assertUrlAllowed(tab.url);
+export async function observePage(request: BridgeRequest): Promise<Record<string, unknown>> {
+  const { tabId, tab } = await resolveSafeTargetTab(request);
 
   return withDebugger(tabId, async (debuggee) => {
     try {
@@ -354,16 +329,11 @@ function simplifyAXTree(nodes: any[]): string {
   return processNode(nodes[0].nodeId);
 }
 
-export async function monitorConsole(request: BridgeRequest, getActiveTab: () => Promise<BrowserTab>): Promise<Record<string, unknown>> {
+export async function monitorConsole(request: BridgeRequest): Promise<Record<string, unknown>> {
   const params = isRecord(request.params) ? request.params : {};
   const durationMs = typeof params.durationMs === 'number' ? Math.max(params.durationMs, 100) : 5000;
   
-  const requestedTabId = request.tabId ?? Number(params.tabId);
-  const tabId = requestedTabId || (await getActiveTab()).id;
-  if (!tabId) throw new Error('TAB_NOT_FOUND: 缺少标签页 ID');
-
-  const tab = await chrome.tabs.get(tabId);
-  await assertUrlAllowed(tab.url);
+  const { tabId, tab } = await resolveSafeTargetTab(request);
 
   const logs: any[] = [];
   const onEvent = (source: chrome.debugger.Debuggee, method: string, params: any) => {
@@ -407,7 +377,7 @@ export async function monitorConsole(request: BridgeRequest, getActiveTab: () =>
   });
 }
 
-export async function mockNetwork(request: BridgeRequest, getActiveTab: () => Promise<BrowserTab>): Promise<Record<string, unknown>> {
+export async function mockNetwork(request: BridgeRequest): Promise<Record<string, unknown>> {
   const params = isRecord(request.params) ? request.params : {};
   const urlPattern = typeof params.urlPattern === 'string' ? params.urlPattern : '';
   if (!urlPattern) throw new Error('INVALID_PARAMS: urlPattern 参数必填');
@@ -417,12 +387,7 @@ export async function mockNetwork(request: BridgeRequest, getActiveTab: () => Pr
   const contentType = typeof params.contentType === 'string' ? params.contentType : 'application/json';
   const durationMs = typeof params.durationMs === 'number' ? Math.max(params.durationMs, 100) : 10000;
 
-  const requestedTabId = request.tabId ?? Number(params.tabId);
-  const tabId = requestedTabId || (await getActiveTab()).id;
-  if (!tabId) throw new Error('TAB_NOT_FOUND: 缺少标签页 ID');
-
-  const tab = await chrome.tabs.get(tabId);
-  await assertUrlAllowed(tab.url);
+  const { tabId, tab } = await resolveSafeTargetTab(request);
 
   const onEvent = async (source: chrome.debugger.Debuggee, method: string, eventParams: any) => {
     if (source.tabId !== tabId) return;
@@ -468,7 +433,7 @@ export async function mockNetwork(request: BridgeRequest, getActiveTab: () => Pr
   });
 }
 
-export async function browserRoute(request: BridgeRequest, getActiveTab: () => Promise<BrowserTab>): Promise<Record<string, unknown>> {
+export async function browserRoute(request: BridgeRequest): Promise<Record<string, unknown>> {
   const params = isRecord(request.params) ? request.params : {};
   const urlPattern = typeof params.urlPattern === 'string' ? params.urlPattern : '';
   if (!urlPattern) throw new Error('INVALID_PARAMS: urlPattern 参数必填');
@@ -479,12 +444,7 @@ export async function browserRoute(request: BridgeRequest, getActiveTab: () => P
   const headers = isRecord(params.headers) ? params.headers : {};
   const durationMs = typeof params.durationMs === 'number' ? Math.max(params.durationMs, 100) : 10000;
 
-  const requestedTabId = request.tabId ?? Number(params.tabId);
-  const tabId = requestedTabId || (await getActiveTab()).id;
-  if (!tabId) throw new Error('TAB_NOT_FOUND: 缺少标签页 ID');
-
-  const tab = await chrome.tabs.get(tabId);
-  await assertUrlAllowed(tab.url);
+  const { tabId, tab } = await resolveSafeTargetTab(request);
 
   const onEvent = async (source: chrome.debugger.Debuggee, method: string, eventParams: any) => {
     if (source.tabId !== tabId) return;
@@ -534,14 +494,9 @@ export async function browserRoute(request: BridgeRequest, getActiveTab: () => P
   });
 }
 
-export async function capturePdf(request: BridgeRequest, getActiveTab: () => Promise<BrowserTab>): Promise<Record<string, unknown>> {
+export async function capturePdf(request: BridgeRequest): Promise<Record<string, unknown>> {
   const params = isRecord(request.params) ? request.params : {};
-  const requestedTabId = request.tabId ?? Number(params.tabId);
-  const tabId = requestedTabId || (await getActiveTab()).id;
-  if (!tabId) throw new Error('TAB_NOT_FOUND: 缺少标签页 ID');
-
-  const tab = await chrome.tabs.get(tabId);
-  await assertUrlAllowed(tab.url);
+  const { tabId, tab } = await resolveSafeTargetTab(request);
 
   if (!tab.url || /^(chrome|chrome-extension|about|edge|brave):/.test(tab.url)) {
     throw new Error('UNSUPPORTED_PAGE: 当前页面不支持导出 PDF');
@@ -642,14 +597,9 @@ export async function captureCdpScreenshot(
   });
 }
 
-export async function runScreenInput(request: BridgeRequest, getActiveTab: () => Promise<BrowserTab>): Promise<Record<string, unknown>> {
+export async function runScreenInput(request: BridgeRequest): Promise<Record<string, unknown>> {
   const params = isRecord(request.params) ? request.params : {};
-  const requestedTabId = request.tabId ?? Number(params.tabId);
-  const tabId = requestedTabId || (await getActiveTab()).id;
-  if (!tabId) throw new Error('TAB_NOT_FOUND: 缺少标签页 ID');
-
-  const tab = await chrome.tabs.get(tabId);
-  await assertUrlAllowed(tab.url);
+  const { tabId, tab } = await resolveSafeTargetTab(request);
 
   if (!tab.url || /^(chrome|chrome-extension|about|edge|brave):/.test(tab.url)) {
     throw new Error('UNSUPPORTED_PAGE: 当前页面不支持视觉坐标操作');
@@ -843,7 +793,7 @@ function keyToCdpInfo(key: string): Record<string, unknown> {
   return { key, code: key };
 }
 
-export async function captureResponsive(request: BridgeRequest, getActiveTab: () => Promise<BrowserTab>): Promise<Record<string, unknown>> {
+export async function captureResponsive(request: BridgeRequest): Promise<Record<string, unknown>> {
   const params = isRecord(request.params) ? request.params : {};
   const rawViewports = Array.isArray(params.viewports) ? params.viewports : [];
   const viewports: Array<{ name: string; width: number; height: number }> = rawViewports
@@ -862,12 +812,7 @@ export async function captureResponsive(request: BridgeRequest, getActiveTab: ()
     );
   }
 
-  const requestedTabId = request.tabId ?? Number(params.tabId);
-  const tabId = requestedTabId || (await getActiveTab()).id;
-  if (!tabId) throw new Error('TAB_NOT_FOUND: 缺少标签页 ID');
-
-  const tab = await chrome.tabs.get(tabId);
-  await assertUrlAllowed(tab.url);
+  const { tabId, tab } = await resolveSafeTargetTab(request);
 
   return withDebugger(tabId, async () => {
     const screenshots: Array<Record<string, unknown>> = [];
@@ -905,17 +850,12 @@ export async function captureScreenshotWithAttachedDebugger(tabId: number): Prom
   return { dataUrl: 'data:image/png;base64,' + data };
 }
 
-export async function runNetworkAnalysis(request: BridgeRequest, getActiveTab: () => Promise<BrowserTab>): Promise<Record<string, unknown>> {
+export async function runNetworkAnalysis(request: BridgeRequest): Promise<Record<string, unknown>> {
   const params = isRecord(request.params) ? request.params : {};
   const durationMs = typeof params.durationMs === 'number' ? Math.max(params.durationMs, 100) : 5000;
   const slowThresholdMs = typeof params.slowThresholdMs === 'number' ? params.slowThresholdMs : 1000;
 
-  const requestedTabId = request.tabId ?? Number(params.tabId);
-  const tabId = requestedTabId || (await getActiveTab()).id;
-  if (!tabId) throw new Error('TAB_NOT_FOUND: 缺少标签页 ID');
-
-  const tab = await chrome.tabs.get(tabId);
-  await assertUrlAllowed(tab.url);
+  const { tabId, tab } = await resolveSafeTargetTab(request);
 
   const requests: Map<string, Record<string, unknown>> = new Map();
   const responses: Map<string, Record<string, unknown>> = new Map();

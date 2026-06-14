@@ -3,7 +3,14 @@ import { getElementText, getAccessibilityName, inferRole, ensureElementId, getAc
 import { type BrowserElement, type BrowserPageModel, type PageSnapshot } from '@majuntao-1/browser-bridge-shared';
 import { toBrowserElement } from './dom-interactor.js';
 
+let visibleTextCache: { text: string; timestamp: number } | undefined;
+const VISIBLE_TEXT_CACHE_TTL = 500;
+
 export function getVisibleText(): string {
+  if (visibleTextCache && Date.now() - visibleTextCache.timestamp < VISIBLE_TEXT_CACHE_TTL) {
+    return visibleTextCache.text;
+  }
+
   const lines: string[] = [];
   const walk = (node: Node) => {
     if (node.nodeType === Node.ELEMENT_NODE) {
@@ -25,7 +32,13 @@ export function getVisibleText(): string {
     }
   };
   if (document.body) walk(document.body);
-  return lines.join('').replace(/\n{3,}/g, '\n\n').trim().slice(0, 100000);
+  const text = lines.join('').replace(/\n{3,}/g, '\n\n').trim().slice(0, 100000);
+  visibleTextCache = { text, timestamp: Date.now() };
+  return text;
+}
+
+export function invalidatePageModelCache(): void {
+  visibleTextCache = undefined;
 }
 
 export function getPageSnapshot(): PageSnapshot {
@@ -33,6 +46,14 @@ export function getPageSnapshot(): PageSnapshot {
     tabId: -1, url: location.href, title: document.title,
     text: getVisibleText().slice(0, 10000),
     elements: getActionableElements({ visibleOnly: true }).slice(0, 100).map(toBrowserElement)
+  };
+}
+
+export function getInteractives(params: Record<string, any>): { elements: BrowserElement[] } {
+  const limit = clamp(Number(params.limit ?? 50), 1, 200);
+  const viewportOnly = params.viewportOnly === true;
+  return {
+    elements: getActionableElements({ visibleOnly: true, viewportOnly }).slice(0, limit).map(toBrowserElement)
   };
 }
 

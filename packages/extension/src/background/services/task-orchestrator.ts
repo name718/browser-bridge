@@ -62,7 +62,7 @@ export async function runSteps(request: BridgeRequest): Promise<BrowserRunStepsR
           
           if (!urlChanged && action === 'click') {
             try {
-              const axTreeResult = await DebuggerService.observePage({ id: 'self-healing', tool: 'browser_observe', tabId: currentTabId }, TabsService.getActiveTab) as { axTree: string };
+              const axTreeResult = await DebuggerService.observePage({ id: 'self-healing', tool: 'browser_observe', tabId: currentTabId }) as { axTree: string };
               if (axTreeResult && axTreeResult.axTree.length < 200 && !axTreeResult.axTree.includes('Dialog') && !axTreeResult.axTree.includes('Popup')) {
                 console.warn('[Self-Healing] 操作可能未生效');
               }
@@ -184,27 +184,27 @@ export async function runStep(step: BrowserStep, currentTabId?: number): Promise
         withGrid: step.withGrid,
         gridSize: step.gridSize,
         scale: step.scale
-      }), TabsService.getActiveTab);
+      }));
     case 'screenClick':
       return DebuggerService.runScreenInput(stepRequest('browser_screen_click', step, currentTabId, {
         x: step.x, y: step.y, button: step.button, clickCount: step.clickCount, delayMs: step.delayMs
-      }), TabsService.getActiveTab);
+      }));
     case 'screenType':
       return DebuggerService.runScreenInput(stepRequest('browser_screen_type', step, currentTabId, {
         text: step.value ?? step.text
-      }), TabsService.getActiveTab);
+      }));
     case 'screenDrag':
       return DebuggerService.runScreenInput(stepRequest('browser_screen_drag', step, currentTabId, {
         from: step.from, to: step.to, button: step.button, steps: step.steps, durationMs: step.durationMs
-      }), TabsService.getActiveTab);
+      }));
     case 'screenScroll':
       return DebuggerService.runScreenInput(stepRequest('browser_screen_scroll', step, currentTabId, {
         x: step.x, y: step.y, deltaX: step.deltaX, deltaY: step.deltaY
-      }), TabsService.getActiveTab);
+      }));
     case 'screenPress':
       return DebuggerService.runScreenInput(stepRequest('browser_screen_press', step, currentTabId, {
         key: step.key
-      }), TabsService.getActiveTab);
+      }));
     case 'pdf':
       return DebuggerService.capturePdf({
         id: crypto.randomUUID(),
@@ -224,7 +224,7 @@ export async function runStep(step: BrowserStep, currentTabId?: number): Promise
           pageRanges: step.pageRanges,
           preferCSSPageSize: step.preferCSSPageSize
         }
-      }, TabsService.getActiveTab);
+      });
     case 'sleep':
       await new Promise(r => setTimeout(r, step.delayMs ?? step.timeoutMs ?? 500));
       return { slept: true };

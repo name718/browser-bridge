@@ -1,9 +1,8 @@
 import {
   type BridgeRequest
 } from '@majuntao-1/browser-bridge-shared';
-import { assertUrlAllowed } from '../security.js';
 import { appendAuditLog } from '../audit.js';
-import { getActiveTab } from './tabs.js';
+import { resolveSafeTargetTab } from './tabs.js';
 import { sendToContentScript, ensureContentScript } from './content-script.js';
 import * as DebuggerService from './debugger.js';
 
@@ -70,12 +69,7 @@ function shouldFallbackToVisualSelect(error: unknown): boolean {
 
 export async function runVisualMode(request: BridgeRequest): Promise<Record<string, unknown>> {
   const params = (typeof request.params === 'object' && request.params !== null) ? request.params : {};
-  const requestedTabId = request.tabId ?? Number(params.tabId);
-  const tabId = requestedTabId || (await getActiveTab()).id;
-  if (!tabId) throw new Error('TAB_NOT_FOUND: 缺少标签页 ID');
-
-  const tab = await chrome.tabs.get(tabId);
-  await assertUrlAllowed(tab.url);
+  const { tabId, tab } = await resolveSafeTargetTab(request);
   await ensureContentScript(tabId);
 
   const contentResponse = await chrome.tabs.sendMessage(tabId, {
@@ -161,14 +155,9 @@ export async function resolveVisualTextTarget(
 
 import { captureScreenshot } from './screenshot.js';
 
-export async function screenObserve(request: BridgeRequest, getActiveTab: () => Promise<any>): Promise<Record<string, unknown>> {
+export async function screenObserve(request: BridgeRequest): Promise<Record<string, unknown>> {
   const params = (typeof request.params === 'object' && request.params !== null) ? request.params : {};
-  const requestedTabId = request.tabId ?? Number(params.tabId);
-  const tabId = requestedTabId || (await getActiveTab()).id;
-  if (!tabId) throw new Error('TAB_NOT_FOUND: 缺少标签页 ID');
-
-  const tab = await chrome.tabs.get(tabId);
-  await assertUrlAllowed(tab.url);
+  const { tabId, tab } = await resolveSafeTargetTab(request);
 
   const viewport = await DebuggerService.getViewportInfo(tabId);
   

@@ -5,6 +5,7 @@ import * as VisualEngine from './services/visual-engine.js';
 import * as UIOverlay from './services/ui-overlay.js';
 import * as Recorder from './services/recorder.js';
 import { fillFormSmart, getFormStructure } from './form-engine.js';
+import { elementCache } from './element-cache.js';
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'browser_bridge_ping') { sendResponse({ ok: true }); return true; }
@@ -33,7 +34,7 @@ async function handleRequest(request: BridgeRequest): Promise<unknown> {
     case 'browser_get_page_text': return PageModel.getVisibleText();
     case 'browser_get_page_snapshot': return PageModel.getPageSnapshot();
     case 'browser_get_page_model': return PageModel.getPageModel(p);
-    case 'browser_get_interactives': return { elements: PageModel.getPageSnapshot().elements.slice(0, 50) };
+    case 'browser_get_interactives': return PageModel.getInteractives(p);
     case 'browser_find': {
       const limit = typeof p.limit === 'number' ? Math.max(1, Math.min(50, p.limit)) : 8;
       const matches = DomInteractor.scoreElements(p).slice(0, limit).map((match, index) => ({
@@ -43,15 +44,15 @@ async function handleRequest(request: BridgeRequest): Promise<unknown> {
       }));
       return { matched: matches.length > 0, query: String(p.query ?? p.text ?? ''), count: matches.length, matches };
     }
-    case 'browser_act': return DomInteractor.clickElement(p); // Placeholder for complex act
+    case 'browser_act': return invalidateAfterWrite(DomInteractor.clickElement(p)); // Placeholder for complex act
     case 'browser_click':
-    case 'browser_find_and_click': return DomInteractor.clickElement(p);
+    case 'browser_find_and_click': return invalidateAfterWrite(DomInteractor.clickElement(p));
     case 'browser_type':
-    case 'browser_find_and_type': return DomInteractor.typeIntoElement(p);
-    case 'browser_select_option': return DomInteractor.clickElement(p); // Placeholder
-    case 'browser_hover': return DomInteractor.hoverElement(p);
-    case 'browser_clear': return DomInteractor.clearElement(p);
-    case 'browser_scroll': return DomInteractor.scrollPage(p);
+    case 'browser_find_and_type': return invalidateAfterWrite(DomInteractor.typeIntoElement(p));
+    case 'browser_select_option': return invalidateAfterWrite(DomInteractor.clickElement(p)); // Placeholder
+    case 'browser_hover': return invalidateAfterWrite(DomInteractor.hoverElement(p));
+    case 'browser_clear': return invalidateAfterWrite(DomInteractor.clearElement(p));
+    case 'browser_scroll': return invalidateAfterWrite(Promise.resolve(DomInteractor.scrollPage(p)));
     case 'browser_wait_for': return DomInteractor.waitForElement(p, request.timeoutMs);
     case 'browser_assert_text': return { asserted: PageModel.getVisibleText().includes(String(p.text || '')) };
     case 'browser_get_selected_text': return PageModel.getSelectedText();
@@ -64,5 +65,14 @@ async function handleRequest(request: BridgeRequest): Promise<unknown> {
     case 'browser_get_form_structure': return getFormStructure();
     case 'browser_fill_form_smart': return fillFormSmart(Array.isArray(p.fields) ? p.fields : [], { dryRun: p.dryRun === true });
     default: throw new Error('Unsupported tool: ' + request.tool);
+  }
+}
+
+async function invalidateAfterWrite<T>(operation: Promise<T>): Promise<T> {
+  try {
+    return await operation;
+  } finally {
+    elementCache.invalidateNow();
+    PageModel.invalidatePageModelCache();
   }
 }

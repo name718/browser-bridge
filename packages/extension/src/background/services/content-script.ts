@@ -3,16 +3,10 @@ import {
 } from '@majuntao-1/browser-bridge-shared';
 import { assertActionAllowed, getActionRisk, getSessionTrustAgentFully } from '../security.js';
 import { appendAuditLog } from '../audit.js';
-import { getActiveTab, getTabWhenUrlReady } from './tabs.js';
+import { resolveTargetTab } from './tabs.js';
 
 export async function sendToContentScript(request: BridgeRequest): Promise<unknown> {
-  const requestedTabId = request.tabId ?? Number(request.params?.tabId);
-  const tabId = requestedTabId || (await getActiveTab()).id;
-  if (!tabId) {
-    throw new Error('TAB_NOT_FOUND: 缺少标签页 ID');
-  }
-
-  const tab = await getTabWhenUrlReady(tabId, 10000);
+  const { tabId, tab } = await resolveTargetTab(request, { waitForUrl: true, timeoutMs: 10000 });
   
   const confirmedHighRisk = await confirmHighRiskAction(tabId, request);
   const bypassContentRiskPrompt = confirmedHighRisk || getSessionTrustAgentFully();

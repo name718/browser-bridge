@@ -96,35 +96,35 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       }
       return { ok: true, isAgentSessionActive: AgentSessionService.isAgentSessionActive, trustAgentFully: getSessionTrustAgentFully() };
     case 'browser_get_ax_tree':
-      return DebuggerService.getAXTree(request, TabsService.getActiveTab);
+      return DebuggerService.getAXTree(request);
     case 'browser_observe':
-      return DebuggerService.observePage(request, TabsService.getActiveTab);
+      return DebuggerService.observePage(request);
     case 'browser_mock_network':
-      return DebuggerService.mockNetwork(request, TabsService.getActiveTab);
+      return DebuggerService.mockNetwork(request);
     case 'browser_wait_for_request':
       return waitForNetworkRequest(request); // Still in background.ts for now
     case 'browser_console_monitor':
-      return DebuggerService.monitorConsole(request, TabsService.getActiveTab);
+      return DebuggerService.monitorConsole(request);
     case 'browser_get_audit_log':
       return getAuditLog(typeof request.params?.limit === 'number' ? request.params.limit : 20);
     case 'browser_run_steps':
       return TaskOrchestrator.runSteps(request);
     case 'browser_pdf':
-      return DebuggerService.capturePdf(request, TabsService.getActiveTab);
+      return DebuggerService.capturePdf(request);
     case 'browser_evaluate':
       return evaluateScript(request); // Still in background.ts for now
     case 'browser_smart_act':
       return VisualService.smartAct(request);
     case 'browser_cdp':
-      return DebuggerService.executeCdp(request, TabsService.getActiveTab);
+      return DebuggerService.executeCdp(request);
     case 'browser_cdp_session':
-      return DebuggerService.executeCdpSession(request, TabsService.getActiveTab);
+      return DebuggerService.executeCdpSession(request);
     case 'browser_responsive':
-      return DebuggerService.captureResponsive(request, TabsService.getActiveTab);
+      return DebuggerService.captureResponsive(request);
     case 'browser_network_analysis':
-      return DebuggerService.runNetworkAnalysis(request, TabsService.getActiveTab);
+      return DebuggerService.runNetworkAnalysis(request);
     case 'browser_route':
-      return DebuggerService.browserRoute(request, TabsService.getActiveTab);
+      return DebuggerService.browserRoute(request);
     case 'browser_export_session':
       return SessionService.exportSession(request);
     case 'browser_import_session':
@@ -141,7 +141,7 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return RecorderService.getRecordedSteps();
     case 'browser_screen_observe':
     case 'browser_visual_observe':
-      return VisualService.screenObserve(request, TabsService.getActiveTab);
+      return VisualService.screenObserve(request);
     case 'browser_visual_click_text':
     case 'browser_visual_select':
     case 'browser_visual_task':
@@ -152,7 +152,7 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
     case 'browser_screen_drag':
     case 'browser_screen_scroll':
     case 'browser_screen_press':
-      return DebuggerService.runScreenInput(request, TabsService.getActiveTab);
+      return DebuggerService.runScreenInput(request);
     case 'browser_screenshot':
     case 'browser_click':
     case 'browser_find_and_click':

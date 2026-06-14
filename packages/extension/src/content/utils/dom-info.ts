@@ -1,4 +1,5 @@
 import { normalizeText, isVisible, isInViewport, cssEscape, isDisabled, isFocusable } from './dom.js';
+import { elementCache } from '../element-cache.js';
 
 export const ELEMENT_ATTR = 'data-browser-bridge-id';
 export const ACTIONABLE_SELECTOR = [
@@ -119,6 +120,23 @@ export function getActionableElements(options: {
   viewportOnly?: boolean;
   rectCache?: Map<HTMLElement, DOMRect>;
 } = {}): HTMLElement[] {
+  const elements = elementCache.get({
+    visibleOnly: options.visibleOnly,
+    viewportOnly: options.viewportOnly
+  }).slice();
+  if (options.rectCache) {
+    for (const element of elements) {
+      options.rectCache.set(element, element.getBoundingClientRect());
+    }
+  }
+  return elements;
+}
+
+export function collectActionableElements(options: {
+  visibleOnly?: boolean;
+  viewportOnly?: boolean;
+  rectCache?: Map<HTMLElement, DOMRect>;
+} = {}): HTMLElement[] {
   const elements: HTMLElement[] = [];
   const seen = new Set<HTMLElement>();
   const cache = options.rectCache;
@@ -166,3 +184,5 @@ export function getActionableElements(options: {
     return aRect.top - bRect.top || aRect.left - bRect.left;
   });
 }
+
+elementCache.init((options) => collectActionableElements(options));

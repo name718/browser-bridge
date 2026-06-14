@@ -12,7 +12,7 @@
  * - iframe/shadow DOM 无法完整感知时以短 TTL 兜底
  */
 
-type ElementCollector = () => HTMLElement[];
+type ElementCollector = (options?: { visibleOnly?: boolean; viewportOnly?: boolean }) => HTMLElement[];
 
 /**
  * 请求级元素缓存
@@ -21,7 +21,7 @@ type ElementCollector = () => HTMLElement[];
  * Feature Flag 控制是否启用。
  */
 export class RequestScopedElementCache {
-  private elements: HTMLElement[] | null = null;
+  private entries = new Map<string, { elements: HTMLElement[]; timestamp: number }>();
   private timestamp = 0;
   private readonly ttl: number;
   private invalidateTimer: ReturnType<typeof setTimeout> | null = null;
@@ -64,12 +64,20 @@ export class RequestScopedElementCache {
    *
    * 如果缓存有效则返回缓存，否则重新收集。
    */
-  get(): HTMLElement[] {
-    if (!this.elements || Date.now() - this.timestamp > this.ttl) {
-      this.elements = this.collector ? this.collector() : [];
+  get(options: { visibleOnly?: boolean; viewportOnly?: boolean } = {}): HTMLElement[] {
+    const key = JSON.stringify({
+      visibleOnly: options.visibleOnly !== false,
+      viewportOnly: options.viewportOnly === true
+    });
+    const entry = this.entries.get(key);
+    if (!entry || Date.now() - entry.timestamp > this.ttl) {
+      this.entries.set(key, {
+        elements: this.collector ? this.collector(options) : [],
+        timestamp: Date.now()
+      });
       this.timestamp = Date.now();
     }
-    return this.elements;
+    return this.entries.get(key)?.elements ?? [];
   }
 
   /**
@@ -80,9 +88,13 @@ export class RequestScopedElementCache {
   invalidate(): void {
     if (this.invalidateTimer) return;
     this.invalidateTimer = setTimeout(() => {
-      this.elements = null;
+      this.invalidateNow();
       this.invalidateTimer = null;
     }, 100); // 100ms debounce
+  }
+
+  invalidateNow(): void {
+    this.entries.clear();
   }
 
   /**
@@ -95,7 +107,7 @@ export class RequestScopedElementCache {
       clearTimeout(this.invalidateTimer);
       this.invalidateTimer = null;
     }
-    this.elements = null;
+    this.entries.clear();
   }
 }
 
