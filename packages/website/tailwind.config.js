@@ -10,7 +10,7 @@ export default {
         background: "#020617",
         primary: "#3b82f6",
         secondary: "#a855f7",
-      }
+      },
     },
   },
   plugins: [],
