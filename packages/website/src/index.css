@@ -1,29 +1,27 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&family=JetBrains+Mono:wght@400;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 :root {
   --primary: #3b82f6;
-  --primary-glow: rgba(59, 130, 246, 0.5);
-  --secondary: #a855f7;
   --background: #020617;
-  --card-bg: rgba(30, 41, 59, 0.5);
-  --border: rgba(255, 255, 255, 0.1);
-}
-
-* {
-  box-sizing: border-box;
 }
 
 body {
   margin: 0;
   padding: 0;
-  overflow-x: hidden;
   background-color: var(--background);
+  color: white;
+  overflow-x: hidden;
 }
 
 .glass {
-  background: var(--card-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--border);
+  background: rgba(30, 41, 59, 0.4);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .text-gradient {
@@ -32,41 +30,37 @@ body {
   -webkit-text-fill-color: transparent;
 }
 
-.hero-gradient {
-  background: radial-gradient(circle at 50% 50%, rgba(59, 130, 246, 0.15) 0%, transparent 50%);
+.hero-glow {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 100vw;
+  height: 100vh;
+  background: radial-gradient(circle at 50% 50%, rgba(59, 130, 246, 0.1) 0%, transparent 60%);
+  pointer-events: none;
+  z-index: -1;
 }
 
 @keyframes scanline {
   0% { transform: translateY(-100%); }
-  100% { transform: translateY(1000%); }
+  100% { transform: translateY(100vh); }
 }
 
 .scanline {
   width: 100%;
-  height: 100px;
-  z-index: 10;
-  background: linear-gradient(to bottom, transparent, rgba(59, 130, 246, 0.05), transparent);
-  opacity: 0.1;
-  position: absolute;
+  height: 10px;
+  background: linear-gradient(to bottom, transparent, rgba(59, 130, 246, 0.03), transparent);
+  position: fixed;
+  top: 0;
+  left: 0;
   pointer-events: none;
-  animation: scanline 8s linear infinite;
-}
-
-
-:root {
-  font-family: 'Inter', system-ui, sans-serif;
-}
-
-code, pre, .font-mono {
-  font-family: 'JetBrains Mono', monospace;
-}
-
-html {
-  scroll-behavior: smooth;
+  z-index: 100;
+  animation: scanline 10s linear infinite;
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
+  width: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -75,7 +69,7 @@ html {
 
 ::-webkit-scrollbar-thumb {
   background: #1e293b;
-  border-radius: 5px;
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
