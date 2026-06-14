@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&family=JetBrains+Mono:wght@400;700&display=swap');
 :root {
   --primary: #3b82f6;
   --primary-glow: rgba(59, 130, 246, 0.5);
@@ -51,7 +52,6 @@ body {
   animation: scanline 8s linear infinite;
 }
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&family=JetBrains+Mono:wght@400;700&display=swap');
 
 :root {
   font-family: 'Inter', system-ui, sans-serif;
