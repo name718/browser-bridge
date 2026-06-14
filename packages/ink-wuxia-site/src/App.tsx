@@ -3,7 +3,7 @@ import { ArrowRight, BookOpen, Bot, Chrome, Download, FileText, Gauge, Github, L
 const links = {
   github: 'https://github.com/name718/browser-bridge',
   tutorial: 'https://github.com/name718/browser-bridge#快速开始',
-  extensionZip: 'https://github.com/name718/browser-bridge/raw/main/release/browser-bridge-extension-0.3.0.zip',
+  extensionZip: 'https://github.com/name718/browser-bridge/raw/main/release/browser-bridge-extension-0.4.0.zip',
 }
 
 const features = [
@@ -224,7 +224,7 @@ function App() {
           </div>
           <div className="resource-actions">
             <a href={links.extensionZip}>
-              <Download size={18} /> 下载 Chrome 插件 v0.3.0
+              <Download size={18} /> 下载 Chrome 插件 v0.4.0
             </a>
             <a href={links.tutorial} target="_blank" rel="noreferrer">
               <BookOpen size={18} /> 阅读安装教程
@@ -236,7 +236,7 @@ function App() {
         </div>
         <div className="terminal">
           <div><Terminal size={16} /> bash</div>
-          <code># 先下载并加载 release/browser-bridge-extension-0.3.0.zip</code>
+          <code># 先下载并加载 release/browser-bridge-extension-0.4.0.zip</code>
           <code>pnpm install</code>
           <code>pnpm dev:daemon</code>
           <code>pnpm build:extension</code>
@@ -254,7 +254,7 @@ function App() {
           <span><Download size={20} /></span>
           <h3>插件下载</h3>
           <p>当前版本暂未上架 Chrome Web Store，请下载 zip 后手动加载。</p>
-          <a href={links.extensionZip}>browser-bridge-extension-0.3.0.zip</a>
+          <a href={links.extensionZip}>browser-bridge-extension-0.4.0.zip</a>
         </article>
         <article>
           <span><BookOpen size={20} /></span>
