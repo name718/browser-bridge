@@ -302,13 +302,19 @@ Browser Bridge 面向普通网页：优先用 DOM、文本、交互元素和 CDP
 
 ### 1. 安装 Chrome 插件
 
-当前版本暂未上架 Chrome Web Store。请从仓库的 `release/browser-bridge-extension-0.3.0.zip` 解压后手动加载：
+当前版本暂未上架 Chrome Web Store。请从仓库的 `release/browser-bridge-extension-0.3.1.zip` 解压后手动加载：
 
-1. 解压 `release/browser-bridge-extension-0.3.0.zip`
+1. 解压 `release/browser-bridge-extension-0.3.1.zip`
 2. 打开 `chrome://extensions`
 2. 开启「开发者模式」
 3. 点击「加载已解压的扩展程序」
 4. 选择解压后的插件目录
+
+### 本版本新增
+
+- AI QA 流程增强：执行前预检、失败诊断包、Locator 策略可观测、语义/可执行用例资产分离、报告发布建议、录制转用例分析和 Smart Replay 自愈审计。
+- QA 报告增强：输出 `run-config.json`、`semantic-cases.json`、`executable-cases.json`、`workflow-state.json`、`ci-summary.json` 和 HTML 诊断摘要。
+- Chrome 插件蒙层增强：激活蒙层支持主动关闭、拖拽移动和缩小/展开。
 
 ### 2. 配置 MCP 客户端
 

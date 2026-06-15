@@ -21,12 +21,12 @@ Browser Bridge 是一个「Chrome 插件 + 本地 MCP 服务」组合，用来�
 插件下载地址：
 
 ```text
-https://github.com/name718/browser-bridge/blob/main/release/browser-bridge-extension-0.3.0.zip
+https://github.com/name718/browser-bridge/blob/main/release/browser-bridge-extension-0.3.1.zip
 ```
 
 安装步骤：
 
-1. 下载并解压 `browser-bridge-extension-0.3.0.zip`
+1. 下载并解压 `browser-bridge-extension-0.3.1.zip`
 2. 打开 Chrome 地址栏：`chrome://extensions`
 3. 开启右上角「开发者模式」
 4. 点击「加载已解压的扩展程序」
@@ -109,6 +109,14 @@ browser_use
 - `browser_run_steps`：按步骤执行浏览器自动化
 - `browser_cdp` / `browser_cdp_session`：执行 Chrome DevTools Protocol 调试命令
 
+## 0.3.1 新增能力
+
+- `browser_qa_run` 增强：执行前预检、失败诊断包、Locator 策略元数据、语义用例与可执行用例资产分离、workflow state 产物。
+- `browser_qa_from_recording` 增强：输出 `semantic-cases.json`、`executable-cases.json`、`recording-analysis.json`，并标记敏感输入和建议业务断言。
+- `browser_qa_replay` smart 模式增强：为交互步骤补充可审计 locator fallback，并记录是否改变语义。
+- 报告增强：HTML/Markdown/CI summary 包含发布建议、失败聚合、证据缺口和诊断摘要。
+- Chrome 插件激活蒙层支持主动关闭、拖拽移动和缩小/展开。
+
 ## 示例
 
 让 AI 客户端执行：
@@ -154,5 +162,5 @@ https://github.com/name718/browser-bridge
 Chrome 插件 zip：
 
 ```text
-https://github.com/name718/browser-bridge/blob/main/release/browser-bridge-extension-0.3.0.zip
+https://github.com/name718/browser-bridge/blob/main/release/browser-bridge-extension-0.3.1.zip
 ```

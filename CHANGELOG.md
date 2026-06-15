@@ -2,6 +2,28 @@
 
 所有对本项目的重大变更都将记录在此文件中。
 
+## [0.3.1] - 2026-06-15
+
+### 新增
+- **AI QA 流程闭环增强**:
+    - `browser_qa_run` 增加执行前预检，支持 Bridge 连接、活动标签页、baseUrl 可达性和既有 Console 错误检查。
+    - 失败诊断包增强，记录失败步骤、当前页面、Locator 策略、证据可用性、Console/Network/PageModel/Screenshot 产物。
+    - 语义用例与可执行用例资产分离，运行目录新增 `run-config.json`、`semantic-cases.json`、`executable-cases.json` 和 `workflow-state.json`。
+    - 报告产品化，HTML/Markdown/CI Summary 新增发布建议、失败聚合、证据缺口和决策分类。
+    - `browser_qa_from_recording` 增强录制转用例能力，新增 `recording-analysis.json`，标记敏感输入、Locator 风险和建议补充断言。
+    - `browser_qa_replay` smart 模式增强，交互步骤会生成可审计 Locator fallback 和自愈元数据。
+- **插件蒙层交互增强**:
+    - Agent 激活蒙层新增主动关闭按钮。
+    - 蒙层支持拖拽移动。
+    - 蒙层支持缩小/展开，缩小时隐藏操作日志。
+- **工作流治理**:
+    - 新增 Browser Bridge QA 流程优化计划文档。
+    - Skill 工作流新增 `workflow-state.json` 阶段门禁格式，便于恢复和防止跳阶段。
+
+### 优化
+- 修复 Website 在 Tailwind CSS 4 下的 PostCSS 插件配置，`pnpm build` 可完整通过。
+- 更新 Chrome 插件下载链接至 `release/browser-bridge-extension-0.3.1.zip`。
+
 ## [0.3.0] - 2026-05-29
 
 ### 新增

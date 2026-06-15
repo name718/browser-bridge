@@ -1,6 +1,6 @@
 {
   "name": "@majuntao-1/browser-bridge-mcp-server",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "MCP server and local daemon for Browser Bridge.",
   "license": "MIT",
