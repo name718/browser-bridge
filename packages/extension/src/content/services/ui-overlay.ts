@@ -7,6 +7,9 @@ const MIN_OVERLAY_TIME = 800;
 let isStickyMask = false;
 let autoCloseTimer: any = null;
 const AUTO_CLOSE_TIMEOUT = 5 * 60 * 1000;
+let isOverlayMinimized = false;
+let isOverlayDismissed = false;
+let overlayPosition: { left: number; top: number } | null = null;
 
 const TOOL_NAME_MAP: Record<string, string> = {
   'BROWSER_OPEN_URL': '打开链接',
@@ -34,10 +37,16 @@ export function updateActiveOperations(delta: number) {
 
 export function setStickyMask(active: boolean) {
   isStickyMask = active;
+  if (active) {
+    isOverlayDismissed = false;
+  }
 }
 
 export function updateOverlay(tool?: string, params?: Record<string, any>) {
   if (activeOperations > 0 || isStickyMask) {
+    if (isOverlayDismissed && activeOperations === 0) {
+      return;
+    }
     lastActiveTime = Date.now();
     showSciFiOverlay(tool, params);
     if (autoCloseTimer) clearTimeout(autoCloseTimer);
@@ -63,12 +72,16 @@ export function showSciFiOverlay(tool?: string, params?: Record<string, any>) {
   if (!overlay) {
     overlay = document.createElement('div');
     overlay.id = 'browser-bridge-agent-overlay';
-    overlay.style.cssText = 'position: fixed; top: 8px; right: 8px; width: 240px; pointer-events: none; z-index: 2147483647; font-family: sans-serif; transition: opacity 0.2s ease, transform 0.2s ease;';
+    overlay.style.cssText = 'position: fixed; top: 8px; right: 8px; width: 260px; pointer-events: auto; z-index: 2147483647; font-family: sans-serif; transition: opacity 0.2s ease, transform 0.2s ease;';
     const container = document.createElement('div');
-    container.style.cssText = 'display: flex; flex-direction: column; gap: 4px; color: #0f172a; background: rgba(255, 255, 255, 0.92); border: 1px solid rgba(15, 23, 42, 0.1); border-radius: 6px; box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12); padding: 6px 10px; overflow: hidden;';
+    container.id = 'bb-overlay-panel';
+    container.style.cssText = 'display: flex; flex-direction: column; gap: 4px; color: #0f172a; background: rgba(255, 255, 255, 0.94); border: 1px solid rgba(15, 23, 42, 0.1); border-radius: 6px; box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12); padding: 6px 8px 8px; overflow: hidden; backdrop-filter: blur(10px);';
+    const header = document.createElement('div');
+    header.id = 'bb-overlay-header';
+    header.style.cssText = 'display: flex; align-items: center; gap: 8px; min-width: 0; cursor: grab; user-select: none;';
     const statusBadge = document.createElement('div');
     statusBadge.id = 'bb-status-badge';
-    statusBadge.style.cssText = 'display: flex; align-items: center; gap: 8px; min-width: 0;';
+    statusBadge.style.cssText = 'display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1;';
     const dot = document.createElement('div');
     dot.style.cssText = 'width: 8px; height: 8px; flex: 0 0 auto; background: #16a34a; border-radius: 999px; box-shadow: 0 0 0 4px rgba(22, 163, 74, 0.14); animation: bb-agent-pulse 1.4s ease-in-out infinite;';
     const statusText = document.createElement('div');
@@ -77,16 +90,36 @@ export function showSciFiOverlay(tool?: string, params?: Record<string, any>) {
     statusText.innerText = 'Browser Bridge 正在操作';
     statusBadge.appendChild(dot);
     statusBadge.appendChild(statusText);
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display: flex; align-items: center; gap: 4px; flex: 0 0 auto;';
+    const minimizeButton = createOverlayButton('bb-overlay-minimize', '−', '缩小/展开 Browser Bridge 蒙层');
+    const closeButton = createOverlayButton('bb-overlay-close', '×', '关闭 Browser Bridge 蒙层');
+    actions.appendChild(minimizeButton);
+    actions.appendChild(closeButton);
+    header.appendChild(statusBadge);
+    header.appendChild(actions);
     const logContainer = document.createElement('div');
     logContainer.id = 'bb-log-container';
     logContainer.style.cssText = 'font-family: monospace; font-size: 10px; color: #475569; line-height: 1.4; max-height: 56px; overflow: hidden;';
     if (!document.getElementById('bb-overlay-style')) {
       const style = document.createElement('style');
       style.id = 'bb-overlay-style';
-      style.textContent = '@keyframes bb-agent-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(0.72); opacity: 0.55; } }';
+      style.textContent = '@keyframes bb-agent-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(0.72); opacity: 0.55; } } #browser-bridge-agent-overlay.bb-minimized { width: 184px !important; } #browser-bridge-agent-overlay.bb-minimized #bb-log-container { display: none !important; } #browser-bridge-agent-overlay.bb-minimized #bb-overlay-panel { padding-bottom: 6px !important; } #browser-bridge-agent-overlay button:hover { background: rgba(15, 23, 42, 0.08) !important; }';
       document.head.appendChild(style);
     }
-    container.appendChild(statusBadge);
+    minimizeButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      isOverlayMinimized = !isOverlayMinimized;
+      applyOverlayMinimizedState(overlay!, minimizeButton);
+    });
+    closeButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      isOverlayDismissed = true;
+      isStickyMask = false;
+      hideSciFiOverlay(true);
+    });
+    setupOverlayDrag(overlay, header);
+    container.appendChild(header);
     container.appendChild(logContainer);
     overlay.appendChild(container);
     document.documentElement.appendChild(overlay);
@@ -95,6 +128,9 @@ export function showSciFiOverlay(tool?: string, params?: Record<string, any>) {
     overlay.style.opacity = '1';
     overlay.style.transform = 'translateY(0)';
   }
+  applyOverlayPosition(overlay);
+  const minimizeButton = document.getElementById('bb-overlay-minimize') as HTMLButtonElement | null;
+  if (minimizeButton) applyOverlayMinimizedState(overlay, minimizeButton);
   if (tool) {
     const logContainer = document.getElementById('bb-log-container');
     if (logContainer) {
@@ -121,19 +157,78 @@ export function showSciFiOverlay(tool?: string, params?: Record<string, any>) {
   }
 }
 
-export function hideSciFiOverlay() {
+export function hideSciFiOverlay(force = false) {
   const overlay = document.getElementById('browser-bridge-agent-overlay');
   if (overlay) {
     overlay.style.opacity = '0';
     overlay.style.transform = 'translateY(-6px)';
     setTimeout(() => {
-      if (activeOperations === 0 && !isStickyMask) {
+      if (force || (activeOperations === 0 && !isStickyMask)) {
         overlay.style.display = 'none';
         const logContainer = document.getElementById('bb-log-container');
         if (logContainer) logContainer.innerHTML = '';
       }
     }, 300);
   }
+}
+
+function createOverlayButton(id: string, text: string, title: string): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.id = id;
+  button.type = 'button';
+  button.title = title;
+  button.innerText = text;
+  button.style.cssText = 'width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 4px; background: transparent; color: #334155; cursor: pointer; font-size: 14px; line-height: 1; padding: 0;';
+  return button;
+}
+
+function applyOverlayMinimizedState(overlay: HTMLElement, button: HTMLButtonElement): void {
+  overlay.classList.toggle('bb-minimized', isOverlayMinimized);
+  button.innerText = isOverlayMinimized ? '+' : '−';
+  button.title = isOverlayMinimized ? '展开 Browser Bridge 蒙层' : '缩小 Browser Bridge 蒙层';
+}
+
+function setupOverlayDrag(overlay: HTMLElement, handle: HTMLElement): void {
+  let dragging = false;
+  let offsetX = 0;
+  let offsetY = 0;
+
+  handle.addEventListener('mousedown', (event) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button')) return;
+    dragging = true;
+    const rect = overlay.getBoundingClientRect();
+    offsetX = event.clientX - rect.left;
+    offsetY = event.clientY - rect.top;
+    overlay.style.right = 'auto';
+    handle.style.cursor = 'grabbing';
+    event.preventDefault();
+  });
+
+  window.addEventListener('mousemove', (event) => {
+    if (!dragging) return;
+    const rect = overlay.getBoundingClientRect();
+    const maxLeft = Math.max(0, window.innerWidth - rect.width);
+    const maxTop = Math.max(0, window.innerHeight - rect.height);
+    overlayPosition = {
+      left: Math.min(Math.max(0, event.clientX - offsetX), maxLeft),
+      top: Math.min(Math.max(0, event.clientY - offsetY), maxTop)
+    };
+    applyOverlayPosition(overlay);
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.style.cursor = 'grab';
+  });
+}
+
+function applyOverlayPosition(overlay: HTMLElement): void {
+  if (!overlayPosition) return;
+  overlay.style.right = 'auto';
+  overlay.style.left = overlayPosition.left + 'px';
+  overlay.style.top = overlayPosition.top + 'px';
 }
 
 export function drawVisualOverlay() {
