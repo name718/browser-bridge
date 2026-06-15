@@ -1,28 +1,79 @@
-import { type QaReplayFile, type QaRunResult } from "./types.js";
+import {
+  type QaDecisionFailureCategory,
+  type QaDiagnosticSummary,
+  type QaFailureCategory,
+  type QaReplayFile,
+  type QaRunResult
+} from "./types.js";
 
 export function renderMarkdown(result: QaRunResult): string {
   const lines: string[] = [];
   const { summary } = result;
+  const decision = makeReleaseDecision(result);
+  const failureStats = summarizeDecisionFailures(result);
+  const evidenceGaps = collectEvidenceGaps(result);
 
   lines.push(`# ${summary.title}`);
   lines.push("");
   lines.push("## 结论");
   lines.push("");
   lines.push(`- 结果：${result.ok ? "通过" : "未通过"}`);
+  lines.push(`- 发布建议：${decision.label}`);
+  lines.push(`- 建议原因：${decision.reason}`);
   lines.push(`- 用例：共 ${summary.total} 条，通过 ${summary.passed}，失败 ${summary.failed}，阻塞 ${summary.blocked}`);
   lines.push(`- 风险：${summary.risk}`);
   lines.push(`- 耗时：${summary.elapsedMs}ms`);
   lines.push(`- 开始：${summary.startedAt}`);
   lines.push(`- 结束：${summary.finishedAt}`);
+  if (result.preflight) {
+    lines.push(`- 预检：${result.preflight.status}`);
+  }
   lines.push("");
   lines.push("## 产物");
   lines.push("");
   lines.push(`- Summary：${result.paths.summary}`);
   lines.push(`- Replay：${result.paths.replay}`);
+  lines.push(`- Run Config：${result.paths.runConfig}`);
+  lines.push(`- Semantic Cases：${result.paths.semanticCases}`);
+  lines.push(`- Executable Cases：${result.paths.executableCases}`);
+  lines.push(`- Workflow State：${result.paths.workflowState}`);
   lines.push(`- Cases：${result.paths.casesDir}`);
   lines.push(`- Screenshots：${result.paths.screenshotsDir}`);
   lines.push(`- Logs：${result.paths.logsDir}`);
+  if (result.preflight?.diagnostics) {
+    lines.push(`- Preflight：${result.preflight.diagnostics}`);
+  }
   lines.push("");
+  lines.push("## 失败聚合");
+  lines.push("");
+  if (failureStats.length) {
+    for (const stat of failureStats) {
+      lines.push(`- ${stat.category}：${stat.count}`);
+    }
+  } else {
+    lines.push("- 无失败或阻塞用例");
+  }
+  lines.push("");
+  lines.push("## 证据缺口");
+  lines.push("");
+  if (evidenceGaps.length) {
+    for (const gap of evidenceGaps) {
+      lines.push(`- ${gap}`);
+    }
+  } else {
+    lines.push("- 无明显证据缺口");
+  }
+  lines.push("");
+  if (result.preflight) {
+    lines.push("## 执行前预检");
+    lines.push("");
+    lines.push(`- 状态：${result.preflight.status}`);
+    lines.push(`- 耗时：${result.preflight.elapsedMs}ms`);
+    for (const check of result.preflight.checks) {
+      lines.push(`- ${check.status} ${check.name}：${check.message}`);
+    }
+    lines.push("");
+  }
   lines.push("## 用例结果");
   lines.push("");
 
@@ -33,6 +84,9 @@ export function renderMarkdown(result: QaRunResult): string {
     lines.push(`- 优先级：${testCase.priority}`);
     lines.push(`- 状态：${testCase.status}`);
     lines.push(`- 失败分类：${testCase.failureCategory}`);
+    if (testCase.status !== "passed") {
+      lines.push(`- 决策分类：${mapDecisionFailureCategory(testCase.failureCategory, testCase.status)}`);
+    }
     lines.push(`- 耗时：${testCase.elapsedMs}ms`);
     if (testCase.expected.length) {
       lines.push(`- 预期：${testCase.expected.join("；")}`);
@@ -64,6 +118,15 @@ export function renderMarkdown(result: QaRunResult): string {
     if (testCase.artifacts.diagnostics) {
       lines.push(`- Diagnostics：${testCase.artifacts.diagnostics}`);
     }
+    if (testCase.artifacts.diagnosticsSummary) {
+      lines.push(`- 诊断摘要：${testCase.artifacts.diagnosticsSummary.message}`);
+      if (testCase.artifacts.diagnosticsSummary.failedStep) {
+        lines.push(`- 失败步骤：#${testCase.artifacts.diagnosticsSummary.failedStep.index + 1} ${testCase.artifacts.diagnosticsSummary.failedStep.action ?? ""}`);
+      }
+      if (testCase.artifacts.diagnosticsSummary.locator) {
+        lines.push(`- Locator 策略：${testCase.artifacts.diagnosticsSummary.locator.strategy}`);
+      }
+    }
     lines.push("");
     lines.push("复现步骤：");
     lines.push("");
@@ -77,19 +140,24 @@ export function renderMarkdown(result: QaRunResult): string {
 }
 
 export function renderHtml(result: QaRunResult): string {
+  const preflightHtml = renderPreflight(result);
+  const decision = makeReleaseDecision(result);
+  const decisionHtml = renderDecisionSummary(result, decision);
   const caseRows = result.cases.map((testCase) => `
     <article class="case ${testCase.status}">
       <header>
         <div>
           <strong>${escapeHtml(testCase.title)}</strong>
-          <span>${escapeHtml(testCase.id)} · ${testCase.priority} · ${escapeHtml(testCase.failureCategory)} · ${testCase.elapsedMs}ms</span>
+          <span>${escapeHtml(testCase.id)} · ${testCase.priority} · ${escapeHtml(testCase.failureCategory)} · ${escapeHtml(mapDecisionFailureCategory(testCase.failureCategory, testCase.status))} · ${testCase.elapsedMs}ms</span>
         </div>
         <b>${statusLabel(testCase.status)}</b>
       </header>
       ${testCase.expected.length ? `<p class="expected">${escapeHtml(testCase.expected.join("；"))}</p>` : ""}
       ${testCase.error ? `<p class="error">${escapeHtml(`${testCase.error.code}: ${testCase.error.message}`)}</p>` : ""}
+      ${renderLocatorSummary(testCase.steps)}
       <ol>${testCase.steps.map((step) => `<li>${escapeHtml(describeStep(step))}</li>`).join("")}</ol>
       ${renderScreenshot(result.paths.runDir, testCase.artifacts.failureScreenshot?.path ?? testCase.artifacts.screenshot?.path)}
+      ${renderDiagnosticsSummary(testCase.artifacts.diagnosticsSummary)}
       ${renderConsoleSummary(testCase.artifacts.consoleSummary)}
       ${renderNetworkSummary(testCase.artifacts.networkSummary)}
       <div class="artifacts">
@@ -122,6 +190,22 @@ export function renderHtml(result: QaRunResult): string {
     .metric b { display: block; margin-top: 6px; font-size: 22px; }
     .paths { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; margin-bottom: 18px; }
     .paths a { margin-right: 14px; color: #2563eb; }
+    .decision { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin-bottom: 18px; }
+    .decision h2 { margin: 0 0 8px; font-size: 18px; }
+    .decision .label { display: inline-block; margin-bottom: 8px; padding: 4px 8px; border-radius: 6px; font-weight: 700; }
+    .decision.pass .label { color: #166534; background: #dcfce7; }
+    .decision.review .label { color: #854d0e; background: #fef3c7; }
+    .decision.block .label { color: #991b1b; background: #fee2e2; }
+    .decision-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+    .decision-grid div { border-top: 1px solid #e5e7eb; padding-top: 10px; }
+    .decision ul { margin: 8px 0 0; padding-left: 18px; color: #334155; }
+    .preflight { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin-bottom: 18px; }
+    .preflight h2 { margin: 0 0 8px; font-size: 18px; }
+    .preflight p { margin: 0 0 12px; color: #334155; }
+    .preflight.failed h2 { color: #b91c1c; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; border-top: 1px solid #e5e7eb; padding: 8px; vertical-align: top; }
+    th { color: #64748b; background: #f8fafc; }
     .case { margin-bottom: 12px; padding: 16px; }
     .case header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
     .case header span { display: block; margin-top: 4px; color: #64748b; font-size: 12px; }
@@ -141,6 +225,15 @@ export function renderHtml(result: QaRunResult): string {
     .network h4 { margin: 0; padding: 10px 12px; background: #f8fafc; font-size: 14px; }
     .network .counts { padding: 8px 12px; color: #334155; font-size: 13px; }
     .network.failed h4 { color: #b91c1c; }
+    .diagnostics { margin: 12px 0; border: 1px solid #fecaca; border-radius: 8px; overflow: hidden; background: #fff7ed; }
+    .diagnostics h4 { margin: 0; padding: 10px 12px; background: #ffedd5; color: #9a3412; font-size: 14px; }
+    .diagnostics dl { display: grid; grid-template-columns: 120px 1fr; gap: 6px 12px; margin: 0; padding: 10px 12px; font-size: 13px; }
+    .diagnostics dt { color: #64748b; }
+    .diagnostics dd { margin: 0; color: #334155; word-break: break-word; }
+    .locator-summary { margin: 12px 0; padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; color: #334155; font-size: 13px; }
+    .locator-summary strong { display: block; margin-bottom: 4px; }
+    .locator-summary span { display: inline-block; margin: 3px 8px 3px 0; }
+    .locator-summary .warning { color: #b45309; }
     ol { padding-left: 22px; color: #334155; }
     li { margin: 4px 0; }
     .artifacts a { display: inline-block; margin-right: 10px; color: #2563eb; }
@@ -160,9 +253,16 @@ export function renderHtml(result: QaRunResult): string {
     <section class="paths">
       <a href="report.md">Markdown 报告</a>
       <a href="replay.json">Replay JSON</a>
+      <a href="run-config.json">Run Config</a>
+      <a href="semantic-cases.json">Semantic Cases</a>
+      <a href="executable-cases.json">Executable Cases</a>
+      <a href="workflow-state.json">Workflow State</a>
       <a href="replay-viewer.html">Replay Viewer</a>
       <a href="ci-summary.json">CI Summary</a>
+      ${result.preflight?.diagnostics ? `<a href="${escapeHtml(relativePath(result.paths.runDir, result.preflight.diagnostics))}">Preflight</a>` : ""}
     </section>
+    ${decisionHtml}
+    ${preflightHtml}
     ${caseRows}
   </main>
 </body>
@@ -314,6 +414,7 @@ export function renderReplayViewer(result: QaRunResult, replay: QaReplayFile): s
 }
 
 export function renderCiSummary(result: QaRunResult): Record<string, unknown> {
+  const decision = makeReleaseDecision(result);
   return {
     ok: result.ok,
     taskId: result.summary.taskId,
@@ -323,8 +424,22 @@ export function renderCiSummary(result: QaRunResult): Record<string, unknown> {
     blocked: result.summary.blocked,
     total: result.summary.total,
     risk: result.summary.risk,
+    releaseDecision: decision,
+    failureStats: summarizeDecisionFailures(result),
+    evidenceGaps: collectEvidenceGaps(result),
     reportHtml: result.paths.reportHtml,
     replay: result.paths.replay,
+    runConfig: result.paths.runConfig,
+    semanticCases: result.paths.semanticCases,
+    executableCases: result.paths.executableCases,
+    workflowState: result.paths.workflowState,
+    preflight: result.preflight
+      ? {
+        status: result.preflight.status,
+        diagnostics: result.preflight.diagnostics,
+        failedChecks: result.preflight.checks.filter((check) => check.status === "failed")
+      }
+      : undefined,
     failures: result.cases
       .filter((testCase) => testCase.status !== "passed")
       .map((testCase) => ({
@@ -332,10 +447,152 @@ export function renderCiSummary(result: QaRunResult): Record<string, unknown> {
         title: testCase.title,
         status: testCase.status,
         failureCategory: testCase.failureCategory,
+        decisionCategory: mapDecisionFailureCategory(testCase.failureCategory, testCase.status),
         error: testCase.error,
+        diagnosticsSummary: testCase.artifacts.diagnosticsSummary,
+        locatorWarnings: collectLocatorWarnings(testCase.steps),
         diagnostics: testCase.artifacts.diagnostics
       }))
   };
+}
+
+function renderDecisionSummary(
+  result: QaRunResult,
+  decision: ReturnType<typeof makeReleaseDecision>
+): string {
+  const stats = summarizeDecisionFailures(result);
+  const gaps = collectEvidenceGaps(result);
+  const statsHtml = stats.length
+    ? `<ul>${stats.map((stat) => `<li>${escapeHtml(stat.category)}：${stat.count}</li>`).join("")}</ul>`
+    : "<p>无失败或阻塞用例</p>";
+  const gapsHtml = gaps.length
+    ? `<ul>${gaps.map((gap) => `<li>${escapeHtml(gap)}</li>`).join("")}</ul>`
+    : "<p>无明显证据缺口</p>";
+  return `
+    <section class="decision ${decision.level}">
+      <h2>发布决策</h2>
+      <span class="label">${escapeHtml(decision.label)}</span>
+      <p>${escapeHtml(decision.reason)}</p>
+      <div class="decision-grid">
+        <div>
+          <strong>失败聚合</strong>
+          ${statsHtml}
+        </div>
+        <div>
+          <strong>证据缺口</strong>
+          ${gapsHtml}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function makeReleaseDecision(result: QaRunResult): {
+  level: "pass" | "review" | "block";
+  label: string;
+  reason: string;
+} {
+  if (result.summary.blocked > 0) {
+    return {
+      level: "block",
+      label: "不建议发布",
+      reason: `存在 ${result.summary.blocked} 个阻塞用例，需先确认环境、权限、数据或预检问题。`
+    };
+  }
+  if (result.summary.failed > 0) {
+    return {
+      level: "block",
+      label: "不建议发布",
+      reason: `存在 ${result.summary.failed} 个失败用例，需先完成问题分类和修复确认。`
+    };
+  }
+  const gaps = collectEvidenceGaps(result);
+  if (gaps.length > 0) {
+    return {
+      level: "review",
+      label: "可发布但需人工复核",
+      reason: "用例通过，但报告存在证据缺口，建议人工确认关键链路。"
+    };
+  }
+  return {
+    level: "pass",
+    label: "可发布",
+    reason: "所有用例通过，且关键证据完整。"
+  };
+}
+
+function summarizeDecisionFailures(result: QaRunResult): Array<{ category: QaDecisionFailureCategory; count: number }> {
+  const counts = new Map<QaDecisionFailureCategory, number>();
+  for (const testCase of result.cases) {
+    if (testCase.status === "passed") continue;
+    const category = mapDecisionFailureCategory(testCase.failureCategory, testCase.status);
+    counts.set(category, (counts.get(category) ?? 0) + 1);
+  }
+  return Array.from(counts.entries()).map(([category, count]) => ({ category, count }));
+}
+
+function mapDecisionFailureCategory(
+  category: QaFailureCategory,
+  status: QaRunResult["cases"][number]["status"]
+): QaDecisionFailureCategory {
+  if (status === "blocked") return "environment_blocked";
+  switch (category) {
+    case "selector_failed":
+      return "locator_flaky";
+    case "assertion_failed":
+      return "frontend_bug";
+    case "console_error":
+      return "frontend_bug";
+    case "network_error":
+      return "backend_or_data";
+    case "test_data_error":
+    case "auth_error":
+    case "environment_error":
+      return "environment_blocked";
+    case "execution_error":
+      return "test_case_invalid";
+    default:
+      return "unknown";
+  }
+}
+
+function collectEvidenceGaps(result: QaRunResult): string[] {
+  const gaps: string[] = [];
+  for (const testCase of result.cases) {
+    if (testCase.status === "passed") continue;
+    const summary = testCase.artifacts.diagnosticsSummary;
+    if (!summary) {
+      gaps.push(`${testCase.id}: 缺少诊断摘要`);
+      continue;
+    }
+    if (!summary.evidence.screenshot) gaps.push(`${testCase.id}: 缺少截图证据`);
+    if (!summary.evidence.pageModel) gaps.push(`${testCase.id}: 缺少 PageModel 证据`);
+    if (!summary.evidence.console) gaps.push(`${testCase.id}: 缺少 Console 证据`);
+    if (!summary.evidence.network) gaps.push(`${testCase.id}: 缺少 Network 证据`);
+  }
+  return Array.from(new Set(gaps));
+}
+
+function renderPreflight(result: QaRunResult): string {
+  const preflight = result.preflight;
+  if (!preflight) return "";
+  const rows = preflight.checks.map((check) => `
+    <tr>
+      <td>${escapeHtml(check.status)}</td>
+      <td>${escapeHtml(check.name)}</td>
+      <td>${escapeHtml(check.message)}</td>
+    </tr>
+  `).join("");
+  return `
+    <section class="preflight ${preflight.status}">
+      <h2>执行前预检</h2>
+      <p>状态：${escapeHtml(preflight.status)} · 耗时：${preflight.elapsedMs}ms</p>
+      <table>
+        <thead><tr><th>状态</th><th>检查项</th><th>说明</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </section>
+  `;
 }
 
 function statusLabel(status: string): string {
@@ -349,7 +606,13 @@ function describeStep(step: Record<string, unknown>): string {
   const target = step.text ?? step.query ?? step.placeholder ?? step.ariaLabel ?? step.selector ?? step.url;
   const value = step.value ? `，输入 ${String(step.value)}` : "";
   const contains = step.contains ? `，断言 ${String(step.contains)}` : "";
-  return `${action}${target ? `：${String(target)}` : ""}${value}${contains}`;
+  const locator = isRecord(step._qaLocator) && typeof step._qaLocator.strategy === "string"
+    ? `，Locator ${step._qaLocator.strategy}`
+    : "";
+  const replay = isRecord(step._qaReplay) && step._qaReplay.mode === "smart"
+    ? "，Smart Replay"
+    : "";
+  return `${action}${target ? `：${String(target)}` : ""}${value}${contains}${locator}${replay}`;
 }
 
 function renderScreenshot(base: string, path: string | undefined): string {
@@ -383,6 +646,70 @@ function renderNetworkSummary(summary: QaRunResult["cases"][number]["artifacts"]
   `;
 }
 
+function renderDiagnosticsSummary(summary: QaRunResult["cases"][number]["artifacts"]["diagnosticsSummary"]): string {
+  if (!summary) return "";
+  const failedStep = summary.failedStep
+    ? `#${summary.failedStep.index + 1} ${summary.failedStep.action ?? ""}`
+    : "未定位到具体步骤";
+  const page = summary.currentPage?.url ?? summary.currentPage?.title ?? "未获取";
+  const locatorWarnings = summary.locator?.warnings.length
+    ? summary.locator.warnings.join("；")
+    : "无";
+  return `
+    <section class="diagnostics">
+      <h4>诊断摘要</h4>
+      <dl>
+        <dt>分类</dt><dd>${escapeHtml(summary.category)}</dd>
+        <dt>原因</dt><dd>${escapeHtml(summary.message)}</dd>
+        <dt>失败步骤</dt><dd>${escapeHtml(failedStep)}</dd>
+        <dt>当前页面</dt><dd>${escapeHtml(page)}</dd>
+        <dt>Locator</dt><dd>${escapeHtml(summary.locator?.strategy ?? "none")}</dd>
+        <dt>Locator 风险</dt><dd>${escapeHtml(locatorWarnings)}</dd>
+        <dt>证据</dt><dd>${escapeHtml(evidenceLabel(summary.evidence))}</dd>
+      </dl>
+    </section>
+  `;
+}
+
+function renderLocatorSummary(steps: QaRunResult["cases"][number]["steps"]): string {
+  const metadata = steps
+    .map((step, index) => ({ index, locator: step._qaLocator }))
+    .filter((item): item is { index: number; locator: NonNullable<typeof item.locator> } => Boolean(item.locator));
+  if (!metadata.length) return "";
+  const strategies = new Map<string, number>();
+  const warnings = collectLocatorWarnings(steps);
+  for (const item of metadata) {
+    strategies.set(item.locator.strategy, (strategies.get(item.locator.strategy) ?? 0) + 1);
+  }
+  const strategyText = Array.from(strategies.entries())
+    .map(([strategy, count]) => `${strategy} x${count}`)
+    .join(" · ");
+  return `
+    <section class="locator-summary">
+      <strong>Locator 策略</strong>
+      <span>${escapeHtml(strategyText)}</span>
+      ${warnings.length ? `<span class="warning">${escapeHtml(warnings.join("；"))}</span>` : ""}
+    </section>
+  `;
+}
+
+function collectLocatorWarnings(steps: QaRunResult["cases"][number]["steps"]): string[] {
+  const warnings = steps.flatMap((step, index) => {
+    const locatorWarnings = step._qaLocator?.warnings ?? [];
+    return locatorWarnings.map((warning) => `#${index + 1} ${warning}`);
+  });
+  return Array.from(new Set(warnings));
+}
+
+function evidenceLabel(evidence: QaDiagnosticSummary["evidence"]): string {
+  return [
+    evidence.screenshot ? "screenshot" : "",
+    evidence.pageModel ? "pageModel" : "",
+    evidence.console ? "console" : "",
+    evidence.network ? "network" : ""
+  ].filter(Boolean).join(", ") || "none";
+}
+
 function escapeHtml(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -391,4 +718,8 @@ function relativePath(base: string, target: string | undefined): string {
   if (!target) return "";
   const marker = `${base}/`;
   return target.startsWith(marker) ? target.slice(marker.length) : target;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

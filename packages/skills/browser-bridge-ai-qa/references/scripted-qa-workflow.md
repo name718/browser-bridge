@@ -2,6 +2,8 @@
 
 Use this workflow when the user asks for branch-based testing, PRD acceptance testing, regression testing, or agent self-testing.
 
+Before executing a staged workflow, read `workflow-state-format.md`. Create or update `.browser-bridge/runs/{taskId}/workflow-state.json` and use it as the source of truth for phase gates.
+
 ## Inputs
 
 Collect or infer:
@@ -12,6 +14,25 @@ Collect or infer:
 - `prdText` or PRD link when available.
 - `focus`: optional business areas or pages to prioritize.
 - Auth/session assumptions.
+
+## State And Gate Discipline
+
+Every phase must update `workflow-state.json`:
+
+- Set the phase to `in_progress` before producing work.
+- Set it to `awaiting_confirmation` when output is ready for user review.
+- Set the corresponding confirmation phase to `confirmed` only after explicit user confirmation.
+- Set a phase to `blocked` when required inputs, auth, environment, or Cooper access are missing.
+
+Do not proceed when a required confirmation is absent:
+
+- Impact analysis requires confirmed requirement.
+- Semantic cases require confirmed impact.
+- Executable cases require confirmed semantic cases.
+- Browser execution requires confirmed executable cases and explicit browser authorization scope.
+- Final report requires confirmed run result.
+
+When resuming a workflow, read `workflow-state.json` first and continue from `currentPhase`.
 
 ## Phase 1: Source And Diff Analysis
 

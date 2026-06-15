@@ -9,15 +9,23 @@ import { renderCiSummary, renderHtml, renderMarkdown, renderReplayViewer } from 
 import {
   type QaCaseInput,
   type QaCaseResult,
+  type QaConsoleSummary,
+  type QaDiagnosticSummary,
   type QaDiagnosticsPolicy,
   type QaEvidenceKind,
+  type QaExecutableStep,
   type QaFailureCategory,
+  type QaLocatorMetadata,
+  type QaNetworkSummary,
   type QaObservePolicy,
   type QaPlanInput,
+  type QaPreflightPolicy,
+  type QaPreflightResult,
   type QaReplayFile,
   type QaRunInput,
   type QaRunResult,
   type QaSummary,
+  type QaSemanticCase,
   type RecordedStep
 } from "./types.js";
 
@@ -99,6 +107,14 @@ const diagnosticsSchema = z.object({
   slowRequestThresholdMs: z.number().int().positive().optional()
 }).optional();
 
+const preflightSchema = z.object({
+  enabled: z.boolean().optional(),
+  requireConnected: z.boolean().optional(),
+  requireActiveTab: z.boolean().optional(),
+  checkBaseUrlReachable: z.boolean().optional(),
+  failOnExistingConsoleError: z.boolean().optional()
+}).optional();
+
 const caseSchema = z.object({
   id: z.string().optional(),
   title: z.string().min(1),
@@ -109,11 +125,25 @@ const caseSchema = z.object({
   diagnostics: diagnosticsSchema
 });
 
+const semanticCaseSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  priority: z.enum(["P0", "P1", "P2"]).optional(),
+  type: z.enum(["main", "negative", "edge", "regression", "exploratory", "recorded"]).optional(),
+  route: z.string().optional(),
+  riskSource: z.array(z.string()).optional(),
+  preconditions: z.array(z.string()).optional(),
+  steps: z.array(z.string()).min(1),
+  expected: z.array(z.string()).optional(),
+  trace: z.record(z.unknown()).optional()
+}).passthrough();
+
 const qaRunSchema = z.object({
   taskId: z.string().optional(),
   title: z.string().optional(),
   baseUrl: z.string().optional(),
   outputDir: z.string().optional(),
+  semanticCases: z.array(semanticCaseSchema).optional(),
   prdPath: z.string().optional(),
   prdText: z.string().optional(),
   branch: z.string().optional(),
@@ -131,6 +161,7 @@ const qaRunSchema = z.object({
   captureNetwork: z.boolean().optional(),
   observe: observeSchema,
   diagnostics: diagnosticsSchema,
+  preflight: preflightSchema,
   recordReplay: z.boolean().optional(),
   /** 最大并行数（默认 1 = 顺序执行，最大 5） */
   maxParallel: z.number().int().min(1).max(5).optional(),
@@ -197,6 +228,7 @@ export function createQaTools(bridge: BrowserToolBridge): BrowserToolDefinition[
         title: { type: "string" },
         baseUrl: { type: "string" },
         outputDir: { type: "string" },
+        semanticCases: { type: "array", description: "人审语义用例，和可执行 cases 分离保存到 semantic-cases.json" },
         cases: { type: "array" },
         steps: { type: "array" },
         stopOnError: { type: "boolean" },
@@ -209,6 +241,7 @@ export function createQaTools(bridge: BrowserToolBridge): BrowserToolDefinition[
         captureNetwork: { type: "boolean" },
         observe: { type: "object", description: "脚本化观察策略：before/onFailure/final 可包含 screenshot、console、network、pageModel" },
         diagnostics: { type: "object", description: "失败诊断策略：控制 console/network 是否导致用例失败及慢请求阈值" },
+        preflight: { type: "object", description: "执行前预检策略：检查 Bridge 连接、活动标签页、baseUrl 可达性和既有 console 错误" },
         recordReplay: { type: "boolean" },
         maxParallel: { type: "number", description: "最大并行数（1-5，默认 1 顺序执行）" },
         summaryOnly: { type: "boolean", description: "只返回摘要，不返回详细步骤（减少响应体积）" }
@@ -229,7 +262,7 @@ export function createQaTools(bridge: BrowserToolBridge): BrowserToolDefinition[
     },
     {
       name: "browser_qa_replay",
-      description: "读取 browser_qa_run 生成的 replay.json 并重新执行。阶段 2 MVP 支持 strict 回放；smart 模式会记录在结果中，后续阶段增强语义自愈。",
+      description: "读取 browser_qa_run 生成的 replay.json 并重新执行。strict 按原步骤回放；smart 会为交互步骤补充有限 locator fallback 和自愈审计元数据。",
       inputSchema: schema({
         replayPath: { type: "string" },
         caseId: { type: "string" },
@@ -273,8 +306,15 @@ async function runQa(bridge: BrowserToolBridge, input: QaRunInput): Promise<QaRu
   const cases = normalizeCases(input);
   const maxParallel = input.maxParallel ?? 1;
   const results: QaCaseResult[] = [];
+  const preflight = await runPreflight(bridge, input, diagnosticsDir);
 
-  if (maxParallel > 1 && cases.length > 1) {
+  if (preflight.status === "failed") {
+    for (const testCase of cases) {
+      const result = makePreflightBlockedCase(testCase, preflight);
+      results.push(result);
+      await writeJson(join(casesDir, `${result.id}.json`), result);
+    }
+  } else if (maxParallel > 1 && cases.length > 1) {
     // 并行执行独立用例（每个用例最多 maxParallel 个并行）
     const executing = new Set<Promise<void>>();
 
@@ -344,6 +384,10 @@ async function runQa(bridge: BrowserToolBridge, input: QaRunInput): Promise<QaRu
     replayViewer: join(runDir, "replay-viewer.html"),
     ciSummary: join(runDir, "ci-summary.json"),
     replay: join(runDir, "replay.json"),
+    runConfig: join(runDir, "run-config.json"),
+    semanticCases: join(runDir, "semantic-cases.json"),
+    executableCases: join(runDir, "executable-cases.json"),
+    workflowState: join(runDir, "workflow-state.json"),
     casesDir,
     screenshotsDir,
     logsDir,
@@ -355,9 +399,14 @@ async function runQa(bridge: BrowserToolBridge, input: QaRunInput): Promise<QaRu
     ok: summary.failed === 0 && summary.blocked === 0,
     summary,
     cases: results,
+    preflight,
     paths
   };
 
+  await writeJson(paths.runConfig, makeRunConfig(input, taskId, title, startedAt));
+  await writeJson(paths.semanticCases, makeSemanticCases(input, cases));
+  await writeJson(paths.executableCases, makeExecutableCases(input, cases));
+  await writeJson(paths.workflowState, makeRunWorkflowState(input, taskId, title, startedAt, finishedAt, paths, summary));
   await writeJson(paths.summary, runResult);
   await writeJson(paths.replay, replay);
   await writeText(paths.reportMarkdown, renderMarkdown(runResult));
@@ -496,17 +545,19 @@ async function runQaCase(
       message: `Network 检查失败：failed ${networkSummary.failedCount}，slow ${networkSummary.slowCount}`
     }
     : undefined;
-  const stepError = runResult?.results.find((result) => !result.ok)?.error;
+  const failedStep = runResult?.results.find((result) => !result.ok);
+  const stepError = failedStep?.error;
   const finalError = error ?? consoleError ?? networkError ?? stepError;
   const failureCategory = classifyFailure(finalError, { consoleSummary, networkSummary, runResult });
   const status = error ? "blocked" : (runResult?.ok === false || consoleError || networkError ? "failed" : "passed");
-  const diagnosticsPath = executionFailed || consoleError || networkError
-    ? await writeJson(join(options.diagnosticsDir, `${testCase.id}.json`), {
-      caseId: testCase.id,
+  const diagnosticsSummary = finalError
+    ? await buildDiagnosticsSummary(bridge, {
+      testCase,
+      steps,
       status,
       failureCategory,
       error: finalError,
-      failedStep: runResult?.results.find((result) => !result.ok),
+      failedStep,
       artifacts: {
         beforePageModel,
         finalPageModel,
@@ -515,7 +566,42 @@ async function runQaCase(
         failureScreenshot: failureScreenshot?.path,
         console: consolePath,
         network: networkPath
-      }
+      },
+      consoleSummary,
+      networkSummary
+    })
+    : undefined;
+  const diagnosticsPath = diagnosticsSummary
+    ? await writeJson(join(options.diagnosticsDir, `${testCase.id}.json`), {
+      caseId: testCase.id,
+      title: testCase.title,
+      priority: testCase.priority,
+      status,
+      failureCategory,
+      error: finalError,
+      summary: diagnosticsSummary,
+      failedStep,
+      failedStepInput: typeof failedStep?.index === "number" ? steps[failedStep.index] : undefined,
+      stepTimeline: runResult?.results.map((result) => ({
+        index: result.index,
+        action: result.action,
+        description: result.description,
+        ok: result.ok,
+        elapsedMs: result.elapsedMs,
+        tabId: result.tabId,
+        error: result.error
+      })),
+      artifacts: {
+        beforePageModel,
+        finalPageModel,
+        failurePageModel,
+        screenshot: screenshot?.path,
+        failureScreenshot: failureScreenshot?.path,
+        console: consolePath,
+        network: networkPath
+      },
+      consoleSummary,
+      networkSummary
     })
     : undefined;
 
@@ -540,7 +626,8 @@ async function runQaCase(
       consoleSummary,
       network: networkPath,
       networkSummary,
-      diagnostics: diagnosticsPath
+      diagnostics: diagnosticsPath,
+      diagnosticsSummary
     }
   };
 }
@@ -548,7 +635,7 @@ async function runQaCase(
 function summarizeConsole(
   consoleResult: unknown,
   options: { failOnConsoleError?: boolean; failOnUncaughtException?: boolean }
-): QaCaseResult["artifacts"]["consoleSummary"] {
+): QaConsoleSummary {
   const logs = isRecord(consoleResult) && Array.isArray(consoleResult.logs)
     ? consoleResult.logs.filter(isRecord)
     : [];
@@ -573,6 +660,127 @@ function summarizeConsole(
     exceptionCount,
     failed,
     entries
+  };
+}
+
+async function buildDiagnosticsSummary(
+  bridge: BrowserToolBridge,
+  input: {
+    testCase: NormalizedQaCase;
+    steps: QaExecutableStep[];
+    status: QaCaseResult["status"];
+    failureCategory: QaFailureCategory;
+    error: NonNullable<QaCaseResult["error"]>;
+    failedStep?: BrowserRunStepsResult["results"][number];
+    artifacts: {
+      beforePageModel?: string;
+      finalPageModel?: string;
+      failurePageModel?: string;
+      screenshot?: string;
+      failureScreenshot?: string;
+      console?: string;
+      network?: string;
+    };
+    consoleSummary?: QaConsoleSummary;
+    networkSummary?: QaNetworkSummary;
+  }
+): Promise<QaDiagnosticSummary> {
+  const failedStepInput = typeof input.failedStep?.index === "number"
+    ? input.steps[input.failedStep.index]
+    : undefined;
+  const currentPage = await getCurrentPageContext(bridge);
+  return {
+    category: input.failureCategory,
+    message: input.error.message,
+    failedStep: input.failedStep
+      ? {
+        index: input.failedStep.index,
+        action: input.failedStep.action,
+        description: input.failedStep.description,
+        error: input.failedStep.error
+      }
+      : undefined,
+    currentPage,
+    locator: failedStepInput ? failedStepInput._qaLocator ?? analyzeLocator(failedStepInput) : undefined,
+    evidence: {
+      screenshot: Boolean(input.artifacts.failureScreenshot || input.artifacts.screenshot),
+      pageModel: Boolean(input.artifacts.failurePageModel || input.artifacts.finalPageModel || input.artifacts.beforePageModel),
+      console: Boolean(input.artifacts.console || input.consoleSummary),
+      network: Boolean(input.artifacts.network || input.networkSummary)
+    }
+  };
+}
+
+async function getCurrentPageContext(
+  bridge: BrowserToolBridge
+): Promise<QaDiagnosticSummary["currentPage"] | undefined> {
+  try {
+    const tab = await bridge.call("browser_get_active_tab", {}, { timeoutMs: 2_000 });
+    if (!isRecord(tab)) return undefined;
+    return {
+      tabId: typeof tab.id === "number" ? tab.id : undefined,
+      url: typeof tab.url === "string" ? tab.url : undefined,
+      title: typeof tab.title === "string" ? tab.title : undefined
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function analyzeLocator(step: BrowserStep): QaLocatorMetadata {
+  const normalized = locatorFields(step);
+  const warnings: string[] = [];
+  let strategy = "none";
+
+  if (typeof normalized.testId === "string") {
+    strategy = "data-testid";
+  } else if (typeof normalized.role === "string" && typeof normalized.text === "string") {
+    strategy = "role+text";
+  } else if (typeof normalized.label === "string" || typeof normalized.ariaLabel === "string") {
+    strategy = "label";
+  } else if (typeof normalized.placeholder === "string") {
+    strategy = "placeholder";
+  } else if (typeof normalized.text === "string" && typeof normalized.nearText === "string") {
+    strategy = "text+nearText";
+  } else if (typeof normalized.text === "string" || typeof normalized.query === "string") {
+    strategy = "text";
+    warnings.push("仅使用文本定位，页面文案变化时可能不稳定");
+  } else if (typeof normalized.selector === "string") {
+    strategy = "css-selector";
+    warnings.push("使用 CSS selector 兜底，结构变化时可能不稳定");
+  } else {
+    warnings.push("缺少可解释 locator，建议补充 testId、role、label 或 placeholder");
+  }
+
+  if (typeof normalized.selector === "string" && normalized.selector.startsWith("data-testid=")) {
+    strategy = "data-testid";
+  }
+  if (strategy === "css-selector" && typeof normalized.selector === "string" && /:nth-child|\s>|\.[a-zA-Z0-9_-]+/.test(normalized.selector)) {
+    warnings.push("selector 可能依赖 DOM 结构或样式类，建议补充语义 locator");
+  }
+
+  return {
+    strategy,
+    warnings,
+    normalized
+  };
+}
+
+function locatorFields(step: BrowserStep): Record<string, unknown> {
+  const locator = isRecord(step.locator) ? step.locator : {};
+  const target = isRecord(step.target) ? step.target : {};
+  return {
+    testId: step.testId ?? stringField(locator, "testId") ?? stringField(target, "testId"),
+    query: step.query ?? stringField(locator, "query") ?? stringField(locator, "label") ?? stringField(target, "query"),
+    elementId: step.elementId ?? stringField(locator, "elementId") ?? stringField(target, "elementId"),
+    selector: step.selector ?? stringField(locator, "selector") ?? stringField(target, "selector"),
+    text: step.text ?? stringField(locator, "text") ?? stringField(locator, "label") ?? stringField(target, "text"),
+    role: step.role ?? stringField(locator, "role") ?? stringField(target, "role"),
+    ariaLabel: step.ariaLabel ?? stringField(locator, "ariaLabel") ?? stringField(target, "ariaLabel"),
+    placeholder: step.placeholder ?? stringField(locator, "placeholder") ?? stringField(target, "placeholder"),
+    label: step.label ?? stringField(locator, "label") ?? stringField(target, "label"),
+    href: step.href ?? stringField(locator, "href") ?? stringField(target, "href"),
+    nearText: step.nearText ?? stringField(locator, "nearText") ?? stringField(target, "nearText")
   };
 }
 
@@ -652,13 +860,13 @@ function shouldCaptureEvidence(
   return hasEvidence(observe.final, kind) || (executionFailed && hasEvidence(observe.onFailure, kind));
 }
 
-function normalizeStepLocators(step: BrowserStep): BrowserStep {
+function normalizeStepLocators(step: BrowserStep): QaExecutableStep {
   const locator = isRecord(step.locator) ? step.locator : undefined;
   const target = isRecord(step.target) ? step.target : {};
   const testId = stringField(locator, "testId") ?? step.testId ?? stringField(target, "testId");
   const selector = stringField(locator, "selector") ?? step.selector ?? stringField(target, "selector")
     ?? (testId ? `data-testid=${testId}` : undefined);
-  return {
+  const normalized: QaExecutableStep = {
     ...step,
     target: {
       ...target,
@@ -678,6 +886,14 @@ function normalizeStepLocators(step: BrowserStep): BrowserStep {
     visibleOnly: step.visibleOnly ?? booleanField(locator, "visibleOnly"),
     viewportOnly: step.viewportOnly ?? booleanField(locator, "viewportOnly")
   };
+  if (isLocatorAwareAction(normalized.action)) {
+    normalized._qaLocator = analyzeLocator(normalized);
+  }
+  return normalized;
+}
+
+function isLocatorAwareAction(action: BrowserStep["action"]): boolean {
+  return ["click", "hover", "type", "selectOption", "fillForm", "clear", "waitFor", "assertText"].includes(action);
 }
 
 function stringField(value: Record<string, unknown> | undefined, key: string): string | undefined {
@@ -693,7 +909,7 @@ function booleanField(value: Record<string, unknown> | undefined, key: string): 
 function summarizeNetwork(
   networkResult: unknown,
   options: Required<QaDiagnosticsPolicy>
-): QaCaseResult["artifacts"]["networkSummary"] {
+): QaNetworkSummary {
   const rawEntries = extractNetworkEntries(networkResult);
   const entries = rawEntries.map((entry) => ({
     url: typeof entry.url === "string" ? entry.url : typeof entry.requestUrl === "string" ? entry.requestUrl : undefined,
@@ -804,7 +1020,7 @@ async function replayQa(
     .filter((testCase) => !input.caseId || testCase.id === input.caseId)
     .map((testCase) => ({
       id: testCase.id,
-      title: `${testCase.title} (replay${input.mode === "smart" ? ", smart pending" : ""})`,
+      title: `${testCase.title} (replay${input.mode === "smart" ? ", smart" : ""})`,
       priority: testCase.priority,
       expected: testCase.expected,
       steps: input.mode === "smart" ? makeSmartReplaySteps(testCase.steps) : testCase.steps
@@ -853,10 +1069,13 @@ async function qaFromRecording(
   });
 
   if (input.run === true) {
+    const taskId = safeName(input.taskId ?? testCase.id ?? "recorded-flow");
+    const semanticCases = makeRecordedSemanticCases(testCase, recorded.steps ?? []);
     return runQa(bridge, {
-      taskId: input.taskId ?? testCase.id,
+      taskId,
       title: input.title ?? testCase.title,
       outputDir: input.outputDir,
+      semanticCases,
       cases: [testCase],
       screenshotOnError: true,
       recordReplay: true
@@ -866,6 +1085,14 @@ async function qaFromRecording(
   const taskId = safeName(input.taskId ?? testCase.id ?? "recorded-flow");
   const runDir = resolveRunDir(input.outputDir, taskId);
   await ensureDir(runDir);
+  const semanticCases = makeRecordedSemanticCases(testCase, recorded.steps ?? []);
+  const executableCases = makeExecutableCases({
+    taskId,
+    title: input.title ?? testCase.title,
+    semanticCases,
+    cases: [testCase]
+  }, normalizeCases({ taskId, title: input.title ?? testCase.title, cases: [testCase] }));
+  const recordingAnalysis = makeRecordingAnalysis(recorded.steps ?? [], testCase);
   const replay: QaReplayFile = {
     version: "1",
     taskId,
@@ -880,8 +1107,22 @@ async function qaFromRecording(
     }]
   };
   const casePath = await writeJson(join(runDir, "recorded-case.json"), testCase);
+  const semanticCasesPath = await writeJson(join(runDir, "semantic-cases.json"), semanticCases);
+  const executableCasesPath = await writeJson(join(runDir, "executable-cases.json"), executableCases);
+  const recordingAnalysisPath = await writeJson(join(runDir, "recording-analysis.json"), recordingAnalysis);
   const replayPath = await writeJson(join(runDir, "replay.json"), replay);
-  return { ok: true, recordedCount: recorded.count ?? recorded.steps?.length ?? 0, case: testCase, casePath, replayPath };
+  return {
+    ok: true,
+    recordedCount: recorded.count ?? recorded.steps?.length ?? 0,
+    case: testCase,
+    casePath,
+    semanticCases,
+    semanticCasesPath,
+    executableCasesPath,
+    recordingAnalysis,
+    recordingAnalysisPath,
+    replayPath
+  };
 }
 
 function normalizeCases(input: QaRunInput): NormalizedQaCase[] {
@@ -906,6 +1147,168 @@ function normalizeCases(input: QaRunInput): NormalizedQaCase[] {
     observe: testCase.observe,
     diagnostics: testCase.diagnostics
   }));
+}
+
+async function runPreflight(
+  bridge: BrowserToolBridge,
+  input: QaRunInput,
+  diagnosticsDir: string
+): Promise<QaPreflightResult> {
+  const started = new Date();
+  const policy = mergePreflightPolicy(input.preflight);
+  const checks: QaPreflightResult["checks"] = [];
+
+  if (!policy.enabled) {
+    return {
+      status: "skipped",
+      startedAt: started.toISOString(),
+      finishedAt: started.toISOString(),
+      elapsedMs: 0,
+      checks: [{
+        name: "preflight_enabled",
+        status: "skipped",
+        message: "预检未启用"
+      }]
+    };
+  }
+
+  if (policy.requireConnected) {
+    try {
+      const status = await bridge.getStatus();
+      checks.push({
+        name: "bridge_connected",
+        status: status.connected ? "passed" : "failed",
+        message: status.connected ? "Browser Bridge 已连接" : "Browser Bridge 未连接",
+        details: status
+      });
+    } catch (caught) {
+      checks.push({
+        name: "bridge_connected",
+        status: "failed",
+        message: normalizeError(caught).message
+      });
+    }
+  }
+
+  if (policy.requireActiveTab) {
+    try {
+      const tab = await bridge.call("browser_get_active_tab", {}, { timeoutMs: 3_000 });
+      const hasUrl = isRecord(tab) && typeof tab.url === "string" && tab.url.length > 0;
+      checks.push({
+        name: "active_tab",
+        status: hasUrl ? "passed" : "failed",
+        message: hasUrl ? `当前活动标签页：${tab.url}` : "未找到可用活动标签页",
+        details: tab
+      });
+    } catch (caught) {
+      checks.push({
+        name: "active_tab",
+        status: "failed",
+        message: normalizeError(caught).message
+      });
+    }
+  }
+
+  if (policy.checkBaseUrlReachable) {
+    if (!input.baseUrl) {
+      checks.push({
+        name: "base_url_reachable",
+        status: "failed",
+        message: "启用了 baseUrl 可达性检查，但未提供 baseUrl"
+      });
+    } else {
+      try {
+        const tab = await bridge.call("browser_open_url", {
+          url: input.baseUrl,
+          waitUntil: "ready",
+          timeoutMs: input.timeoutMs ?? 15_000
+        }, { timeoutMs: input.timeoutMs ?? 15_000 });
+        checks.push({
+          name: "base_url_reachable",
+          status: "passed",
+          message: `baseUrl 可访问：${input.baseUrl}`,
+          details: tab
+        });
+      } catch (caught) {
+        checks.push({
+          name: "base_url_reachable",
+          status: "failed",
+          message: normalizeError(caught).message
+        });
+      }
+    }
+  }
+
+  if (policy.failOnExistingConsoleError) {
+    try {
+      const consoleResult = await bridge.call("browser_console_monitor", { durationMs: 500 }, { timeoutMs: 2_500 });
+      const summary = summarizeConsole(consoleResult, {
+        failOnConsoleError: true,
+        failOnUncaughtException: true
+      });
+      checks.push({
+        name: "existing_console_errors",
+        status: summary.failed ? "failed" : "passed",
+        message: summary.failed
+          ? `页面已有 console 错误：error ${summary.errorCount}，exception ${summary.exceptionCount}`
+          : "未检测到既有 console error/exception",
+        details: summary
+      });
+    } catch (caught) {
+      checks.push({
+        name: "existing_console_errors",
+        status: "failed",
+        message: normalizeError(caught).message
+      });
+    }
+  }
+
+  const finished = new Date();
+  const result: QaPreflightResult = {
+    status: checks.some((check) => check.status === "failed") ? "failed" : "passed",
+    startedAt: started.toISOString(),
+    finishedAt: finished.toISOString(),
+    elapsedMs: finished.getTime() - started.getTime(),
+    checks
+  };
+  result.diagnostics = await writeJson(join(diagnosticsDir, "preflight.json"), result);
+  return result;
+}
+
+function mergePreflightPolicy(policy: QaPreflightPolicy | undefined): Required<QaPreflightPolicy> {
+  return {
+    enabled: policy?.enabled ?? true,
+    requireConnected: policy?.requireConnected ?? true,
+    requireActiveTab: policy?.requireActiveTab ?? false,
+    checkBaseUrlReachable: policy?.checkBaseUrlReachable ?? false,
+    failOnExistingConsoleError: policy?.failOnExistingConsoleError ?? false
+  };
+}
+
+function makePreflightBlockedCase(
+  testCase: NormalizedQaCase,
+  preflight: QaPreflightResult
+): QaCaseResult {
+  const failedChecks = preflight.checks.filter((check) => check.status === "failed");
+  const message = failedChecks.map((check) => `${check.name}: ${check.message}`).join("；")
+    || "执行前预检失败";
+  return {
+    id: testCase.id,
+    title: testCase.title,
+    priority: testCase.priority,
+    status: "blocked",
+    elapsedMs: 0,
+    expected: testCase.expected,
+    steps: testCase.steps.map(normalizeStepLocators),
+    error: {
+      code: "PREFLIGHT_FAILED",
+      message
+    },
+    failureCategory: "environment_error",
+    artifacts: {
+      diagnostics: preflight.diagnostics
+    }
+  };
 }
 
 function makeSummary(
@@ -955,20 +1358,367 @@ function makeReplay(
   };
 }
 
+function makeRunConfig(
+  input: QaRunInput,
+  taskId: string,
+  title: string,
+  startedAt: Date
+): Record<string, unknown> {
+  return {
+    version: "1",
+    taskId,
+    title,
+    createdAt: startedAt.toISOString(),
+    baseUrl: input.baseUrl,
+    prdPath: input.prdPath,
+    branch: input.branch,
+    compareBranch: input.compareBranch,
+    focus: input.focus ?? [],
+    stopOnError: input.stopOnError,
+    delayMs: input.delayMs,
+    timeoutMs: input.timeoutMs,
+    screenshotOnError: input.screenshotOnError,
+    captureConsole: input.captureConsole,
+    failOnConsoleError: input.failOnConsoleError,
+    failOnUncaughtException: input.failOnUncaughtException,
+    captureNetwork: input.captureNetwork,
+    observe: input.observe,
+    diagnostics: input.diagnostics,
+    preflight: input.preflight,
+    recordReplay: input.recordReplay,
+    maxParallel: input.maxParallel ?? 1
+  };
+}
+
+function makeRunWorkflowState(
+  input: QaRunInput,
+  taskId: string,
+  title: string,
+  startedAt: Date,
+  finishedAt: Date,
+  paths: QaRunResult["paths"],
+  summary: QaSummary
+): Record<string, unknown> {
+  return {
+    version: "1",
+    taskId,
+    title,
+    createdAt: startedAt.toISOString(),
+    updatedAt: finishedAt.toISOString(),
+    currentPhase: "confirm_result",
+    phases: {
+      init: {
+        status: "confirmed",
+        summary: "browser_qa_run received executable cases and run configuration",
+        artifacts: {
+          runConfig: paths.runConfig
+        }
+      },
+      generate_semantic_cases: {
+        status: "confirmed",
+        summary: "semantic cases persisted for review traceability",
+        artifacts: {
+          semanticCases: paths.semanticCases
+        }
+      },
+      generate_executable_cases: {
+        status: "confirmed",
+        summary: "executable cases persisted for replay and review",
+        artifacts: {
+          executableCases: paths.executableCases
+        }
+      },
+      run: {
+        status: "confirmed",
+        summary: `Executed ${summary.total} cases: passed ${summary.passed}, failed ${summary.failed}, blocked ${summary.blocked}`,
+        artifacts: {
+          summary: paths.summary,
+          ciSummary: paths.ciSummary,
+          replay: paths.replay
+        }
+      },
+      confirm_result: {
+        status: "awaiting_confirmation",
+        summary: "User must confirm whether reruns or case adjustments are needed before final report sign-off."
+      },
+      report: {
+        status: "pending",
+        artifacts: {
+          reportHtml: paths.reportHtml,
+          reportMarkdown: paths.reportMarkdown
+        }
+      }
+    },
+    inputs: {
+      baseUrl: input.baseUrl,
+      branch: input.branch,
+      compareBranch: input.compareBranch,
+      prdPath: input.prdPath,
+      focus: input.focus ?? []
+    },
+    assumptions: [],
+    blockers: summary.blocked > 0 ? ["One or more cases are blocked; inspect summary and diagnostics."] : []
+  };
+}
+
+function makeSemanticCases(input: QaRunInput, cases: NormalizedQaCase[]): QaSemanticCase[] {
+  if (input.semanticCases?.length) {
+    return input.semanticCases.map((testCase) => ({
+      ...testCase,
+      id: safeName(testCase.id)
+    }));
+  }
+  return cases.map((testCase) => ({
+    id: testCase.id,
+    title: testCase.title,
+    priority: testCase.priority,
+    type: testCase.type,
+    steps: testCase.steps.map(describeSemanticStep),
+    expected: testCase.expected,
+    trace: {
+      generatedFrom: "executable-cases"
+    }
+  }));
+}
+
+function makeExecutableCases(input: QaRunInput, cases: NormalizedQaCase[]): Array<Record<string, unknown>> {
+  return cases.map((testCase) => ({
+    id: testCase.id,
+    title: testCase.title,
+    priority: testCase.priority,
+    type: testCase.type,
+    expected: testCase.expected,
+    observe: testCase.observe ?? input.observe,
+    diagnostics: testCase.diagnostics ?? input.diagnostics,
+    trace: {
+      semanticCaseId: input.semanticCases?.find((semanticCase) => safeName(semanticCase.id) === testCase.id || semanticCase.id === testCase.id)?.id
+    },
+    steps: testCase.steps.map(normalizeStepLocators)
+  }));
+}
+
+function makeRecordedSemanticCases(testCase: QaCaseInput, recordedSteps: RecordedStep[]): QaSemanticCase[] {
+  const semanticSteps = testCase.steps
+    .filter((step) => step.action !== "screenshot")
+    .map(describeSemanticStep);
+  return [{
+    id: safeName(testCase.id ?? "recorded-flow"),
+    title: testCase.title,
+    priority: testCase.priority ?? "P1",
+    type: "recorded",
+    preconditions: inferRecordingPreconditions(recordedSteps),
+    steps: semanticSteps.length ? semanticSteps : ["回放用户录制流程"],
+    expected: testCase.expected ?? ["录制流程可以成功回放"],
+    trace: {
+      generatedFrom: "recording",
+      recordedStepCount: recordedSteps.length,
+      maskedInputCount: recordedSteps.filter(isRecordedSensitive).length
+    }
+  }];
+}
+
+function makeRecordingAnalysis(recordedSteps: RecordedStep[], testCase: QaCaseInput): Record<string, unknown> {
+  const maskedSteps = recordedSteps.filter(isRecordedSensitive);
+  const locatorStats = new Map<string, number>();
+  for (const step of recordedSteps) {
+    const strategy = recordedLocatorStrategy(step);
+    locatorStats.set(strategy, (locatorStats.get(strategy) ?? 0) + 1);
+  }
+  return {
+    version: "1",
+    recordedCount: recordedSteps.length,
+    executableStepCount: testCase.steps.length,
+    maskedInputCount: maskedSteps.length,
+    maskedInputs: maskedSteps.map((step, index) => ({
+      index,
+      action: step.action,
+      placeholder: step.placeholder,
+      ariaLabel: step.ariaLabel,
+      nearText: step.nearText,
+      reason: "sensitive-input"
+    })),
+    locatorStats: Array.from(locatorStats.entries()).map(([strategy, count]) => ({ strategy, count })),
+    locatorWarnings: recordingLocatorWarnings(recordedSteps),
+    suggestedAssertions: suggestRecordingAssertions(recordedSteps, testCase),
+    notes: [
+      "录制转用例默认不立即执行；建议人工确认语义用例和业务断言后再运行。",
+      "敏感输入已脱敏，回放前需由执行环境提供安全测试数据。"
+    ]
+  };
+}
+
+function inferRecordingPreconditions(recordedSteps: RecordedStep[]): string[] {
+  const preconditions = new Set<string>();
+  if (recordedSteps.some((step) => step.url && /^https?:\/\//.test(step.url))) {
+    preconditions.add("目标页面可访问");
+  }
+  if (recordedSteps.some(isRecordedSensitive)) {
+    preconditions.add("敏感输入需使用安全测试数据");
+  }
+  if (recordedSteps.some((step) => /login|登录|auth|权限/i.test(`${step.url ?? ""} ${step.text ?? ""} ${step.nearText ?? ""}`))) {
+    preconditions.add("用户已具备对应登录态和权限");
+  }
+  return Array.from(preconditions);
+}
+
+function isRecordedSensitive(step: RecordedStep): boolean {
+  if (step.masked) return true;
+  const fieldText = `${step.placeholder ?? ""} ${step.ariaLabel ?? ""} ${step.text ?? ""} ${step.selector ?? ""}`;
+  return /password|密码|secret|token|验证码|verification|credit.?card|信用卡|身份证|银行卡/i.test(fieldText);
+}
+
+function recordedLocatorStrategy(step: RecordedStep): string {
+  if (step.testId) return "data-testid";
+  if (step.role && (step.text || step.ariaLabel)) return "role+name";
+  if (step.ariaLabel) return "ariaLabel";
+  if (step.placeholder) return "placeholder";
+  if (step.text && step.nearText) return "text+nearText";
+  if (step.text || step.query) return "text";
+  if (step.selector || step.selectorHint) return "css-selector";
+  if (step.nearText) return "nearText";
+  return "none";
+}
+
+function recordingLocatorWarnings(recordedSteps: RecordedStep[]): string[] {
+  const warnings: string[] = [];
+  recordedSteps.forEach((step, index) => {
+    const strategy = recordedLocatorStrategy(step);
+    if (strategy === "css-selector") {
+      warnings.push(`#${index + 1}: 使用 CSS selector 兜底，建议补充 testId、role、label 或 placeholder`);
+    }
+    if (strategy === "text") {
+      warnings.push(`#${index + 1}: 仅使用文本定位，文案变化时可能不稳定`);
+    }
+    if (strategy === "none") {
+      warnings.push(`#${index + 1}: 缺少可解释 locator，可能需要人工修复`);
+    }
+  });
+  return warnings;
+}
+
+function suggestRecordingAssertions(recordedSteps: RecordedStep[], testCase: QaCaseInput): string[] {
+  const suggestions = new Set<string>();
+  const lastText = [...recordedSteps].reverse().find((step) => step.text && step.action !== "type")?.text;
+  if (lastText) {
+    suggestions.add(`确认页面出现关键文本：${lastText}`);
+  }
+  const submitLike = recordedSteps.find((step) => /submit|提交|保存|确认|完成/i.test(`${step.text ?? ""} ${step.nearText ?? ""}`));
+  if (submitLike) {
+    suggestions.add("确认提交后出现成功、状态变化或列表更新");
+    suggestions.add("确认提交接口无 4xx/5xx 错误");
+  }
+  if (!testCase.steps.some((step) => step.action === "assertText")) {
+    suggestions.add("补充至少一个业务结果断言，避免只验证流程可点击");
+  }
+  return Array.from(suggestions);
+}
+
+function describeSemanticStep(step: BrowserStep): string {
+  switch (step.action) {
+    case "open":
+      return `打开页面 ${step.url ?? ""}`.trim();
+    case "click":
+      return `点击 ${step.text ?? step.query ?? step.label ?? step.placeholder ?? step.selector ?? "目标元素"}`;
+    case "type":
+      return `输入 ${step.value ?? step.text ?? "内容"} 到 ${step.label ?? step.placeholder ?? step.query ?? step.selector ?? "目标输入框"}`;
+    case "selectOption":
+      return `在 ${step.label ?? step.text ?? "下拉项"} 中选择 ${step.option ?? step.value ?? ""}`.trim();
+    case "assertText":
+      return `确认页面出现 ${step.contains ?? step.text ?? "预期文本"}`;
+    case "waitFor":
+      return `等待 ${step.text ?? step.query ?? step.selector ?? "目标状态"}`;
+    default:
+      return step.description ?? `执行 ${step.action}`;
+  }
+}
+
 function makeSmartReplaySteps(steps: BrowserStep[]): BrowserStep[] {
   return steps.map((step) => {
-    if (!["click", "type", "hover", "clear", "waitFor"].includes(step.action)) {
+    if (!["click", "type", "hover", "clear", "waitFor", "selectOption"].includes(step.action)) {
       return step;
     }
-    // Smart mode adds 'strict: false' to allow fuzzy matching and self-healing
-    const query = step.query ?? step.text ?? step.placeholder ?? step.ariaLabel ?? step.selector;
+    const fallbacks = buildSmartReplayFallbacks(step);
+    const query = step.query
+      ?? step.text
+      ?? step.label
+      ?? step.placeholder
+      ?? step.ariaLabel
+      ?? step.nearText
+      ?? step.selector;
     return {
       ...step,
       query,
-      strict: false, // Enable fuzzy matching/self-healing in the locator engine
+      strict: false,
       visibleOnly: step.visibleOnly ?? true,
-      timeoutMs: step.timeoutMs ?? 10_000
+      timeoutMs: step.timeoutMs ?? 10_000,
+      _qaReplay: {
+        mode: "smart",
+        original: replayOriginalLocator(step),
+        fallbacks,
+        reason: "补充语义 locator fallback，提高回放时对轻微文案或结构变化的容忍度",
+        confidence: smartReplayConfidence(step, fallbacks),
+        semanticChanged: false
+      }
     };
+  });
+}
+
+function buildSmartReplayFallbacks(step: BrowserStep): Record<string, unknown>[] {
+  const candidates: Record<string, unknown>[] = [];
+  const testId = step.testId ?? stringField(isRecord(step.locator) ? step.locator : undefined, "testId");
+  const role = step.role ?? stringField(isRecord(step.locator) ? step.locator : undefined, "role");
+  const text = step.text ?? step.label ?? stringField(isRecord(step.locator) ? step.locator : undefined, "text") ?? stringField(isRecord(step.locator) ? step.locator : undefined, "label");
+  const ariaLabel = step.ariaLabel ?? stringField(isRecord(step.locator) ? step.locator : undefined, "ariaLabel");
+  const placeholder = step.placeholder ?? stringField(isRecord(step.locator) ? step.locator : undefined, "placeholder");
+  const nearText = step.nearText ?? stringField(isRecord(step.locator) ? step.locator : undefined, "nearText");
+  const selector = step.selector ?? stringField(isRecord(step.locator) ? step.locator : undefined, "selector");
+
+  if (testId) candidates.push({ strategy: "data-testid", testId, selector: `data-testid=${testId}` });
+  if (role && text) candidates.push({ strategy: "role+text", role, text });
+  if (ariaLabel) candidates.push({ strategy: "ariaLabel", ariaLabel });
+  if (placeholder) candidates.push({ strategy: "placeholder", placeholder });
+  if (text && nearText) candidates.push({ strategy: "text+nearText", text, nearText });
+  if (text) candidates.push({ strategy: "text", text });
+  if (nearText) candidates.push({ strategy: "nearText", nearText });
+  if (selector) candidates.push({ strategy: "css-selector", selector });
+
+  return dedupeFallbacks(candidates);
+}
+
+function replayOriginalLocator(step: BrowserStep): Record<string, unknown> {
+  return {
+    query: step.query,
+    elementId: step.elementId,
+    selector: step.selector,
+    testId: step.testId,
+    text: step.text,
+    role: step.role,
+    ariaLabel: step.ariaLabel,
+    placeholder: step.placeholder,
+    label: step.label,
+    href: step.href,
+    nearText: step.nearText,
+    locator: step.locator,
+    target: step.target
+  };
+}
+
+function smartReplayConfidence(step: BrowserStep, fallbacks: Record<string, unknown>[]): number {
+  if (fallbacks.some((fallback) => fallback.strategy === "data-testid")) return 0.95;
+  if (fallbacks.some((fallback) => fallback.strategy === "role+text")) return 0.85;
+  if (fallbacks.some((fallback) => fallback.strategy === "placeholder" || fallback.strategy === "ariaLabel")) return 0.78;
+  if (fallbacks.some((fallback) => fallback.strategy === "text+nearText")) return 0.72;
+  if (step.selector) return 0.55;
+  return 0.45;
+}
+
+function dedupeFallbacks(values: Record<string, unknown>[]): Record<string, unknown>[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const key = JSON.stringify(value);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
 }
 

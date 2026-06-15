@@ -7,11 +7,13 @@ description: Run staged AI QA for web features using Browser Bridge and Cooper P
 
 Use this skill to drive source-aware scripted QA. The default workflow is: analyze requirement and branch diff, generate semantic cases, convert them into executable Browser Bridge scripts, batch-run them with `browser_qa_run`, collect evidence, and produce an HTML report.
 
-Before starting a scripted QA task, read `references/scripted-qa-workflow.md` and follow it unless the user explicitly asks for a narrower phase.
+Before starting a scripted QA task, read `references/scripted-qa-workflow.md` and `references/workflow-state-format.md`, then follow them unless the user explicitly asks for a narrower phase.
 
 ## Core Rules
 
 - Never proceed to the next phase without explicit user confirmation, even if the next step is obvious.
+- Maintain `.browser-bridge/runs/{taskId}/workflow-state.json` for staged QA work. Update it at every phase transition and use it to resume after context loss.
+- Do not skip phase gates. If the required previous confirmation is missing from `workflow-state.json`, stop and ask for confirmation instead of inferring approval.
 - Treat Cooper PRD content as the requirement source. Use the Cooper skill / Cooper MCP for Cooper links and follow its connection prechecks when actually fetching the PRD.
 - Present requirement analysis, impact analysis, and test cases in semantic Chinese that product, QA, and frontend engineers can review.
 - Do not expose internal MCP/tool retries, low-level attempts, or debugging chatter to the user. Report user-relevant state only.
@@ -26,40 +28,40 @@ Before starting a scripted QA task, read `references/scripted-qa-workflow.md` an
 Support these user-facing commands. If the user gives a free-form request, map it to the nearest command but keep the same confirmation gates.
 
 1. `/browser-bridge_qa_init`
-   Establish target URL, environment, branch/baseline, PRD link, auth assumptions, and report output path. Stop for confirmation.
+   Establish target URL, environment, branch/baseline, PRD link, auth assumptions, and report output path. Create or update `workflow-state.json`. Stop for confirmation.
 
 2. `/browser-bridge_qa_fetch_prd`
    Fetch the Cooper PRD and summarize business goal, changed behavior, acceptance criteria, constraints, and unknowns. Stop for confirmation.
 
 3. `/browser-bridge_qa_confirm_requirement`
-   Apply user corrections to the requirement summary. Do not analyze impact until confirmed.
+   Apply user corrections to the requirement summary and mark `confirm_requirement` as confirmed in `workflow-state.json`. Do not analyze impact until confirmed.
 
 4. `/browser-bridge_qa_analyze_impact`
    Inspect git diff and relevant code paths. Identify changed pages, routes, components, APIs, state, permissions, data dependencies, and likely old-feature regression points. Stop for confirmation.
    Read `references/scripted-qa-workflow.md` before doing branch/source analysis.
 
 5. `/browser-bridge_qa_confirm_impact`
-   Apply user corrections to the impact list. Do not generate cases until confirmed.
+   Apply user corrections to the impact list and mark `confirm_impact` as confirmed. Do not generate cases until confirmed.
 
 6. `/browser-bridge_qa_generate_semantic_cases`
    Generate semantic test cases only. Include new requirement coverage, regression cases, boundary/negative cases, permission/data-state cases, and smoke cases. Stop for human review.
    Read `references/semantic-case-format.md` before producing the cases.
 
 7. `/browser-bridge_qa_confirm_cases`
-   Apply user edits to semantic cases. Do not produce executable cases until confirmed.
+   Apply user edits to semantic cases and mark `confirm_cases` as confirmed. Do not produce executable cases until confirmed.
 
 8. `/browser-bridge_qa_generate_executable_cases`
    Convert approved semantic cases into Browser Bridge executable cases. Preserve traceability from semantic case id to executable steps. Stop for confirmation.
    Read `references/executable-case-format.md` before producing executable cases.
 
 9. `/browser-bridge_qa_confirm_executable_cases`
-   Apply user edits. Do not operate the browser until the user confirms execution.
+   Apply user edits and mark `confirm_executable` as confirmed. Do not operate the browser until the user confirms execution.
 
 10. `/browser-bridge_qa_run`
    Run approved cases through Browser Bridge scripted batch execution. Use `observe.onFailure: ["screenshot", "console", "network", "pageModel"]`, `observe.final: ["screenshot", "console"]`, `diagnostics.failOnConsoleError: true`, `diagnostics.failOnUncaughtException: true`, and `diagnostics.failOnNetworkError: true` unless the user explicitly lowers strictness. Stop with a concise run summary.
 
 11. `/browser-bridge_qa_confirm_run_result`
-   Let the user confirm whether reruns or case adjustments are needed. Do not finalize the report until confirmed.
+   Let the user confirm whether reruns or case adjustments are needed. Mark `confirm_result` as confirmed only after the user accepts the run result. Do not finalize the report until confirmed.
 
 12. `/browser-bridge_qa_report`
    Generate the final HTML report with screenshots and console information. Read `references/html-report-requirements.md` before reporting.

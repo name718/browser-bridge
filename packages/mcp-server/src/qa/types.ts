@@ -16,6 +16,15 @@ export type QaFailureCategory =
   | "execution_error"
   | "unknown";
 
+export type QaDecisionFailureCategory =
+  | "product_bug"
+  | "frontend_bug"
+  | "backend_or_data"
+  | "environment_blocked"
+  | "locator_flaky"
+  | "test_case_invalid"
+  | "unknown";
+
 export type QaObservePolicy = {
   before?: QaEvidenceKind[];
   afterEachStep?: boolean;
@@ -30,6 +39,30 @@ export type QaDiagnosticsPolicy = {
   slowRequestThresholdMs?: number;
 };
 
+export type QaPreflightPolicy = {
+  enabled?: boolean;
+  requireConnected?: boolean;
+  requireActiveTab?: boolean;
+  checkBaseUrlReachable?: boolean;
+  failOnExistingConsoleError?: boolean;
+};
+
+export type QaPreflightCheck = {
+  name: string;
+  status: "passed" | "failed" | "skipped";
+  message: string;
+  details?: unknown;
+};
+
+export type QaPreflightResult = {
+  status: "passed" | "failed" | "skipped";
+  startedAt: string;
+  finishedAt: string;
+  elapsedMs: number;
+  checks: QaPreflightCheck[];
+  diagnostics?: string;
+};
+
 export type QaCaseInput = {
   id?: string;
   title: string;
@@ -41,11 +74,25 @@ export type QaCaseInput = {
   diagnostics?: QaDiagnosticsPolicy;
 };
 
+export type QaSemanticCase = {
+  id: string;
+  title: string;
+  priority?: QaPriority;
+  type?: QaCaseInput["type"];
+  route?: string;
+  riskSource?: string[];
+  preconditions?: string[];
+  steps: string[];
+  expected?: string[];
+  trace?: Record<string, unknown>;
+};
+
 export type QaRunInput = {
   taskId?: string;
   title?: string;
   baseUrl?: string;
   outputDir?: string;
+  semanticCases?: QaSemanticCase[];
   cases?: QaCaseInput[];
   steps?: BrowserStep[];
   stopOnError?: boolean;
@@ -58,6 +105,7 @@ export type QaRunInput = {
   captureNetwork?: boolean;
   observe?: QaObservePolicy;
   diagnostics?: QaDiagnosticsPolicy;
+  preflight?: QaPreflightPolicy;
   recordReplay?: boolean;
   prdPath?: string;
   prdText?: string;
@@ -102,6 +150,54 @@ export type QaNetworkSummary = {
   }>;
 };
 
+export type QaDiagnosticSummary = {
+  category: QaFailureCategory;
+  message: string;
+  failedStep?: {
+    index: number;
+    action?: string;
+    description?: string;
+    error?: {
+      code: string;
+      message: string;
+    };
+  };
+  currentPage?: {
+    tabId?: number;
+    url?: string;
+    title?: string;
+  };
+  locator?: {
+    strategy: string;
+    warnings: string[];
+    normalized: Record<string, unknown>;
+  };
+  evidence: {
+    screenshot: boolean;
+    pageModel: boolean;
+    console: boolean;
+    network: boolean;
+  };
+};
+
+export type QaLocatorMetadata = {
+  strategy: string;
+  warnings: string[];
+  normalized: Record<string, unknown>;
+};
+
+export type QaExecutableStep = BrowserStep & {
+  _qaLocator?: QaLocatorMetadata;
+  _qaReplay?: {
+    mode: "smart";
+    original: Record<string, unknown>;
+    fallbacks: Record<string, unknown>[];
+    reason: string;
+    confidence: number;
+    semanticChanged: false;
+  };
+};
+
 export type QaCaseResult = {
   id: string;
   title: string;
@@ -109,7 +205,7 @@ export type QaCaseResult = {
   status: QaCaseStatus;
   elapsedMs: number;
   expected: string[];
-  steps: BrowserStep[];
+  steps: QaExecutableStep[];
   runResult?: BrowserRunStepsResult;
   error?: {
     code: string;
@@ -127,6 +223,7 @@ export type QaCaseResult = {
     network?: string;
     networkSummary?: QaNetworkSummary;
     diagnostics?: string;
+    diagnosticsSummary?: QaDiagnosticSummary;
   };
 };
 
@@ -147,6 +244,7 @@ export type QaRunResult = {
   ok: boolean;
   summary: QaSummary;
   cases: QaCaseResult[];
+  preflight?: QaPreflightResult;
   paths: {
     runDir: string;
     summary: string;
@@ -155,6 +253,10 @@ export type QaRunResult = {
     replayViewer: string;
     ciSummary: string;
     replay: string;
+    runConfig: string;
+    semanticCases: string;
+    executableCases: string;
+    workflowState: string;
     casesDir: string;
     screenshotsDir: string;
     logsDir: string;
