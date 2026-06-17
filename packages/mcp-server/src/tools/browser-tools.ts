@@ -274,7 +274,8 @@ const requestSchema = optionalTabId.extend({
   allowCrossOrigin: z.boolean().optional(),
   responseType: z.enum(["auto", "json", "text"]).optional(),
   maxBodyBytes: z.number().int().positive().max(5_000_000).optional(),
-  timeoutMs: z.number().int().positive().optional()
+  timeoutMs: z.number().int().positive().optional(),
+  savePath: z.string().optional()
 });
 
 const saveScreenshotSchema = screenshotSchema.extend({
@@ -1144,14 +1145,25 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
         allowCrossOrigin: { type: "boolean" },
         responseType: { type: "string", enum: ["auto", "json", "text"] },
         maxBodyBytes: { type: "number" },
-        timeoutMs: { type: "number" }
+        timeoutMs: { type: "number" },
+        savePath: { type: "string" }
       }, ["url"]),
       handler: async (args) => {
         const parsed = requestSchema.parse(args ?? {});
-        return bridge.call("browser_request", parsed, {
+        const result = await bridge.call<Record<string, unknown>>("browser_request", parsed, {
           tabId: parsed.tabId,
           timeoutMs: parsed.timeoutMs
         });
+        if (!parsed.savePath) {
+          return result;
+        }
+        const savedPath = resolve(parsed.savePath);
+        await mkdir(dirname(savedPath), { recursive: true });
+        await writeFile(savedPath, JSON.stringify(result, null, 2), "utf8");
+        return {
+          ...result,
+          savedPath
+        };
       }
     },
     {
