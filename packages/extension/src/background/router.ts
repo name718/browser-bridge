@@ -13,6 +13,7 @@ import * as SessionService from './services/session.js';
 import * as RecorderService from './services/recorder.js';
 import * as VisualService from './services/visual.js';
 import * as AgentSessionService from './services/agent-session.js';
+import * as RequestService from './services/request.js';
 
 
 export async function handleBridgeRequest(request: BridgeRequest): Promise<BridgeResponse> {
@@ -123,6 +124,8 @@ async function dispatchRequest(request: BridgeRequest): Promise<unknown> {
       return DebuggerService.captureResponsive(request);
     case 'browser_network_analysis':
       return DebuggerService.runNetworkAnalysis(request);
+    case 'browser_request':
+      return RequestService.requestFromPage(request);
     case 'browser_route':
       return DebuggerService.browserRoute(request);
     case 'browser_export_session':

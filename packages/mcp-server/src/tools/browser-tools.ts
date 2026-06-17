@@ -265,6 +265,18 @@ const capturePageSchema = optionalTabId.extend({
   returnFormat: z.enum(["resource", "text"]).optional()
 });
 
+const requestSchema = optionalTabId.extend({
+  url: z.string().min(1),
+  method: z.string().regex(/^[A-Za-z]+$/).optional(),
+  headers: z.record(z.string()).optional(),
+  body: z.any().optional(),
+  credentials: z.enum(["include", "same-origin", "omit"]).optional(),
+  allowCrossOrigin: z.boolean().optional(),
+  responseType: z.enum(["auto", "json", "text"]).optional(),
+  maxBodyBytes: z.number().int().positive().max(5_000_000).optional(),
+  timeoutMs: z.number().int().positive().optional()
+});
+
 const saveScreenshotSchema = screenshotSchema.extend({
   path: z.string().optional(),
   filename: z.string().optional()
@@ -1114,6 +1126,32 @@ export function createBrowserTools(bridge: BrowserToolBridge): BrowserToolDefini
       handler: async (args) => {
         const parsed = capturePageSchema.parse(args ?? {});
         return capturePage(bridge, parsed);
+      }
+    },
+    {
+      name: "browser_request",
+      description: "在当前标签页的页面 MAIN world 中发送 fetch 请求，复用真实浏览器页面的 Cookie、登录态、同源和 CORS 行为。默认 credentials='include'，默认只允许当前页面同源请求；跨域请求必须显式传 allowCrossOrigin=true。适合让 Skill 复用已登录页面权限查询内部接口。",
+      inputSchema: schema({
+        tabId: { type: "number" },
+        url: { type: "string" },
+        method: { type: "string" },
+        headers: {
+          type: "object",
+          additionalProperties: { type: "string" }
+        },
+        body: {},
+        credentials: { type: "string", enum: ["include", "same-origin", "omit"] },
+        allowCrossOrigin: { type: "boolean" },
+        responseType: { type: "string", enum: ["auto", "json", "text"] },
+        maxBodyBytes: { type: "number" },
+        timeoutMs: { type: "number" }
+      }, ["url"]),
+      handler: async (args) => {
+        const parsed = requestSchema.parse(args ?? {});
+        return bridge.call("browser_request", parsed, {
+          tabId: parsed.tabId,
+          timeoutMs: parsed.timeoutMs
+        });
       }
     },
     {

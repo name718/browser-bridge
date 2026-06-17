@@ -49,6 +49,7 @@ export type BridgeTool =
   | "browser_pdf"
   | "browser_save_pdf"
   | "browser_capture_page"
+  | "browser_request"
   | "browser_evaluate"
   | "browser_smart_act"
   | "browser_cdp"
